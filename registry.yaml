@@ -72,6 +72,9 @@ routing:
   templates:
     directory: templates/
 
+  scripts:
+    directory: scripts/
+
 quality:
   priorities:
     - correctness

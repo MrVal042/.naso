@@ -174,3 +174,40 @@ export async function getGitInfo(cwd) {
 
   return { branch, changes, upstream, ahead, behind };
 }
+
+/** Parse `git status --porcelain` output into { status, path } entries, resolving renames. */
+export function parseGitStatusPorcelain(raw) {
+  return raw
+    .split('\n')
+    .map((line) => line.replace(/\r$/, ''))
+    .filter(Boolean)
+    .map((line) => {
+      const status = line.slice(0, 2).trim() || '??';
+      const rawPath = line.slice(3).trim();
+      const filePath = rawPath.includes(' -> ')
+        ? (rawPath.split(' -> ').at(-1)?.trim() ?? rawPath)
+        : rawPath;
+      return { status, path: filePath };
+    });
+}
+
+/** Paths currently staged for commit (added/copied/modified/renamed — not deleted). */
+export async function getStagedFiles(cwd) {
+  const res = await run(
+    'git',
+    ['diff', '--cached', '--name-only', '--diff-filter=ACMR'],
+    { cwd },
+  );
+  return res.ok ? res.stdout.split('\n').filter(Boolean) : [];
+}
+
+/** Minimal `--flag` / positional argv parser shared by every script's CLI. */
+export function parseArgs(argv) {
+  const flags = new Set();
+  const positional = [];
+  for (const arg of argv) {
+    if (arg.startsWith('--')) flags.add(arg.slice(2));
+    else positional.push(arg);
+  }
+  return { flags, positional };
+}

@@ -1,6 +1,24 @@
+# Local providers reachable from NASO scripts via plain HTTP (Node's
+# built-in fetch — no SDK, no dependency). Only models actually served
+# locally need a provider + id; cloud models (reasoning, multimodal) are
+# used through their normal chat client, not called from scripts.
+providers:
+  lmstudio:
+    base_url: http://localhost:1234/v1
+    protocol: openai-chat-completions
+
 models:
+  # Verified 2026-07-17 against this workspace's LM Studio instance:
+  # qwen/qwen3.5-9b is a thinking-mode model — it burns its whole token
+  # budget on hidden reasoning_content before any real output, taking
+  # minutes for a one-line commit message. qwen2.5-coder-7b-instruct
+  # answers the same request in ~6s with zero reasoning tokens. The "fast"
+  # tier exists for low-latency, high-volume tasks, so it should point at
+  # the model that is actually fast — re-verify if either model changes.
   fast:
-    name: Qwen3.5 9B
+    name: Qwen2.5 Coder 7B Instruct
+    id: qwen2.5-coder-7b-instruct
+    provider: lmstudio
     purpose:
       - coding
       - autocomplete
@@ -28,6 +46,8 @@ models:
 
   embedding:
     name: Nomic Embed
+    id: text-embedding-nomic-embed-text-v1.5
+    provider: lmstudio
     purpose:
       - retrieval
       - semantic search

@@ -1,29 +1,26 @@
 #!/usr/bin/env node
 // NASO Bootstrap — wires a target repository up to this central .naso
 // configuration by generating a local .agents/AGENTS.md pointer file, and
-// optionally installing a pre-commit hook that runs validate.mjs.
+// optionally installing a pre-commit hook that runs validate.mjs --staged.
+//
+// By default, bootstrap artifacts are excluded from the target repo's git
+// tracking via .git/info/exclude — not a committed .gitignore entry — so
+// nothing personal is ever pushed into a repository the operator does not
+// own (client/contract work). Pass --track to commit .agents/ instead, for
+// repos the operator owns and wants to share the setup in.
 //
 // Usage:
-//   node .naso/scripts/bootstrap.mjs [target-dir] [--force] [--with-hook]
+//   node .naso/scripts/bootstrap.mjs [target-dir] [--force] [--with-hook] [--track]
 //
 // Zero external dependencies — Node.js core modules only.
 
-import { mkdir, writeFile, readFile, chmod } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, appendFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pathExists } from './lib.mjs';
+import { pathExists, parseArgs } from './lib.mjs';
 
 const HOOK_MARKER = '# managed-by: naso bootstrap';
-
-function parseArgs(argv) {
-  const flags = new Set();
-  const positional = [];
-  for (const arg of argv) {
-    if (arg.startsWith('--')) flags.add(arg.slice(2));
-    else positional.push(arg);
-  }
-  return { flags, target: positional[0] };
-}
+const EXCLUDE_MARKER = '# added by naso bootstrap';
 
 function buildAgentsMarkdown(nasoPathForDisplay) {
   return `# AGENTS.md
@@ -56,18 +53,40 @@ Repository instructions in this file extend NASO. They never replace it.
 `;
 }
 
-function buildHookScript(validateScriptPath) {
+function buildHookScript(validateScriptPath, guardScriptPath) {
   return `#!/bin/sh
 ${HOOK_MARKER}
 # Installed by .naso/scripts/bootstrap.mjs — runs NASO validation before commit.
 # Remove or edit this file freely; it will not be silently overwritten.
 
-node "${validateScriptPath}"
+# Warn-only: always prints, never blocks the commit on its own.
+node "${guardScriptPath}" --staged
+
+# Blocking: staged lint/format/branch-name checks.
+node "${validateScriptPath}" --staged
 exit $?
 `;
 }
 
-async function installPreCommitHook(targetDir, validateScriptPath) {
+/** Add patterns to .git/info/exclude (local-only, never committed) if not already present. */
+async function excludeLocally(targetDir, patterns) {
+  const gitDir = path.join(targetDir, '.git');
+  if (!(await pathExists(gitDir))) return false;
+
+  const excludeDir = path.join(gitDir, 'info');
+  const excludePath = path.join(excludeDir, 'exclude');
+  const existing = await readFile(excludePath, 'utf8').catch(() => '');
+
+  const missing = patterns.filter((pattern) => !existing.includes(pattern));
+  if (missing.length === 0) return true;
+
+  await mkdir(excludeDir, { recursive: true });
+  const prefix = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+  await appendFile(excludePath, `${prefix}\n${EXCLUDE_MARKER}\n${missing.join('\n')}\n`, 'utf8');
+  return true;
+}
+
+async function installPreCommitHook(targetDir, validateScriptPath, guardScriptPath) {
   const gitDir = path.join(targetDir, '.git');
   if (!(await pathExists(gitDir))) {
     console.log('- Skipped git hook: no .git directory found in target.');
@@ -82,28 +101,31 @@ async function installPreCommitHook(targetDir, validateScriptPath) {
     if (!existing.includes(HOOK_MARKER)) {
       console.log(
         `- Skipped git hook: ${hookPath} already exists and was not created by NASO.\n` +
-          `  Add this line manually to run validation before each commit:\n` +
-          `  node "${validateScriptPath}"`,
+          `  Add these lines manually to run validation before each commit:\n` +
+          `  node "${guardScriptPath}" --staged\n` +
+          `  node "${validateScriptPath}" --staged`,
       );
       return;
     }
   }
 
   await mkdir(hooksDir, { recursive: true });
-  await writeFile(hookPath, buildHookScript(validateScriptPath), 'utf8');
+  await writeFile(hookPath, buildHookScript(validateScriptPath, guardScriptPath), 'utf8');
   await chmod(hookPath, 0o755);
   console.log(`- Installed pre-commit hook: ${hookPath}`);
 }
 
 async function main() {
-  const { flags, target } = parseArgs(process.argv.slice(2));
+  const { flags, positional } = parseArgs(process.argv.slice(2));
   const force = flags.has('force');
   const withHook = flags.has('with-hook');
+  const track = flags.has('track');
 
-  const targetDir = path.resolve(target ?? process.cwd());
+  const targetDir = path.resolve(positional[0] ?? process.cwd());
   const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
   const nasoDir = path.resolve(scriptsDir, '..');
   const validateScriptPath = path.join(scriptsDir, 'validate.mjs');
+  const guardScriptPath = path.join(scriptsDir, 'guard.mjs');
 
   if (!(await pathExists(targetDir))) {
     console.error(`naso bootstrap: target directory does not exist: ${targetDir}`);
@@ -137,15 +159,29 @@ async function main() {
     console.log(`\n- Wrote ${agentsFile}`);
   }
 
+  if (track) {
+    console.log(
+      '- --track passed: .agents/ is left for the repo\'s normal git tracking. Add and commit it yourself if you want it shared.',
+    );
+  } else {
+    const excluded = await excludeLocally(targetDir, ['.agents/']);
+    console.log(
+      excluded
+        ? '- Excluded .agents/ from git tracking locally (.git/info/exclude), so nothing is committed into this repo\'s history. Pass --track to commit it instead.'
+        : '- No .git directory found in target; skipped local exclude.',
+    );
+  }
+
   if (withHook) {
     console.log();
-    await installPreCommitHook(targetDir, validateScriptPath);
+    await installPreCommitHook(targetDir, validateScriptPath, guardScriptPath);
   } else {
     console.log(
       `\nTo validate automatically before each commit, either:\n` +
         `  - re-run this script with --with-hook, or\n` +
-        `  - manually add this line to .git/hooks/pre-commit:\n` +
-        `    node "${validateScriptPath}"`,
+        `  - manually add these lines to .git/hooks/pre-commit:\n` +
+        `    node "${guardScriptPath}" --staged\n` +
+        `    node "${validateScriptPath}" --staged`,
     );
   }
 
