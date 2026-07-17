@@ -1,0 +1,34 @@
+models:
+  fast:
+    name: Qwen3.5 9B
+    purpose:
+      - coding
+      - autocomplete
+      - refactoring
+      - documentation
+      - code review
+
+  reasoning:
+    name: GPT-5.5
+    purpose:
+      - architecture
+      - planning
+      - system design
+      - difficult debugging
+      - product decisions
+
+  multimodal:
+    name: GPT-5.5
+    purpose:
+      - screenshots
+      - diagrams
+      - UI
+      - UX
+      - PDFs
+
+  embedding:
+    name: Nomic Embed
+    purpose:
+      - retrieval
+      - semantic search
+      - RAG
