@@ -93,6 +93,15 @@ local model tier before any script used it; this phase makes it real.
       a `/no_think` hint. Swapped the registry to
       `qwen2.5-coder-7b-instruct` (no reasoning mode) — same request now
       returns a correct commit message in ~1.5s end-to-end.
+- [x] Fixed silent diff truncation: dogfooding on `.naso`'s own 30-file
+      commit produced a misleadingly generic message because the diff
+      exceeded `MAX_DIFF_CHARS` and got sliced mid-file, so the model only
+      ever saw the alphabetically-first files. Now falls back to a full
+      `git diff --cached --name-status` file list (every file represented,
+      not just the first ones to fit) with a system prompt telling the
+      model it's summarizing a file list, not a diff, plus stderr warnings
+      before and after so the operator knows to double-check the draft.
+      Verified against both a normal small diff and a 118KB diff.
 - [ ] Consider a changelog/PR-description assist script if commit-message
       proves useful in real day-to-day use — same pattern, same model.
 - **Explicitly out of scope**: wiring any local model into `doctor.mjs`,

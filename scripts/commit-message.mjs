@@ -30,6 +30,12 @@ Rules:
 - Never fabricate ticket numbers, authors, or context not present in the diff.
 Output only the commit message text. No commentary, no markdown fences.`;
 
+const SUMMARY_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
+- You are given a file-change list, not the actual diff content — it was too
+  large to include. Describe the scope of the change from the file paths
+  and change types only. Do not guess at specifics the file list can't tell
+  you (no invented rationale, no invented implementation details).`;
+
 /**
  * A minimal parser for the flat mapping/list shape this repo's own
  * models/registry.yaml uses. Not a general YAML parser — deliberately
@@ -130,10 +136,29 @@ async function main() {
     return;
   }
 
-  const diff =
-    diffRes.stdout.length > MAX_DIFF_CHARS
-      ? `${diffRes.stdout.slice(0, MAX_DIFF_CHARS)}\n... (diff truncated)`
-      : diffRes.stdout;
+  // A diff over the cap gets silently truncated mid-file if sliced naively,
+  // which biases the model toward whichever files sort first alphabetically
+  // and produces a summary that looks complete but isn't (this happened in
+  // practice — see roadmap.md Phase 6). Fall back to the full file-change
+  // list instead: smaller, and every file is represented, not just the
+  // first ones to fit.
+  let systemPrompt = SYSTEM_PROMPT;
+  let userContent;
+  let usedFallback = false;
+
+  if (diffRes.stdout.length <= MAX_DIFF_CHARS) {
+    userContent = `Staged diff:\n\n${diffRes.stdout}`;
+  } else {
+    const statusRes = await run('git', ['diff', '--cached', '--name-status'], { cwd });
+    const fileList = statusRes.ok ? statusRes.stdout.trim() : '(unable to list changed files)';
+    systemPrompt = SUMMARY_SYSTEM_PROMPT;
+    userContent = `Changed files (${diffRes.stdout.length} char diff was too large to include):\n\n${fileList}`;
+    usedFallback = true;
+    console.error(
+      `naso commit-message: diff is ${diffRes.stdout.length} chars (cap ${MAX_DIFF_CHARS}) — ` +
+        'drafting from the file list instead of the full diff. Review the draft extra carefully.',
+    );
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -149,12 +174,12 @@ async function main() {
         temperature: 0.2,
         max_tokens: MAX_RESPONSE_TOKENS,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: systemPrompt },
           // "/no_think" is a Qwen3-family convention that skips its extended
           // reasoning mode. Harmless no-op text for other models — remove if
           // models/registry.yaml's "fast" model ever changes to one that
           // doesn't support it.
-          { role: 'user', content: `Staged diff:\n\n${diff}\n\n/no_think` },
+          { role: 'user', content: `${userContent}\n\n/no_think` },
         ],
       }),
     });
@@ -194,6 +219,12 @@ async function main() {
   }
 
   console.log(message);
+
+  if (usedFallback) {
+    console.error(
+      '\n(Drafted from the file list only — the full diff was too large to include. Double-check before using.)',
+    );
+  }
 }
 
 main().catch((err) => {
