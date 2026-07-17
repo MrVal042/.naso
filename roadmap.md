@@ -38,10 +38,16 @@ Compiler and Context Assembler phases below were rescoped or dropped, and
 
 ## Phase 3: Bootstrap Linker — done
 
-- [x] `bootstrap.mjs` — writes `.agents/AGENTS.md` in a target repo as a
-      pointer to this central `.naso` (relative path under the standard
-      sibling-workspace layout, absolute fallback otherwise). Idempotent;
-      never overwrites without `--force`.
+- [x] `bootstrap.mjs` — writes the same pointer content to both root
+      `CLAUDE.md` and `.agents/AGENTS.md` in a target repo, since different
+      tools discover different paths by convention but the instructions
+      must not differ (`ai/model-behavior.md`'s "Model Independence").
+      Relative path under the standard sibling-workspace layout, absolute
+      fallback otherwise. Idempotent; never overwrites without `--force`.
+      Gap found and closed after actually bootstrapping `ecpc-web` and
+      checking whether Claude Code picked up the setup on its own — it
+      didn't, because only `.agents/AGENTS.md` existed and this tool's
+      confirmed auto-discovery convention is root `CLAUDE.md`.
 - [x] Defaults bootstrap artifacts to `.git/info/exclude` instead of a
       tracked `.gitignore` entry, so nothing personal is committed into a
       repository the operator does not own (client/contract work). `--track`

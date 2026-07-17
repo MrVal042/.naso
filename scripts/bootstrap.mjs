@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 // NASO Bootstrap — wires a target repository up to this central .naso
-// configuration by generating a local .agents/AGENTS.md pointer file, and
+// configuration by generating pointer files at the paths different AI
+// tools discover automatically (root CLAUDE.md, .agents/AGENTS.md), and
 // optionally installing a pre-commit hook that runs validate.mjs --staged.
+//
+// Both pointer files carry identical content — ai/model-behavior.md's
+// "Model Independence" principle is that NASO behaves the same regardless
+// of which model or tool reads it, so only the file's location should vary
+// by tool convention, never the instructions themselves.
 //
 // By default, bootstrap artifacts are excluded from the target repo's git
 // tracking via .git/info/exclude — not a committed .gitignore entry — so
@@ -22,8 +28,8 @@ import { pathExists, parseArgs } from './lib.mjs';
 const HOOK_MARKER = '# managed-by: naso bootstrap';
 const EXCLUDE_MARKER = '# added by naso bootstrap';
 
-function buildAgentsMarkdown(nasoPathForDisplay) {
-  return `# AGENTS.md
+function buildPointerMarkdown(nasoPathForDisplay) {
+  return `# NASO
 
 This repository is configured to use **NASO** (Next-generation AI Software Operations)
 as its engineering operating system.
@@ -51,6 +57,17 @@ Repository instructions in this file extend NASO. They never replace it.
 
 <!-- Add project-specific context, conventions, and constraints below. -->
 `;
+}
+
+/** Write a pointer file unless it already exists and --force wasn't passed. */
+async function writePointerFile(filePath, content, force) {
+  if ((await pathExists(filePath)) && !force) {
+    console.log(`- Skipped ${filePath}: already exists. Pass --force to overwrite.`);
+    return;
+  }
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, content, 'utf8');
+  console.log(`- Wrote ${filePath}`);
 }
 
 function buildHookScript(validateScriptPath, guardScriptPath) {
@@ -136,8 +153,8 @@ async function main() {
   console.log(`# NASO Bootstrap — ${targetDir}`);
   console.log(`\nCentral NASO directory: ${nasoDir}`);
 
-  const agentsDir = path.join(targetDir, '.agents');
-  const agentsFile = path.join(agentsDir, 'AGENTS.md');
+  const agentsFile = path.join(targetDir, '.agents', 'AGENTS.md');
+  const claudeFile = path.join(targetDir, 'CLAUDE.md');
 
   // path.relative() already falls back to an absolute path itself when no
   // relative path exists (e.g. different drives on Windows). A leading ".."
@@ -150,24 +167,20 @@ async function main() {
       ? relativeNasoPath
       : `./${relativeNasoPath}`;
 
-  await mkdir(agentsDir, { recursive: true });
-
-  if ((await pathExists(agentsFile)) && !force) {
-    console.log(`\n- Skipped AGENTS.md: ${agentsFile} already exists. Pass --force to overwrite.`);
-  } else {
-    await writeFile(agentsFile, buildAgentsMarkdown(displayPath), 'utf8');
-    console.log(`\n- Wrote ${agentsFile}`);
-  }
+  const pointerContent = buildPointerMarkdown(displayPath);
+  console.log();
+  await writePointerFile(agentsFile, pointerContent, force);
+  await writePointerFile(claudeFile, pointerContent, force);
 
   if (track) {
     console.log(
-      '- --track passed: .agents/ is left for the repo\'s normal git tracking. Add and commit it yourself if you want it shared.',
+      '- --track passed: pointer files are left for the repo\'s normal git tracking. Add and commit them yourself if you want the setup shared.',
     );
   } else {
-    const excluded = await excludeLocally(targetDir, ['.agents/']);
+    const excluded = await excludeLocally(targetDir, ['.agents/', 'CLAUDE.md']);
     console.log(
       excluded
-        ? '- Excluded .agents/ from git tracking locally (.git/info/exclude), so nothing is committed into this repo\'s history. Pass --track to commit it instead.'
+        ? '- Excluded .agents/ and CLAUDE.md from git tracking locally (.git/info/exclude), so nothing is committed into this repo\'s history. Pass --track to commit them instead.'
         : '- No .git directory found in target; skipped local exclude.',
     );
   }
