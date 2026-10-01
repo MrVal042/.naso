@@ -462,6 +462,23 @@ export async function scanStagedContent(cwd) {
   return scanAddedLines(parseAddedLines(res.stdout));
 }
 
+/**
+ * Is this module the process entry point?
+ *
+ * Scripts here both export helpers (for test/naso.test.mjs to import) and run
+ * main() on load. Without this guard, importing one from the test suite would
+ * execute its CLI against whatever directory the test happened to run in.
+ */
+export function isMainModule(importMetaUrl) {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  try {
+    return path.resolve(invoked) === path.resolve(fileURLToPath(importMetaUrl));
+  } catch {
+    return false;
+  }
+}
+
 /** Escape a string for safe single-quoted use inside a POSIX shell script. */
 export function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", `'\\''`)}'`;

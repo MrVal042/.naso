@@ -29,6 +29,7 @@ import {
   isRootNoise,
   isNoisyDir,
   escapeRegExp,
+  isMainModule,
 } from './lib.mjs';
 
 const AGENTS_FILE = 'AGENTS.md';
@@ -195,7 +196,9 @@ async function main() {
   process.exitCode = 1;
 }
 
-main().catch((err) => {
-  console.error(`naso check-briefing: unexpected error — ${err?.stack ?? err}`);
-  process.exitCode = 1;
-});
+if (isMainModule(import.meta.url)) {
+  main().catch((err) => {
+    console.error(`naso check-briefing: unexpected error — ${err?.stack ?? err}`);
+    process.exitCode = 1;
+  });
+}

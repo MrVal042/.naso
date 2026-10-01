@@ -205,6 +205,38 @@ export function notableAdditions(paths) {
 }
 
 /**
+ * What a path is about, guessed from its shape.
+ *
+ * Used only to prefix the one-line note validate appends for a newly-appeared
+ * area. A wrong guess costs a human one edit of one line; a missing note costs
+ * a briefing that quietly stops describing the repo. So the fallback is
+ * "here is a new top-level area — describe it" rather than silence.
+ */
+export function describeUnit(unit) {
+  const isDir = unit.endsWith('/');
+  const name = isDir ? unit.slice(0, -1) : unit;
+
+  if (/^(readme|changelog|contributing|license|licence|notice)$/i.test(name)) {
+    return 'project documentation';
+  }
+  if (/^(docs?|documentation)$/i.test(name)) return 'documentation';
+  if (/^(test|tests|__tests__|spec|specs|e2e|cypress|fixtures?)$/i.test(name)) {
+    return 'tests';
+  }
+  if (/^(src|lib|app|apps|pkg|packages|internal|cmd|source)$/i.test(name)) {
+    return 'application source';
+  }
+  if (/^(scripts?|tools?|bin|tooling)$/i.test(name)) return 'developer scripts';
+  if (/^(infra|infrastructure|deploy|deployment|terraform|helm|k8s|docker)$/i.test(name)) {
+    return 'infrastructure';
+  }
+  if (/^(config|configs|\.github|ci)$/i.test(name)) return 'configuration';
+  if (/^(migrations?|db|database|schema|seed|seeds)$/i.test(name)) return 'data layer';
+  if (isDir) return 'a new top-level area — describe what belongs here';
+  return 'a new top-level file — describe its role';
+}
+
+/**
  * Should the append be staged automatically?
  *
  * Two conditions, both required. The file must be tracked — otherwise
@@ -292,10 +324,7 @@ async function appendBriefingNotes(cwd) {
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
 
-      const note = (unit) =>
-        unit.endsWith('/')
-          ? `- \`${unit}\` — TODO(describe): what this new area is for`
-          : `- \`${unit}\` — TODO(describe): what this new root file is for`;
+      const note = (unit) => `- \`${unit}\` — TODO(describe): ${describeUnit(unit)}`;
 
       const appended = fresh.slice(0, start) + '\n' + stillMissing.map(note).join('\n') + '\n' + fresh.slice(end);
       await writeFile(agentsPath, appended, 'utf8');

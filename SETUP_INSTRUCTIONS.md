@@ -108,13 +108,18 @@ version.
 Only once they've confirmed:
 
 ```bash
-rm SETUP_INSTRUCTIONS.md
 if git check-ignore -q AGENTS.md; then
-  # Briefing is excluded locally (.git/info/exclude) — do not add it.
-  # Teammates who need it must run bootstrap again.
+  # Briefing is excluded locally (.git/info/exclude) — there is nothing to
+  # commit, so remove this file and stop. Teammates who want a briefing of
+  # their own run bootstrap again in their own clone.
+  rm SETUP_INSTRUCTIONS.md
 else
+  # Tracked briefing: commit it first, while this file is still around, so the
+  # commit contains only AGENTS.md. Removing this file before committing would
+  # stage a deletion of it too, which is not what anyone asked for.
   git add AGENTS.md
   git commit -m "chore: bootstrap AGENTS.md briefing"
+  rm SETUP_INSTRUCTIONS.md
 fi
 ```
 
