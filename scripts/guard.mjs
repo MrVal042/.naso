@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// NASO Guard — warn-only, stack-agnostic checks for the mistakes that
-// actually cost a contractor: leaked secrets, committed build output,
-// unreviewed dependency changes. Generalized from Patonabl's
-// tooling/scripts/codebase-guard.mjs, which validated this pattern in
-// production.
+// NASO Guard — warn-only, stack-agnostic checks for the mistakes that actually
+// cost you time: leaked secrets, committed build output, unreviewed dependency
+// changes.
 //
-// Never reads flagged file contents — path only.
+// Generic by design: it matches path shapes, never project-specific names, and
+// reads paths only — never file contents. Nothing it does depends on the
+// repository's language, framework, or directory layout.
 //
 // Usage: node .naso/scripts/guard.mjs [target-dir] [--staged] [--strict]
 // Zero external dependencies — Node.js core modules only.
@@ -13,24 +13,54 @@
 import path from 'node:path';
 import { pathExists, parseGitStatusPorcelain, getStagedFiles, parseArgs, run } from './lib.mjs';
 
+// Matches paths that conventionally hold secrets. Deliberately broad: a false
+// positive costs one glance at a filename, a false negative costs a leak.
 const SECRET_LIKE_PATTERN =
-  /(^|\/)(\.env($|[./_-])|.*\.secret($|[./_-])|.*secret.*|.*credential.*|.*token.*|.*key.*)/i;
+  /(^|\/)(\.env($|[./-])|.*\.pem$|.*\.p12$|.*\.pfx$|.*\.key$|.*secret.*|.*credential.*|.*token.*|.*key.*|id_rsa.*|id_ed25519.*)/i;
 
-const GENERATED_OUTPUT_PATTERN =
-  /(^|\/)(dist|build|coverage|out|target|\.next|\.nuxt|\.output|\.turbo|node_modules)(\/|$)|\.map$/;
+// Directories that hold build output or dependencies in the common stacks.
+const GENERATED_DIR_PATTERN =
+  /(^|\/)(dist|build|out|coverage|\.next|\.nuxt|\.output|\.turbo|\.svelte-kit|\.angular|vendor|__pycache__|target)(\/|$)/i;
+
+// node_modules and friends, however the stack spells them.
+const DEPENDENCY_DIR_PATTERN =
+  /(^|\/)(node_modules|vendor|bower_components|\.venv|venv|\.tox|\.gradle)(\/|$)/i;
+
+const SOURCE_MAP_PATTERN = /\.map$/i;
 
 const DEPENDENCY_FILE_PATTERN =
-  /(^|\/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|bun\.lock|Gemfile\.lock|requirements\.txt|go\.sum|Cargo\.lock|composer\.lock)$/;
+  /(^|\/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|bun\.lock|Cargo\.toml|Cargo\.lock|go\.mod|go\.sum|Gemfile|Gemfile\.lock|requirements\.txt|pyproject\.toml|poetry\.lock|Pipfile|Pipfile\.lock|composer\.json|composer\.lock|pom\.xml|build\.gradle|build\.gradle\.kts|Podfile|Podfile\.lock)$/i;
 
-function addWarning(warnings, title, files, nextAction) {
-  if (files.length === 0) return;
-  warnings.push({ title, files: Array.from(new Set(files)).sort(), nextAction });
+const GUIDANCE = [
+  {
+    title: 'Secret-like paths changed',
+    next: 'Review paths only — do not paste contents into chat. Real secrets belong in a deployment secret store.',
+    match: (p) => SECRET_LIKE_PATTERN.test(p),
+  },
+  {
+    title: 'Generated, build-output, or dependency paths changed',
+    next: 'Do not commit generated output or installed dependencies unless this repo explicitly tracks them.',
+    match: (p) =>
+      GENERATED_DIR_PATTERN.test(p) || DEPENDENCY_DIR_PATTERN.test(p) || SOURCE_MAP_PATTERN.test(p),
+  },
+  {
+    title: 'Dependency manifest or lockfile changed',
+    next: 'Confirm dependency changes are intentional before committing.',
+    match: (p) => DEPENDENCY_FILE_PATTERN.test(p),
+  },
+];
+
+function collectWarnings(paths) {
+  const warnings = [];
+  for (const guidance of GUIDANCE) {
+    const files = Array.from(new Set(paths.filter(guidance.match))).sort();
+    if (files.length > 0) warnings.push({ title: guidance.title, files, next: guidance.next });
+  }
+  return warnings;
 }
 
 async function getChangedPaths(cwd, staged) {
-  if (staged) {
-    return getStagedFiles(cwd);
-  }
+  if (staged) return getStagedFiles(cwd);
   const res = await run('git', ['status', '--porcelain'], { cwd });
   if (!res.ok) return null;
   return parseGitStatusPorcelain(res.stdout).map((entry) => entry.path);
@@ -55,28 +85,7 @@ async function main() {
     return;
   }
 
-  const warnings = [];
-
-  addWarning(
-    warnings,
-    'Secret-like paths changed',
-    paths.filter((p) => SECRET_LIKE_PATTERN.test(p)),
-    'Review paths only — do not paste contents into chat. Move real secrets to a deployment secret store.',
-  );
-
-  addWarning(
-    warnings,
-    'Generated or build-output paths changed',
-    paths.filter((p) => GENERATED_OUTPUT_PATTERN.test(p)),
-    'Do not commit generated output unless the repo explicitly tracks it.',
-  );
-
-  addWarning(
-    warnings,
-    'Dependency or lockfile changes',
-    paths.filter((p) => DEPENDENCY_FILE_PATTERN.test(p)),
-    'Confirm dependency changes are intentional before committing.',
-  );
+  const warnings = collectWarnings(paths);
 
   console.log(`# NASO Guard (${staged ? 'staged' : 'working tree'}) — ${cwd}`);
   console.log('');
@@ -92,10 +101,8 @@ async function main() {
 
   for (const warning of warnings) {
     console.log(`## ${warning.title}`);
-    for (const filePath of warning.files) {
-      console.log(`- ${filePath}`);
-    }
-    console.log(`Next: ${warning.nextAction}`);
+    for (const filePath of warning.files) console.log(`- ${filePath}`);
+    console.log(`Next: ${warning.next}`);
     console.log('');
   }
 

@@ -1,95 +1,188 @@
 #!/usr/bin/env node
-// NASO Bootstrap — wires a target repository up to this central .naso
-// configuration by generating pointer files at the paths different AI
-// tools discover automatically (root CLAUDE.md, .agents/AGENTS.md), and
-// optionally installing a pre-commit hook that runs validate.mjs --staged.
+// NASO Bootstrap — gives a target repository a project-specific AGENTS.md
+// briefing and a pre-commit hook that runs the NASO guards.
 //
-// Both pointer files carry identical content — ai/model-behavior.md's
-// "Model Independence" principle is that NASO behaves the same regardless
-// of which model or tool reads it, so only the file's location should vary
-// by tool convention, never the instructions themselves.
+// Two files land in the target:
+//   AGENTS.md             the briefing template, with a version stamp and an
+//                         ownership line so later edits go through code review
+//   SETUP_INSTRUCTIONS.md  a one-time guide telling the first agent that reads
+//                         the repo to fill the template in from the real code,
+//                         self-check every path it claims, and get a human to
+//                         confirm before treating it as truth
 //
-// By default, bootstrap artifacts are excluded from the target repo's git
-// tracking via .git/info/exclude — not a committed .gitignore entry — so
-// nothing personal is ever pushed into a repository the operator does not
-// own (client/contract work). Pass --track to commit .agents/ instead, for
-// repos the operator owns and wants to share the setup in.
+// Plus, unless --no-hook: .git/hooks/pre-commit running guard.mjs (warn-only)
+// and validate.mjs (blocking) against staged files.
+//
+// By default the two briefing files are kept out of the target's git tracking
+// via .git/info/exclude — a local-only file that is never committed — so
+// bootstrapping a client or contract repository leaves no trace in its history.
+// Pass --track to have them committed instead.
 //
 // Usage:
-//   node .naso/scripts/bootstrap.mjs [target-dir] [--force] [--with-hook] [--track]
+//   node .naso/scripts/bootstrap.mjs [target-dir] [--force] [--no-hook] [--track]
 //
 // Zero external dependencies — Node.js core modules only.
 
-import { mkdir, writeFile, readFile, appendFile, chmod } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, appendFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { pathExists, parseArgs } from './lib.mjs';
+import {
+  pathExists,
+  parseArgs,
+  actorIdentity,
+  toolVersion,
+  shellSingleQuote,
+  toPosixPath,
+  run,
+  nasoDir,
+} from './lib.mjs';
+import { chmod } from 'node:fs/promises';
 
 const HOOK_MARKER = '# managed-by: naso bootstrap';
 const EXCLUDE_MARKER = '# added by naso bootstrap';
 
-function buildPointerMarkdown(nasoPathForDisplay) {
-  return `# NASO
+/** Files bootstrap may create in the target repo. */
+const BRIEFING_FILES = ['AGENTS.md', 'SETUP_INSTRUCTIONS.md'];
 
-This repository is configured to use **NASO** (Next-generation AI Software Operations)
-as its engineering operating system.
-
-Central NASO directory:
-
-\`${nasoPathForDisplay}\`
-
-For every engineering task:
-
-1. Load \`${nasoPathForDisplay}/context.md\`.
-2. Follow its routing instructions to load only the required NASO documents.
-3. Read this file for repository-specific instructions.
-4. Inspect the existing code before changing anything.
-5. Plan before implementing.
-6. Make the smallest safe change.
-7. Validate the result (see \`${nasoPathForDisplay}/scripts/validate.mjs\`).
-8. Report remaining risks, then stop.
-
-Repository instructions in this file extend NASO. They never replace it.
-
----
-
-## Repository Notes
-
-<!-- Add project-specific context, conventions, and constraints below. -->
-`;
+/** Where the naso tool directory lives relative to this script. */
+function toolDir() {
+  return nasoDir();
 }
 
-/** Write a pointer file unless it already exists and --force wasn't passed. */
-async function writePointerFile(filePath, content, force) {
+/** Read a file from the tool directory. */
+async function readToolFile(name) {
+  const file = path.join(toolDir(), name);
+  return readFile(file, 'utf8');
+}
+
+/**
+ * Render the briefing template with its version stamp and ownership line.
+ *
+ * The template ships two TODO markers for exactly this: the machine-readable
+ * HTML comments at the top, and the human-readable "Bootstrapped by..." block
+ * quote. Filling both is what lets validate.mjs later compare versions and let
+ * a reader see who to ask when a claim turns out to be wrong.
+ */
+function renderBriefing(template, version, actor, now) {
+  return template
+    .replace('<!-- version: TODO(fill): current naso version -->', `<!-- version: ${version} -->`)
+    .replace('<!-- bootstrapped-by: TODO(fill): who ran bootstrap.mjs -->', `<!-- bootstrapped-by: ${actor} -->`)
+    .replace('<!-- bootstrapped-at: TODO(fill): ISO date -->', `<!-- bootstrapped-at: ${now} -->`)
+    .replace(
+      '> Bootstrapped by TODO(fill): who, on TODO(fill): when.',
+      `> Bootstrapped by ${actor} on ${now}.`,
+    );
+}
+
+/** Write a file unless it exists and --force wasn't passed. */
+async function writeFileUnlessPresent(filePath, content, force, label) {
   if ((await pathExists(filePath)) && !force) {
-    console.log(`- Skipped ${filePath}: already exists. Pass --force to overwrite.`);
-    return;
+    console.log(`- Skipped ${label}: ${filePath} already exists. Pass --force to overwrite.`);
+    return false;
   }
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, content, 'utf8');
-  console.log(`- Wrote ${filePath}`);
+  console.log(`- Wrote ${label}: ${filePath}`);
+  return true;
 }
 
+/**
+ * Build the pre-commit hook body.
+ *
+ * Cross-platform notes, since this is the one part that genuinely differs:
+ * Git for Windows executes hooks through its bundled POSIX `sh`, so a
+ * `#!/bin/sh` script is correct on both platforms and needs no .cmd variant.
+ * What does differ is path handling — Windows paths carry spaces and `C:\`
+ * prefixes, so every interpolated path is converted to forward slashes and
+ * wrapped in single quotes before it reaches the shell body.
+ */
 function buildHookScript(validateScriptPath, guardScriptPath) {
+  const guard = toPosixPath(guardScriptPath);
+  const validate = toPosixPath(validateScriptPath);
   return `#!/bin/sh
 ${HOOK_MARKER}
-# Installed by .naso/scripts/bootstrap.mjs — runs NASO validation before commit.
+# Installed by .naso/scripts/bootstrap.mjs — runs NASO checks before each commit.
 # Remove or edit this file freely; it will not be silently overwritten.
 
-# Warn-only: always prints, never blocks the commit on its own.
-node "${guardScriptPath}" --staged
+# Resolve node: hooks inherit a minimal PATH on some systems, so fall back to
+# the common install locations rather than failing with "command not found".
+if command -v node >/dev/null 2>&1; then
+  NODE_BIN=node
+elif [ -x "/c/Program Files/nodejs/node.exe" ]; then
+  NODE_BIN="/c/Program Files/nodejs/node.exe"
+elif [ -x "/usr/local/bin/node" ]; then
+  NODE_BIN="/usr/local/bin/node"
+else
+  echo "naso: node not found in PATH — skipping pre-commit checks." >&2
+  exit 0
+fi
 
-# Blocking: staged lint/format/branch-name checks.
-node "${validateScriptPath}" --staged
+# Warn-only: prints findings about secret-like paths, build output, and
+# dependency changes. Never blocks the commit on its own.
+"$NODE_BIN" ${shellSingleQuote(guard)} --staged
+
+# Blocking: staged format, lint, branch-naming, AGENTS.md freshness, and the
+# one-line briefing append for genuinely new paths.
+"$NODE_BIN" ${shellSingleQuote(validate)} --staged
 exit $?
 `;
 }
 
-/** Add patterns to .git/info/exclude (local-only, never committed) if not already present. */
-async function excludeLocally(targetDir, patterns) {
-  const gitDir = path.join(targetDir, '.git');
-  if (!(await pathExists(gitDir))) return false;
+/**
+ * Locate the hooks directory for a repository.
+ *
+ * `git rev-parse --git-path hooks` is the only correct answer across all of:
+ * plain clones, linked worktrees (where `.git` is a *file*, not a directory),
+ * and repos that override `core.hooksPath`.
+ */
+async function resolveHooksDir(targetDir) {
+  const res = await run('git', ['rev-parse', '--git-path', 'hooks'], { cwd: targetDir });
+  if (!res.ok) return null;
+  const raw = res.stdout.trim();
+  if (!raw) return null;
+  return path.isAbsolute(raw) ? raw : path.resolve(targetDir, raw);
+}
 
+async function installPreCommitHook(targetDir, validateScriptPath, guardScriptPath) {
+  const hooksDir = await resolveHooksDir(targetDir);
+  if (!hooksDir) {
+    console.log('- Skipped git hook: target is not a git repository.');
+    console.log(`  To install it later, add these lines to .git/hooks/pre-commit:`);
+    console.log(`    node ${shellSingleQuote(toPosixPath(guardScriptPath))} --staged`);
+    console.log(`    node ${shellSingleQuote(toPosixPath(validateScriptPath))} --staged`);
+    return;
+  }
+
+  const hookPath = path.join(hooksDir, 'pre-commit');
+
+  if (await pathExists(hookPath)) {
+    const existing = await readFile(hookPath, 'utf8').catch(() => '');
+    if (!existing.includes(HOOK_MARKER)) {
+      console.log(`- Skipped git hook: ${hookPath} exists and was not created by NASO.`);
+      console.log(`  To run NASO checks, add these lines to it:`);
+      console.log(`    node ${shellSingleQuote(toPosixPath(guardScriptPath))} --staged`);
+      console.log(`    node ${shellSingleQuote(toPosixPath(validateScriptPath))} --staged`);
+      return;
+    }
+  }
+
+  await mkdir(hooksDir, { recursive: true });
+  // No BOM and LF endings: Git for Windows runs this through `sh`, and a BOM
+  // would make the shebang unrecognizable while CRLF would break it outright.
+  const body = buildHookScript(validateScriptPath, guardScriptPath);
+  await writeFile(hookPath, body, 'utf8');
+  // No-op on Windows filesystems, harmless there; on POSIX this is what makes
+  // the hook executable.
+  await chmod(hookPath, 0o755).catch(() => {});
+  console.log(`- Installed pre-commit hook: ${hookPath}`);
+}
+
+/** Add patterns to .git/info/exclude (local-only, never committed) if absent. */
+async function excludeLocally(targetDir, patterns) {
+  const gitDirRes = await run('git', ['rev-parse', '--git-dir'], { cwd: targetDir });
+  if (!gitDirRes.ok) return false;
+
+  const gitDirRaw = gitDirRes.stdout.trim();
+  const gitDir = path.isAbsolute(gitDirRaw) ? gitDirRaw : path.resolve(targetDir, gitDirRaw);
   const excludeDir = path.join(gitDir, 'info');
   const excludePath = path.join(excludeDir, 'exclude');
   const existing = await readFile(excludePath, 'utf8').catch(() => '');
@@ -103,46 +196,16 @@ async function excludeLocally(targetDir, patterns) {
   return true;
 }
 
-async function installPreCommitHook(targetDir, validateScriptPath, guardScriptPath) {
-  const gitDir = path.join(targetDir, '.git');
-  if (!(await pathExists(gitDir))) {
-    console.log('- Skipped git hook: no .git directory found in target.');
-    return;
-  }
-
-  const hooksDir = path.join(gitDir, 'hooks');
-  const hookPath = path.join(hooksDir, 'pre-commit');
-
-  if (await pathExists(hookPath)) {
-    const existing = await readFile(hookPath, 'utf8').catch(() => '');
-    if (!existing.includes(HOOK_MARKER)) {
-      console.log(
-        `- Skipped git hook: ${hookPath} already exists and was not created by NASO.\n` +
-          `  Add these lines manually to run validation before each commit:\n` +
-          `  node "${guardScriptPath}" --staged\n` +
-          `  node "${validateScriptPath}" --staged`,
-      );
-      return;
-    }
-  }
-
-  await mkdir(hooksDir, { recursive: true });
-  await writeFile(hookPath, buildHookScript(validateScriptPath, guardScriptPath), 'utf8');
-  await chmod(hookPath, 0o755);
-  console.log(`- Installed pre-commit hook: ${hookPath}`);
-}
-
 async function main() {
   const { flags, positional } = parseArgs(process.argv.slice(2));
   const force = flags.has('force');
-  const withHook = flags.has('with-hook');
+  const noHook = flags.has('no-hook');
   const track = flags.has('track');
 
   const targetDir = path.resolve(positional[0] ?? process.cwd());
-  const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
-  const nasoDir = path.resolve(scriptsDir, '..');
-  const validateScriptPath = path.join(scriptsDir, 'validate.mjs');
-  const guardScriptPath = path.join(scriptsDir, 'guard.mjs');
+  const toolDirectory = toolDir();
+  const validateScriptPath = path.join(toolDirectory, 'scripts', 'validate.mjs');
+  const guardScriptPath = path.join(toolDirectory, 'scripts', 'guard.mjs');
 
   if (!(await pathExists(targetDir))) {
     console.error(`naso bootstrap: target directory does not exist: ${targetDir}`);
@@ -150,55 +213,65 @@ async function main() {
     return;
   }
 
-  console.log(`# NASO Bootstrap — ${targetDir}`);
-  console.log(`\nCentral NASO directory: ${nasoDir}`);
+  const version = await toolVersion();
+  const actor = actorIdentity();
+  const now = new Date().toISOString().slice(0, 10);
 
-  const agentsFile = path.join(targetDir, '.agents', 'AGENTS.md');
-  const claudeFile = path.join(targetDir, 'CLAUDE.md');
-
-  // path.relative() already falls back to an absolute path itself when no
-  // relative path exists (e.g. different drives on Windows). A leading ".."
-  // is expected and correct for the standard sibling-workspace layout
-  // (WorkSpace/.naso next to WorkSpace/ProjectX -> "../.naso").
-  const relativeNasoPath = path.relative(targetDir, nasoDir);
-  const displayPath = path.isAbsolute(relativeNasoPath)
-    ? nasoDir
-    : relativeNasoPath.startsWith('..')
-      ? relativeNasoPath
-      : `./${relativeNasoPath}`;
-
-  const pointerContent = buildPointerMarkdown(displayPath);
+  console.log(`# NASO Bootstrap ${version} — ${targetDir}`);
+  console.log(`\nTool directory: ${toolDirectory}`);
+  console.log(`Bootstrapped by: ${actor} on ${now}`);
   console.log();
-  await writePointerFile(agentsFile, pointerContent, force);
-  await writePointerFile(claudeFile, pointerContent, force);
+
+  const template = await readToolFile('AGENTS.template.md');
+  const setupInstructions = await readToolFile('SETUP_INSTRUCTIONS.md');
+
+  await writeFileUnlessPresent(
+    path.join(targetDir, 'AGENTS.md'),
+    renderBriefing(template, version, actor, now),
+    force,
+    'AGENTS.md (briefing template)',
+  );
+  await writeFileUnlessPresent(
+    path.join(targetDir, 'SETUP_INSTRUCTIONS.md'),
+    setupInstructions,
+    force,
+    'SETUP_INSTRUCTIONS.md',
+  );
 
   if (track) {
     console.log(
-      '- --track passed: pointer files are left for the repo\'s normal git tracking. Add and commit them yourself if you want the setup shared.',
+      '\n- --track passed: briefing files are left for this repo\'s normal git tracking.',
     );
   } else {
-    const excluded = await excludeLocally(targetDir, ['.agents/', 'CLAUDE.md']);
+    const excluded = await excludeLocally(targetDir, BRIEFING_FILES);
     console.log(
       excluded
-        ? '- Excluded .agents/ and CLAUDE.md from git tracking locally (.git/info/exclude), so nothing is committed into this repo\'s history. Pass --track to commit them instead.'
-        : '- No .git directory found in target; skipped local exclude.',
+        ? `\n- Excluded ${BRIEFING_FILES.join(', ')} from git tracking locally (.git/info/exclude),\n  so nothing is committed into this repo's history. Pass --track to commit them instead.`
+        : `\n- No git repository found in target; skipped local exclude.`,
     );
   }
 
-  if (withHook) {
+  if (noHook) {
+    console.log('\n- --no-hook passed: pre-commit hook not installed.');
+    console.log(`  To install it later, either drop --no-hook on a re-run, or add these lines`);
+    console.log(`  to .git/hooks/pre-commit yourself:`);
+    console.log(`    node ${shellSingleQuote(toPosixPath(guardScriptPath))} --staged`);
+    console.log(`    node ${shellSingleQuote(toPosixPath(validateScriptPath))} --staged`);
+  } else {
     console.log();
     await installPreCommitHook(targetDir, validateScriptPath, guardScriptPath);
-  } else {
-    console.log(
-      `\nTo validate automatically before each commit, either:\n` +
-        `  - re-run this script with --with-hook, or\n` +
-        `  - manually add these lines to .git/hooks/pre-commit:\n` +
-        `    node "${guardScriptPath}" --staged\n` +
-        `    node "${validateScriptPath}" --staged`,
-    );
   }
 
-  console.log('\nDone.');
+  console.log(`
+Next:
+  1. Open ${path.join(targetDir, 'SETUP_INSTRUCTIONS.md')} — the first agent that reads
+     this repo fills in AGENTS.md from the real code, self-checks every path it
+     claims, and asks you to confirm before treating it as source of truth.
+  2. Once you confirm, delete SETUP_INSTRUCTIONS.md and commit AGENTS.md.
+  3. From then on AGENTS.md changes through normal code review. Nothing ever
+     regenerates it wholesale.
+
+Done.`);
 }
 
 main().catch((err) => {

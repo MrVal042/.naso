@@ -4,6 +4,8 @@
 import { access, readFile, constants } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 /** Does a path exist on disk? */
 export async function pathExists(targetPath) {
@@ -210,4 +212,66 @@ export function parseArgs(argv) {
     else positional.push(arg);
   }
   return { flags, positional };
+}
+
+// ---------------------------------------------------------------------------
+// NASO tool identity
+// ---------------------------------------------------------------------------
+
+/** Absolute path to the `.naso` tool directory these scripts live in. */
+export function nasoDir() {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+}
+
+/** Current tool version, read from `<naso>/VERSION`. */
+export async function toolVersion() {
+  try {
+    const raw = await readFile(path.join(nasoDir(), 'VERSION'), 'utf8');
+    return raw.trim();
+  } catch {
+    return '0.0.0';
+  }
+}
+
+/** Best-effort human identity for the machine running a script. */
+export function actorIdentity() {
+  const user = os.userInfo?.().username ?? os.userInfo?.().username ?? 'unknown';
+  return `${user}@${os.hostname()}`;
+}
+
+/**
+ * Compare two dotted version strings.
+ * Returns -1 / 0 / 1 so callers can use it directly.
+ */
+export function compareVersions(a, b) {
+  const pa = String(a).split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (na !== nb) return na < nb ? -1 : 1;
+  }
+  return 0;
+}
+
+/** Escape a string for safe single-quoted use inside a POSIX shell script. */
+export function shellSingleQuote(value) {
+  return `'${String(value).replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * Normalize a path for embedding in a `#!/bin/sh` hook.
+ *
+ * Git for Windows runs hooks through its bundled POSIX shell, so the hook
+ * script itself must stay POSIX. But the *paths* inside it may come from a
+ * Windows drive (`C:\Users\Ada Lovelace\project`) where backslashes are
+ * meaningful and the shell's own PATH separator rules differ. Converting to
+ * forward slashes and quoting is what makes one hook body valid on both
+ * platforms.
+ */
+export function toPosixPath(value) {
+  const p = String(value);
+  if (p.includes('\\')) return p.replaceAll('\\', '/');
+  return p;
 }
