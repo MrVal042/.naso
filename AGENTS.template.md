@@ -70,6 +70,24 @@ TODO(fill): command
 
 ---
 
+## Scope
+
+Name the path prefixes that own a task **before** you start editing, and export
+them so the pre-commit hook can check the diff against what you claimed:
+
+```bash
+export NASO_SCOPE=src/api,docs/api
+```
+
+Any staged path outside those prefixes is reported as out-of-scope. Set
+`NASO_SCOPE_STRICT=1` to make it refuse the commit rather than warn.
+
+Use this when a task should not be touching unrelated areas. Splitting
+unrelated work into its own commit is usually the right answer, and this is how
+you find out when you have not.
+
+---
+
 ## Boundaries
 
 TODO(fill): The lines that are easy to cross by accident. Module import rules,

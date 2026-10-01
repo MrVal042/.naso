@@ -315,7 +315,14 @@ async function main() {
   }
 
   const template = await readToolFile('AGENTS.template.md');
-  const setupInstructions = await readToolFile('SETUP_INSTRUCTIONS.md');
+  // Substitute the tool's own absolute path so the setup guide can name one
+  // command the reader can paste, instead of a shell pipeline whose syntax
+  // would differ per platform. Forward slashes and single quotes so the value
+  // survives both the markdown fence and the shell that later reads it.
+  const setupInstructions = (await readToolFile('SETUP_INSTRUCTIONS.md')).replaceAll(
+    '{{NASO_DIR}}',
+    shellSingleQuote(toPosixPath(toolDirectory)),
+  );
 
   const agentsPath = path.join(targetDir, 'AGENTS.md');
   await writeFileUnlessPresent(

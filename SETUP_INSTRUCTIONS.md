@@ -69,30 +69,25 @@ Three rules for what goes in:
 
 Do not skip this. This is the step that makes the briefing trustworthy.
 
-Take every path mentioned anywhere in your filled-in `AGENTS.md` and confirm
-each one exists:
+Run the briefing check:
 
 ```bash
-grep -oE '`[^`]+`' AGENTS.md | tr -d '`' \
-  | grep -vE '^-' \
-  | grep -E '^[[:alnum:]_.@~-]+(/[[:alnum:]_.@~-]+)*/*$' \
-  | grep -vE '^(validate|guard|bootstrap|lib|lock)\.mjs$' \
-  | sort -u \
-  | while read -r p; do [ -e "$p" ] || echo "MISSING: $p"; done
+node {{NASO_DIR}}/scripts/check-briefing.mjs .
 ```
 
-Every `MISSING:` line is either a typo you should fix or a claim about the
-codebase that isn't true. Resolve both. No output means the path claims hold.
+It reports three kinds of problem:
 
-Then check the inverse, which is where the real gaps are — top-level areas that
-exist in the repo but that nobody mentioned:
+- **MISSING** — a path the briefing claims that does not exist on disk.
+- **UNCOVERED** — a real top-level area of the repo the briefing never mentions.
+  This is where the actual gaps are, and it is the check the old shell snippet
+  never performed.
+- **UNFILLED** — `TODO(fill)` or `TODO(describe)` markers still in the file,
+  meaning sections are still empty.
 
-```bash
-ls -1 | grep -vE '^(\.git|node_modules|AGENTS\.md|SETUP_INSTRUCTIONS\.md)$'
-```
+Every finding is either a typo you should fix or a claim about the codebase that
+isn't true. Resolve all of them, then re-run until it reports nothing.
 
-Every directory in that list should appear somewhere in the briefing. An area
-nobody mentioned is the blind spot you were hired to remove.
+Two attempts is the budget. See *If Something Goes Wrong* below.
 
 ### 4. Ask the human to confirm
 

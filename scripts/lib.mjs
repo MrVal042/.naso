@@ -241,6 +241,74 @@ export function parseArgs(argv) {
 }
 
 // ---------------------------------------------------------------------------
+// Briefing coverage
+// ---------------------------------------------------------------------------
+
+// Root-level entries that never say anything about a codebase's shape.
+const ROOT_NOISE = new Set([
+  '.editorconfig',
+  '.gitattributes',
+  '.gitignore',
+  '.gitkeep',
+  '.npmrc',
+  '.nvmrc',
+  'license',
+  'licence',
+  'notice',
+  'readme',
+]);
+
+// Directories whose presence is not news about the repo's structure.
+const NOISY_DIR_PATTERN =
+  /^(node_modules|dist|build|out|coverage|vendor|__pycache__|target|\.venv|venv|\.next|\.nuxt|\.output|\.turbo|\.svelte-kit|\.gradle|\.idea|\.vscode|\.cache|tmp|temp|logs?)$/i;
+
+/** Is this root-level filename noise rather than structure? */
+export function isRootNoise(name) {
+  return ROOT_NOISE.has(name.toLowerCase());
+}
+
+/** Is this directory name build output or tooling rather than project structure? */
+export function isNoisyDir(name) {
+  return NOISY_DIR_PATTERN.test(name);
+}
+
+/**
+ * Does the briefing already cover this unit?
+ *
+ * A plain substring test is wrong in the direction that matters. If the
+ * briefing mentions `apps/web/docs/`, a naive `includes('docs/')` says a new
+ * top-level `docs/` is covered — it is not, they are different areas, and the
+ * briefing would tell the next agent to look in the wrong place.
+ *
+ * So a match only counts when the unit is not immediately preceded by a path
+ * character. `[A-Za-z0-9_./-]` covers the separators and the characters that
+ * can legally appear in the preceding segment, which is exactly the set of
+ * cases where the match is a suffix of a longer path rather than the path
+ * itself. Case-insensitive, because a briefing that says `Docs/` covers `docs/`.
+ */
+export function coversUnit(briefingText, unit) {
+  if (!briefingText || !unit) return false;
+  const needle = escapeRegExp(unit);
+  return new RegExp(`(^|[^A-Za-z0-9_./-])${needle}`, 'i').test(briefingText);
+}
+
+/** Escape a string for literal use inside a RegExp. */
+export function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Count unfilled markers in a briefing.
+ *
+ * TODO(fill) comes from the template; TODO(describe) is what validate.mjs
+ * appends for a newly-appeared area. Both mean "an agent still owes work here".
+ */
+export function countTodoMarkers(text) {
+  const matches = String(text ?? '').match(/TODO\((fill|describe)\)/g);
+  return matches ? matches.length : 0;
+}
+
+// ---------------------------------------------------------------------------
 // NASO tool identity
 // ---------------------------------------------------------------------------
 
