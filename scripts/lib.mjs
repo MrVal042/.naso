@@ -203,15 +203,41 @@ export async function getStagedFiles(cwd) {
   return res.ok ? res.stdout.split('\n').filter(Boolean) : [];
 }
 
-/** Minimal `--flag` / positional argv parser shared by every script's CLI. */
+/**
+ * Minimal argv parser shared by every script's CLI.
+ *
+ * Supports `--flag` and `--key=value` and `--key value`. The returned `flags`
+ * Set holds bare flags; `values` holds the last `--key=value` or `--key value`
+ * seen for each key, so `--scope src,docs` works without a bespoke parser.
+ */
 export function parseArgs(argv) {
   const flags = new Set();
+  const values = new Map();
   const positional = [];
-  for (const arg of argv) {
-    if (arg.startsWith('--')) flags.add(arg.slice(2));
-    else positional.push(arg);
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (!arg.startsWith('--')) {
+      positional.push(arg);
+      continue;
+    }
+    const body = arg.slice(2);
+    const eq = body.indexOf('=');
+    if (eq !== -1) {
+      values.set(body.slice(0, eq), body.slice(eq + 1));
+      continue;
+    }
+    // Only treat the next token as this flag's value if it isn't another flag.
+    const next = argv[i + 1];
+    if (next !== undefined && !next.startsWith('--')) {
+      values.set(body, next);
+      i++;
+    } else {
+      flags.add(body);
+    }
   }
-  return { flags, positional };
+
+  return { flags, values, positional };
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +279,119 @@ export function compareVersions(a, b) {
     if (na !== nb) return na < nb ? -1 : 1;
   }
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Staged content scan
+// ---------------------------------------------------------------------------
+
+/**
+ * Content rules for leaked credentials. Every pattern is an unambiguous shape
+ * — something that is a secret by construction, never a word that merely
+ * appears near credentials. Reporting is `file:line  rule-name` only; the
+ * matched text is never returned or printed, so a finding is safe to log.
+ */
+export const CONTENT_RULES = [
+  { name: 'PEM_PRIVATE_KEY', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
+  { name: 'AWS_ACCESS_KEY_ID', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
+  { name: 'STRIPE_SECRET_KEY', pattern: /\b(?:sk_live|sk_test)_[A-Za-z0-9]{16,}\b/ },
+  { name: 'GITHUB_TOKEN', pattern: /\bghp_[A-Za-z0-9]{36}\b/ },
+  { name: 'SLACK_TOKEN', pattern: /\bxox[baprs]-/ },
+];
+
+/** Escape hatch for a line that legitimately contains a secret-shaped string. */
+const ALLOW_MARKER = 'naso-allow-secret';
+
+const LOCKFILE_PATTERN =
+  /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|bun\.lock|Cargo\.lock|go\.sum|composer\.lock|poetry\.lock|Pipfile\.lock|Podfile\.lock|packages\.lock\.json)$/i;
+
+/**
+ * Parse `git diff --cached -U0` into per-file added lines.
+ *
+ * Only added lines are considered: a secret already in history is a separate
+ * (much larger) problem, and scanning context lines would re-report unchanged
+ * content on every subsequent commit.
+ *
+ * Binary files are skipped — the hunk header for one carries no line data, so
+ * they simply produce no entries.
+ */
+export function parseAddedLines(diffText) {
+  const files = new Map();
+  let current = null;
+  // New-file line number of the next `+` line, seeded from the @@ hunk header.
+  let nextLine = 0;
+
+  for (const rawLine of diffText.split('\n')) {
+    if (rawLine.startsWith('diff --git ')) {
+      current = null;
+      continue;
+    }
+    if (rawLine.startsWith('@@')) {
+      // @@ -oldStart,oldCount +newStart,newCount @@
+      const m = rawLine.match(/^@@[^@]*\+(\d+)/);
+      if (m) nextLine = Number.parseInt(m[1], 10);
+      continue;
+    }
+    if (rawLine.startsWith('+++ ')) {
+      const target = rawLine.slice(4).trim();
+      // "+++ /dev/null" means the file was deleted; nothing to scan.
+      if (target === '/dev/null') {
+        current = null;
+        continue;
+      }
+      // Strip the b/ prefix git adds.
+      current = target.replace(/^b\//, '');
+      files.set(current, []);
+      continue;
+    }
+    // "Binary files ... differ" — skip, no line data follows.
+    if (rawLine.startsWith('Binary files ')) {
+      current = null;
+      continue;
+    }
+    if (!current || !rawLine.startsWith('+') || rawLine.startsWith('+++')) continue;
+
+    // A `+` line is a real line in the new file at nextLine; a context or `-`
+    // line still occupies a position, so advance on every non-metadata line.
+    const lines = files.get(current);
+    if (rawLine.startsWith('+')) {
+      lines.push({ text: rawLine.slice(1), line: nextLine });
+      nextLine++;
+    } else if (rawLine.startsWith('-')) {
+      // Deleted lines do not advance the new-file counter.
+    } else {
+      nextLine++;
+    }
+  }
+
+  return files;
+}
+
+/**
+ * Find content-rule hits across the staged diff.
+ * Returns [{ path, line, rule }] — never the matched text.
+ */
+export function scanAddedLines(files) {
+  const hits = [];
+  for (const [filePath, entries] of files) {
+    // Lockfiles contain hashes that trip these shapes constantly.
+    if (LOCKFILE_PATTERN.test(filePath)) continue;
+
+    for (const { text, line } of entries) {
+      if (text.includes(ALLOW_MARKER)) continue;
+      for (const rule of CONTENT_RULES) {
+        if (rule.pattern.test(text)) hits.push({ path: filePath, line, rule: rule.name });
+      }
+    }
+  }
+  return hits;
+}
+
+/** Run the staged-diff content scan for a repository. */
+export async function scanStagedContent(cwd) {
+  const res = await run('git', ['diff', '--cached', '-U0'], { cwd });
+  if (!res.ok) return [];
+  return scanAddedLines(parseAddedLines(res.stdout));
 }
 
 /** Escape a string for safe single-quoted use inside a POSIX shell script. */

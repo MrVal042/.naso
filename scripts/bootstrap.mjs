@@ -169,12 +169,24 @@ else
   exit 0
 fi
 
-# Warn-only: prints findings about secret-like paths, build output, and
-# dependency changes. Never blocks the commit on its own.
+# Guard: BLOCKS on high-confidence secret rules (.env, .pem/.p12/.pfx/.key,
+# id_rsa*/id_ed25519*, and content-scan hits on added lines). Warn-only for
+# compound secret names, generated output, dependency files, and scope.
+#
+# NASO_SCOPE / NASO_SCOPE_STRICT pass through the environment automatically, so
+# an agent that exported the owning path prefixes gets the diff checked against
+# them with no extra hook wiring.
 "$NODE_BIN" ${shellSingleQuote(guard)} --staged
+GUARD_STATUS=$?
 
-# Blocking: staged format, lint, branch-naming, AGENTS.md freshness, and the
-# one-line briefing append for genuinely new paths.
+# Only stop on the guard's own failure — never on a bare "findings found".
+if [ $GUARD_STATUS -ne 0 ]; then
+  echo "naso: blocking guard finding — commit refused." >&2
+  exit $GUARD_STATUS
+fi
+
+# Validate: staged format, lint, AGENTS.md freshness and the one-line briefing
+# append. Branch naming is reported here but no longer blocks.
 "$NODE_BIN" ${shellSingleQuote(validate)} --staged
 exit $?
 `;
