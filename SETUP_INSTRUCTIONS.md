@@ -114,11 +114,18 @@ Only once they've confirmed:
 
 ```bash
 rm SETUP_INSTRUCTIONS.md
-git add AGENTS.md SETUP_INSTRUCTIONS.md
-git commit -m "chore: bootstrap AGENTS.md briefing"
+if git check-ignore -q AGENTS.md; then
+  # Briefing is excluded locally (.git/info/exclude) — do not add it.
+  # Teammates who need it must run bootstrap again.
+else
+  git add AGENTS.md
+  git commit -m "chore: bootstrap AGENTS.md briefing"
+fi
 ```
 
-After that, `AGENTS.md` is maintained like any other file in the repo — through
+If AGENTS.md is git-ignored (default when bootstrapped without --track), do not
+`git add` it. The commit above only happens when AGENTS.md is tracked. After
+that, `AGENTS.md` is maintained like any other file in the repo — through
 normal code review. Nobody regenerates it. When a commit introduces something
 genuinely new, `validate.mjs` appends a single line for it; nothing more.
 

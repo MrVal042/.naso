@@ -99,7 +99,9 @@ report the path — do not paste the value.
 7. Never use `--no-verify`, never amend, never force-push. Fix and make a new
    commit if a pre-commit hook fails.
 8. When a commit adds a genuinely new file or folder, `validate.mjs` appends one
-   line for it under Project Structure. Include that update in the same commit.
+   line for it under Project Structure. Include that update in the same commit if
+   the briefing is tracked. If the briefing is locally excluded, the hook will
+   leave it unstaged and print a one-line notice instead.
 
 ---
 

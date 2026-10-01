@@ -10,8 +10,13 @@
 //                         self-check every path it claims, and get a human to
 //                         confirm before treating it as truth
 //
-// Plus, unless --no-hook: .git/hooks/pre-commit running guard.mjs (warn-only)
-// and validate.mjs (blocking) against staged files.
+// Plus, unless --no-hook: .git/hooks/pre-commit running guard.mjs and
+// validate.mjs against staged files.
+//
+// --refresh is the safe way to catch a bootstrapped repo up to a newer tool
+// version: it rewrites the `<!-- version: -->` stamp and nothing else, so a
+// briefing an agent already filled in survives. --force is the destructive
+// one and says so.
 //
 // By default the two briefing files are kept out of the target's git tracking
 // via .git/info/exclude — a local-only file that is never committed — so
@@ -19,7 +24,12 @@
 // Pass --track to have them committed instead.
 //
 // Usage:
-//   node .naso/scripts/bootstrap.mjs [target-dir] [--force] [--no-hook] [--track]
+//   node .naso/scripts/bootstrap.mjs [target-dir] [options]
+//     --force      overwrite an existing AGENTS.md with a fresh template
+//     --refresh    bump only the version stamp on an existing AGENTS.md and
+//                  refresh the hook; never touches briefing content
+//     --no-hook    skip installing the pre-commit hook
+//     --track      let the briefing files be git-tracked instead of excluded
 //
 // Zero external dependencies — Node.js core modules only.
 
@@ -74,14 +84,57 @@ function renderBriefing(template, version, actor, now) {
 }
 
 /** Write a file unless it exists and --force wasn't passed. */
-async function writeFileUnlessPresent(filePath, content, force, label) {
+async function writeFileUnlessPresent(filePath, content, force, label, warnOnOverwrite) {
   if ((await pathExists(filePath)) && !force) {
     console.log(`- Skipped ${label}: ${filePath} already exists. Pass --force to overwrite.`);
     return false;
   }
+  if (force && warnOnOverwrite && (await pathExists(filePath))) {
+    console.log(
+      '  ! --force overwrites AGENTS.md with an empty template, discarding the briefing.\n' +
+        '    Use --refresh to bump the version stamp without losing the content.',
+    );
+  }
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, content, 'utf8');
   console.log(`- Wrote ${label}: ${filePath}`);
+  return true;
+}
+
+/**
+ * Bump only the `<!-- version: X -->` stamp on an existing AGENTS.md.
+ *
+ * This is the whole point of --refresh. A briefing that took an agent twenty
+ * minutes of reading the codebase to produce is irreplaceable; a stale version
+ * stamp is a one-line cosmetic difference. Never regenerate the template here,
+ * and never touch SETUP_INSTRUCTIONS.md — re-running the setup flow over a
+ * confirmed briefing would send the next agent back to fill in work that is
+ * already done.
+ */
+async function refreshBriefingStamp(agentsPath, version) {
+  const content = await readFile(agentsPath, 'utf8');
+  const stamped = content.match(/^<!--\s*version:\s*(.+?)\s*-->$/m)?.[1] ?? null;
+
+  if (!stamped) {
+    console.log(
+      `- Skipped AGENTS.md: no version stamp found in ${agentsPath}.\n` +
+        '  Nothing was changed. To regenerate the whole file, re-run without --refresh.',
+    );
+    return false;
+  }
+
+  if (stamped === version) {
+    console.log(`- AGENTS.md is already stamped ${version} — nothing to refresh.`);
+    return false;
+  }
+
+  const updated = content.replace(
+    /^<!--\s*version:\s*.+?\s*-->$/m,
+    `<!-- version: ${version} -->`,
+  );
+  await writeFile(agentsPath, updated, 'utf8');
+  console.log(`- Refreshed AGENTS.md version stamp: ${stamped} -> ${version}`);
+  console.log('  Briefing content untouched.');
   return true;
 }
 
@@ -198,7 +251,8 @@ async function excludeLocally(targetDir, patterns) {
 
 async function main() {
   const { flags, positional } = parseArgs(process.argv.slice(2));
-  const force = flags.has('force');
+  let force = flags.has('force');
+  const refresh = flags.has('refresh');
   const noHook = flags.has('no-hook');
   const track = flags.has('track');
 
@@ -222,14 +276,42 @@ async function main() {
   console.log(`Bootstrapped by: ${actor} on ${now}`);
   console.log();
 
+  if (force && refresh) {
+    console.log('  ! Both --force and --refresh passed; --refresh takes precedence and');
+    console.log('    nothing in AGENTS.md will be overwritten.\n');
+    force = false;
+  }
+
+  if (refresh) {
+    // --refresh is the catch-up path, not the setup path: stamp and hook only.
+    const agentsPath = path.join(targetDir, 'AGENTS.md');
+    if (!(await pathExists(agentsPath))) {
+      console.log(
+        `- No AGENTS.md in ${targetDir} yet. Run without --refresh to bootstrap it.`,
+      );
+    } else {
+      await refreshBriefingStamp(agentsPath, version);
+    }
+
+    if (!noHook) {
+      console.log();
+      await installPreCommitHook(targetDir, validateScriptPath, guardScriptPath);
+    }
+
+    console.log('\nDone.');
+    return;
+  }
+
   const template = await readToolFile('AGENTS.template.md');
   const setupInstructions = await readToolFile('SETUP_INSTRUCTIONS.md');
 
+  const agentsPath = path.join(targetDir, 'AGENTS.md');
   await writeFileUnlessPresent(
-    path.join(targetDir, 'AGENTS.md'),
+    agentsPath,
     renderBriefing(template, version, actor, now),
     force,
     'AGENTS.md (briefing template)',
+    true,
   );
   await writeFileUnlessPresent(
     path.join(targetDir, 'SETUP_INSTRUCTIONS.md'),
@@ -238,16 +320,17 @@ async function main() {
     'SETUP_INSTRUCTIONS.md',
   );
 
+  const excludedLocally = track ? false : await excludeLocally(targetDir, BRIEFING_FILES);
+
   if (track) {
     console.log(
-      '\n- --track passed: briefing files are left for this repo\'s normal git tracking.',
+      '\n- Mode: tracked (--track). Briefing files are intended to be committed to git in this repo.',
     );
   } else {
-    const excluded = await excludeLocally(targetDir, BRIEFING_FILES);
     console.log(
-      excluded
-        ? `\n- Excluded ${BRIEFING_FILES.join(', ')} from git tracking locally (.git/info/exclude),\n  so nothing is committed into this repo's history. Pass --track to commit them instead.`
-        : `\n- No git repository found in target; skipped local exclude.`,
+      excludedLocally
+        ? `\n- Mode: excluded (default). ${BRIEFING_FILES.join(', ')} are excluded via .git/info/exclude (local only).\n  Teammates will not see them unless they bootstrap too. Pass --track if you want them committed.`
+        : `\n- Mode: unknown (no git repo found). Briefing files were written to disk but not marked for tracking.`,
     );
   }
 
