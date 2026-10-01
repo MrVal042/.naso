@@ -76,7 +76,7 @@ const results = [];
 
 function record(name, status, detail) {
   results.push({ name, status, detail });
-  const icon = { pass: 'PASS', fail: 'FAIL', skip: 'SKIP' }[status];
+  const icon = { pass: 'PASS', fail: 'FAIL', skip: 'SKIP', warn: 'WARN' }[status];
   console.log(`\n[${icon}] ${name}${detail ? ` — ${detail}` : ''}`);
 }
 
@@ -90,20 +90,30 @@ async function runStep(name, cmd, args, cwd) {
 function printSummary() {
   console.log('\n## Summary\n');
   for (const r of results) {
-    const icon = { pass: '✓', fail: '✗', skip: '—' }[r.status];
+    const icon = { pass: '✓', fail: '✗', skip: '—', warn: '!' }[r.status];
     console.log(`${icon} ${r.name}: ${r.status.toUpperCase()}${r.detail ? ` (${r.detail})` : ''}`);
   }
 
   const failures = results.filter((r) => r.status === 'fail');
+  const warnings = results.filter((r) => r.status === 'warn');
   if (failures.length > 0) {
     console.log(`\n${failures.length} check(s) failed.`);
     process.exitCode = 1;
   } else {
-    console.log('\nAll applicable checks passed.');
+    if (warnings.length > 0) console.log(`\n${warnings.length} warning(s), none blocking.`);
+    console.log('All blocking checks passed.');
     process.exitCode = 0;
   }
 }
 
+/**
+ * Branch-naming check. Warn-only by design.
+ *
+ * A client's repository has its own convention and NASO cannot know it. A
+ * blocking rule here does not teach a better branch name — it teaches
+ * --no-verify, which then silently disables the secret checks too. The check
+ * stays because it is cheap information, not because it gets to stop work.
+ */
 async function checkBranchName(cwd) {
   const branchRes = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
   if (!branchRes.ok) {
@@ -116,11 +126,11 @@ async function checkBranchName(cwd) {
   } else if (BRANCH_NAME_PATTERN.test(branch)) {
     record('Branch naming', 'pass', `\`${branch}\``);
   } else {
-    record(
-      'Branch naming',
-      'fail',
-      `\`${branch}\` does not match trunk names or a "prefix/slug" convention (e.g. feature/x, bugfix/y)`,
+    console.log(
+      `  ! \`${branch}\` does not match trunk names or a "prefix/slug" convention\n` +
+        '    (e.g. feature/x, bugfix/y). Not blocking — this repo may use its own.',
     );
+    record('Branch naming', 'warn', `\`${branch}\` — convention not recognised (not blocking)`);
   }
 }
 
