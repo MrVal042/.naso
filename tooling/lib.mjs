@@ -1,8 +1,9 @@
-// Shared zero-dependency helpers for NASO automation scripts.
+// Shared zero-dependency helpers for the NASO tools in this directory.
 // Built entirely on Node.js core modules — no npm packages.
 
 import { access, readFile, constants } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -262,9 +263,18 @@ const ROOT_NOISE = new Set([
 const NOISY_DIR_PATTERN =
   /^(node_modules|dist|build|out|coverage|vendor|__pycache__|target|\.venv|venv|\.next|\.nuxt|\.output|\.turbo|\.svelte-kit|\.gradle|\.idea|\.vscode|\.cache|tmp|temp|logs?)$/i;
 
-/** Is this root-level filename noise rather than structure? */
+/**
+ * Is this root-level filename noise rather than structure?
+ *
+ * The extension is ignored, because `README.md`, `LICENSE` and `NOTICE.txt` are
+ * the same three files wearing different hats — and a briefing that lists
+ * `README.md` as an "area" has told the reader nothing.
+ */
 export function isRootNoise(name) {
-  return ROOT_NOISE.has(name.toLowerCase());
+  const base = name.toLowerCase();
+  if (ROOT_NOISE.has(base)) return true;
+  const ext = path.extname(base);
+  return Boolean(ext) && ROOT_NOISE.has(base.slice(0, -ext.length));
 }
 
 /** Is this directory name build output or tooling rather than project structure? */
@@ -312,7 +322,40 @@ export function countTodoMarkers(text) {
 // NASO tool identity
 // ---------------------------------------------------------------------------
 
-/** Absolute path to the `.naso` tool directory these scripts live in. */
+/** Where a human goes when the tooling does something they did not expect. */
+export const SUPPORT_EMAIL = 'contactmrval@gmail.com';
+
+/**
+ * The tools this directory ships, in the order setup presents them.
+ *
+ * Kept as data rather than prose so `setup`, `doctor` and `guide` cannot drift
+ * apart: all three read this list, so a tool that is added here appears in the
+ * confirmation screen and in the diagnostics without a second edit.
+ */
+export const TOOLS = [
+  {
+    name: 'briefing',
+    file: 'briefing.mjs',
+    blurb: 'Scan this repository, then write or re-verify AGENTS.md from what it found',
+  },
+  {
+    name: 'guide',
+    file: 'guide.mjs',
+    blurb: 'Read back the briefing against the code and list the next useful steps',
+  },
+  {
+    name: 'validate',
+    file: 'validate.mjs',
+    blurb: 'Pre-commit gate: secret blocking, scope, format, lint, briefing upkeep',
+  },
+  {
+    name: 'doctor',
+    file: 'doctor.mjs',
+    blurb: 'Check Node, git, the hook, the briefing and the install for problems',
+  },
+];
+
+/** Absolute path to the `.naso` tool directory these tools live in. */
 export function nasoDir() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 }
@@ -325,6 +368,18 @@ export async function toolVersion() {
   } catch {
     return '0.0.0';
   }
+}
+
+/**
+ * Is a human sitting at this terminal?
+ *
+ * Everything that can prompt checks this first. A prompt written to a
+ * non-interactive stream — CI, a pipe, `npx naso setup | tee log` — blocks
+ * forever on input nobody can type, which is a far worse failure than refusing
+ * to run and printing the same information as plain text.
+ */
+export function isInteractive() {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
 /** Best-effort human identity for the machine running a script. */
@@ -499,3 +554,130 @@ export function toPosixPath(value) {
   if (p.includes('\\')) return p.replaceAll('\\', '/');
   return p;
 }
+
+// ---------------------------------------------------------------------------
+// Terminal output
+// ---------------------------------------------------------------------------
+
+// No colour, no box drawing. These tools get piped into CI logs, issue bodies and
+// chat messages, and an escape sequence in a copied-paste error report helps
+// nobody. Structure comes from whitespace and headings instead.
+
+/** `# NASO <tool> — <subject>` header every tool prints first. */
+export function banner(tool, subject) {
+  console.log(`# NASO ${tool} — ${subject}\n`);
+}
+
+/** A titled block inside a tool's output. */
+export function section(title) {
+  console.log(`## ${title}`);
+}
+
+/** A status line with a fixed-width, text-only marker. */
+const ICONS = { pass: 'OK  ', fail: 'FAIL', warn: 'WARN', skip: 'SKIP', info: '    ' };
+
+export function status(kind, message) {
+  console.log(`${ICONS[kind] ?? ICONS.info} ${message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Prompts
+// ---------------------------------------------------------------------------
+
+/** Ask a yes/no question. Returns the default when the answer is just Enter. */
+export async function promptYesNo(question, { defaultYes = false } = {}) {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const hint = defaultYes ? 'Y/n' : 'y/N';
+    const answer = (await rl.question(`${question} [${hint}] `)).trim().toLowerCase();
+    if (answer === '') return defaultYes;
+    return answer === 'y' || answer === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Ask the user to pick one of a numbered list. Returns the chosen index.
+ *
+ * Accepts the number, or the first few letters of a label, because typing
+ * "2" is faster than typing a whole label and typing a label is faster than
+ * counting down a list of eight.
+ */
+export async function promptChoice(question, choices) {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    console.log(question);
+    choices.forEach((choice, index) => {
+      console.log(`  ${index + 1}) ${choice.label}`);
+    });
+    for (;;) {
+      const answer = (await rl.question(`Choose 1-${choices.length} [1]: `)).trim();
+      if (answer === '') return 0;
+
+      const asNumber = Number.parseInt(answer, 10);
+      if (String(asNumber) === answer && asNumber >= 1 && asNumber <= choices.length) {
+        return asNumber - 1;
+      }
+
+      const byLabel = choices.findIndex((choice) =>
+        choice.label.toLowerCase().startsWith(answer.toLowerCase()),
+      );
+      if (byLabel !== -1) return byLabel;
+
+      console.log(`  "${answer}" is not one of the options.`);
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * A support request pre-filled with everything a maintainer would ask for.
+ *
+ * The point of a template is that the reader does not have to remember what a
+ * maintainer needs. Every field here is something only the reporter's machine
+ * can produce, so the reply can start with the facts instead of a questionnaire.
+ */
+export async function supportTemplate({ command, targetDir, version, actor, now }) {
+  const git = await gitVersionOrUnknown();
+
+  return `Subject: NASO ${version} — setup did not behave as documented
+
+Hi, I ran NASO setup and it did not do what the README says. Details below.
+
+--- REPORT ---
+NASO version:   ${version}
+Command:        ${command}
+Repository:     ${targetDir}
+Machine:        ${actor}
+Date:           ${now}
+Platform:       ${process.platform} ${process.arch}
+Node:           ${process.version}
+Git:            ${git}
+
+--- WHAT I EXPECTED ---
+(paste the step number from the README, e.g. "step 3 should write AGENTS.md")
+
+--- WHAT HAPPENED ---
+(paste the full terminal output, including any FAIL or WARN lines)
+
+--- REPO STATE ---
+  git status --porcelain : (paste the output)
+  does AGENTS.md exist? : yes / no
+  is .git/hooks/pre-commit installed? : yes / no
+
+--- WHAT I TRIED ---
+(e.g. re-running the command, deleting AGENTS.md first, --track flag, etc.)
+
+--- SECRET CHECK ---
+Please redact any credentials, tokens, customer names or internal URLs before
+sending. Paths, versions and error output are enough to diagnose this.
+`;
+}
+
+async function gitVersionOrUnknown() {
+  const res = await run('git', ['--version']);
+  return res.ok ? res.stdout.trim() : 'not found';
+}
+
