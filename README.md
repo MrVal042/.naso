@@ -48,8 +48,9 @@ The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplev
 | `npx naso-dev setup [target] [options]`                             | Scan, display the plan, prompt accept/reject (twice max), write on accept. Non-TTY without `--yes` prints and stops. |
 | `npx naso-dev briefing [target] [check\|create\|refresh]`           | Verify `AGENTS.md` against disk, write the NASO block, or move the version stamp only.                            |
 | `npx naso-dev refresh [target]`                                     | Re-copy the toolset, re-stamp the briefing, reinstall the hook. Never rewrites briefing prose or `.naso/config.json`. |
-| `npx naso-dev guide [target] [area]`                                | The guide for one area: its paths, its checks, its boundary rules, and a ready-to-paste `NASO_SCOPE`.            |
-| `npx naso-dev guide [target] --tour`                                | The read-through: every section of the briefing in reading order, plus the consistency check.                    |
+| `npx naso-dev guide <area-or-prefix> [target]`                      | The guide for one area: its paths, its checks, its boundary rules, and a ready-to-paste `NASO_SCOPE`.            |
+| `npx naso-dev guide --list [target]`                                | The areas that exist, with their file counts. Unknown areas are an error, not an empty screen.                   |
+| `npx naso-dev guide --tour [target]`                                | The read-through: every section of the briefing in reading order, plus the consistency check.                    |
 | `npx naso-dev validate [target] [--staged] [--scope a,b] [--strict]` | The pre-commit gate, and the full CI run without `--staged`.                                                     |
 | `npx naso-dev doctor [target]`                                      | Environment and install diagnostics: Node, git, hook, vendored copy, briefing consistency, leftovers.             |
 

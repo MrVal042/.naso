@@ -378,12 +378,12 @@ export const TOOLS = [
   {
     name: 'briefing',
     file: 'briefing.mjs',
-    blurb: 'Scan this repository, then write or re-verify AGENTS.md from what it found',
+    blurb: 'Scan this repository, then write or re-verify the NASO block in AGENTS.md',
   },
   {
     name: 'guide',
     file: 'guide.mjs',
-    blurb: 'Read back the briefing against the code and list the next useful steps',
+    blurb: 'Read back one area — or the whole briefing — against the code',
   },
   {
     name: 'validate',

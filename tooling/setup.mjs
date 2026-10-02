@@ -414,8 +414,9 @@ async function install(cwd, { track, noHook, force, state }) {
   console.log('Next:');
   console.log('');
   console.log(`  npx naso-dev briefing ${cwd}     re-check the briefing against the code`);
-  console.log(`  npx naso-dev guide ${cwd}        read it back as a walkthrough`);
-  console.log(`  npx naso-dev doctor ${cwd}       confirm the install end to end`);
+  console.log(`  npx naso-dev guide ${cwd}          read the guide for one area`);
+  console.log(`  npx naso-dev doctor ${cwd}         confirm the install end to end`);
+  console.log(`  npx naso-dev refresh ${cwd}        after upgrading: re-vendor and re-stamp`);
   console.log('');
   console.log('## Hand this to your coding agent');
   console.log('');
