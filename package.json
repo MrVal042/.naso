@@ -1,0 +1,32 @@
+{
+  "name": "naso",
+  "version": "3.0.0",
+  "description": "A two-step setup for AI coding agents: generate a briefing the agent can trust, then keep it true mechanically.",
+  "type": "module",
+  "bin": {
+    "naso": "./bin/naso.mjs"
+  },
+  "exports": {
+    ".": "./bin/naso.mjs"
+  },
+  "files": [
+    "bin",
+    "tooling",
+    "VERSION",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "agents",
+    "agents.md",
+    "briefing",
+    "pre-commit",
+    "code-review"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.17.0"
+  }
+}
