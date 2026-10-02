@@ -351,7 +351,17 @@ export const TOOLS = [
   {
     name: 'doctor',
     file: 'doctor.mjs',
-    blurb: 'Check Node, git, the hook, the briefing and the install for problems',
+    blurb: 'Check Node, git, the vendored copy, the hook, the briefing and the install',
+  },
+  {
+    name: 'refresh',
+    file: 'refresh.mjs',
+    blurb: 'After upgrading: re-copy the toolset, move the version stamp, reinstall the hook',
+  },
+  {
+    name: 'setup',
+    file: 'setup.mjs',
+    blurb: 'The one-time install: read the repository, plan, then write on your accept',
   },
 ];
 

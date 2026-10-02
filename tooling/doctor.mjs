@@ -11,11 +11,19 @@ import {
   run,
   toolVersion,
   nasoDir,
+  compareVersions,
   isMainModule,
   SUPPORT_EMAIL,
 } from './lib.mjs';
-import { scanRepo, checkBriefing, readBriefingMarkerValue } from './briefing.mjs';
+import {
+  scanRepo,
+  checkBriefing,
+  readBriefingMarkerValue,
+  NASO_START,
+  NASO_END,
+} from './briefing.mjs';
 import { readHook, isNasoHook, findArtifacts } from './install.mjs';
+import { NASO_DIR, readConfig, configuredExclusions, configPath, vendoredVersion } from './vendor.mjs';
 
 const OK = 'OK';
 const WARN = 'WARN';
@@ -66,15 +74,53 @@ Support: ${SUPPORT_EMAIL}`);
   } else {
     const briefing = await readFile(agentsPath, 'utf8');
     const stamp = readBriefingMarkerValue(briefing, 'version');
-    printRow('AGENTS.md', stamp ? OK : WARN, stamp ? `NASO ${stamp}, ${briefing.split('\n').length} lines` : `${briefing.split('\n').length} lines (no version stamp)`);
+    const hasMarkers =
+      briefing.includes(NASO_START) && briefing.includes(NASO_END);
+    printRow(
+      'AGENTS.md',
+      stamp ? OK : WARN,
+      stamp
+        ? `NASO ${stamp}, ${briefing.split('\n').length} lines${hasMarkers ? '' : ', no naso:start/naso:end block'}`
+        : `${briefing.split('\n').length} lines (no version stamp)`,
+    );
   }
+
+  // The vendored copy is what the hook actually runs, so its absence is the single
+  // most important thing this command can report.
+  const vendoredVersionText = await vendoredVersion(cwd);
+  if (!vendoredVersionText) {
+    printRow('vendored toolset', WARN, `not found at ${NASO_DIR}/tooling/ — the hook will skip its checks`);
+  } else if (compareVersions(vendoredVersionText, version) > 0) {
+    printRow('vendored toolset', WARN, `${vendoredVersionText} — newer than this tool (${version}); update naso-dev`);
+  } else if (vendoredVersionText !== version) {
+    printRow('vendored toolset', WARN, `${vendoredVersionText} — behind ${version}; run \`npx naso-dev refresh\``);
+  } else {
+    printRow('vendored toolset', OK, `${NASO_DIR}/tooling/ at ${vendoredVersionText}`);
+  }
+
+  const config = await readConfig(cwd);
+  const excluded = configuredExclusions(config);
+  printRow(
+    `${NASO_DIR}/config.json`,
+    (await pathExists(configPath(cwd))) ? OK : WARN,
+    (await pathExists(configPath(cwd)))
+      ? excluded.length > 0
+        ? `${excluded.length} area(s) excluded: ${excluded.join(', ')}`
+        : 'no areas excluded'
+      : 'not written — run setup to create it',
+  );
 
   const hookPath = path.join(cwd, '.git', 'hooks', 'pre-commit');
   const hook = await readHook(cwd);
   if (!hook) {
     printRow('pre-commit hook', WARN, 'missing');
   } else if (isNasoHook(hook)) {
-    printRow('pre-commit hook', OK, 'NASO hook installed');
+    const pointsAt = hook.body.includes(`${NASO_DIR}/tooling/validate.mjs`);
+    printRow(
+      'pre-commit hook',
+      pointsAt ? OK : WARN,
+      pointsAt ? 'NASO hook, running the copy in this repository' : 'NASO hook, but not pointing at the vendored copy',
+    );
   } else {
     printRow('pre-commit hook', WARN, 'foreign hook (left as-is)');
   }
@@ -101,11 +147,12 @@ Support: ${SUPPORT_EMAIL}`);
     printRow('Leftover NASO artifacts', WARN, `${artifacts.length} file(s)`);
   }
 
-  printRow('Tooling dir', OK, nasoDir());
+  printRow('Running tool', OK, `naso-dev ${version} from ${nasoDir()}`);
 
   console.log('');
-  console.log('If anything is FAIL or WARN, the safest next step is:');
-  console.log(`  npx naso-dev guide ${cwd}`);
+  console.log('If anything is FAIL or WARN:');
+  console.log(`  npx naso-dev refresh ${cwd}   re-copy the toolset, move the stamp, reinstall the hook`);
+  console.log(`  npx naso-dev doctor ${cwd}    run this again`);
   console.log('');
 }
 

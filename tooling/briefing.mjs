@@ -37,6 +37,7 @@ import {
   isRootNoise,
   isNoisyDir,
   escapeRegExp,
+  compareVersions,
   isMainModule,
   toolVersion,
   actorIdentity,
@@ -176,24 +177,55 @@ async function walkFiles(root, dir = root, depth = 0, out = []) {
  *
  * `--exclude-standard` is what keeps node_modules, dist and coverage out, and
  * what keeps a locally-excluded AGENTS.md from being reported as a new area.
+ *
+ * `-z`, always. Git quotes a path with a non-ASCII character as `"\303\251.env"`
+ * unless you ask it not to, and a scanner that then reports that string as a
+ * filename has told the person reading it nothing they can act on. Splitting on
+ * `\0` is the only form where every byte of the name survives.
+ *
+ * Deleted files are subtracted: `git ls-files` lists what the *index* knows, and
+ * a briefing that describes a path somebody just deleted is stale on arrival.
+ * Areas the user excluded in setup are subtracted here rather than at print time,
+ * so generation, the checker and the pre-commit append cannot disagree.
  */
-export async function listRepoFiles(cwd) {
-  const res = await run('git', ['ls-files', '-c', '-o', '--exclude-standard'], { cwd });
-  if (res.ok) {
-    return res.stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
-  }
-  return walkFiles(cwd);
+export async function listRepoFiles(cwd, { exclude = null } = {}) {
+  const res = await run('git', ['ls-files', '-c', '-o', '--exclude-standard', '-z'], { cwd });
+  if (!res.ok) return walkFiles(cwd);
+
+  // An explicit list wins over the saved one, and setup passes the union of both so the
+  // preview and the generated file are filtered identically — a --exclude flag that only
+  // took effect after the accept would be a lie the user caught one step too late.
+  const prefixes = exclude ? normalizeExclusions(exclude) : configuredExclusions(await readConfig(cwd));
+  const gone = await deletedPathsIn(cwd);
+
+  return splitNul(res.stdout).filter((file) => !gone.has(file) && !isExcluded(file, prefixes));
+}
+
+/** Split NUL-delimited output into fields, dropping the empty tail. */
+export function splitNul(stdout) {
+  return String(stdout).split('\0').filter((field) => field.length > 0);
+}
+
+/** Paths the worktree no longer has, though the index still lists them. */
+async function deletedPathsIn(cwd) {
+  const res = await run('git', ['ls-files', '-d', '-z'], { cwd });
+  return new Set(res.ok ? splitNul(res.stdout) : []);
 }
 
 /**
- * The repository's top-level areas.
+ * The repository's areas.
  *
- * Root noise (README, .gitignore, LICENSE) and build output are dropped here
- * rather than filtered at print time, so the same list feeds generation, the
- * checker and the auto-append in validate.mjs — one definition of "an area".
+ * A directory is an area. A file at the root is not, and the difference is not a
+ * formatting preference: `package.json` and `README.md` and `LICENSE` describe the whole
+ * project rather than one part of it, so listing them as areas produces a structure
+ * section that names the repository as a peer of its own subdirectories, then leaves the
+ * pre-commit hook obliged to append a "new area" line the first time somebody adds a
+ * config file. Root files are still reported — as an inventory, in one line, where they
+ * belong — but they are never areas, never UNCOVERED, and never auto-appended.
+ *
+ * `.git`, build output, dot-directories and root noise are dropped here rather than at
+ * print time, so the same list feeds generation, the checker, the guide and the
+ * auto-append in validate.mjs: one definition of "an area".
  */
 export function topLevelEntries(files) {
   const byName = new Map();
@@ -569,8 +601,8 @@ function detectFeatureMap(files, pkg) {
  * the shape of a repository, and reading code to summarise it would produce the
  * confident fiction this tool exists to replace.
  */
-export async function scanRepo(cwd) {
-  const files = await listRepoFiles(cwd);
+export async function scanRepo(cwd, { exclude = null } = {}) {
+  const files = await listRepoFiles(cwd, { exclude });
   const pkg = await readJSONFile(path.join(cwd, 'package.json'));
   const entries = topLevelEntries(files);
 
@@ -594,6 +626,9 @@ export async function scanRepo(cwd) {
     projectName: pkg?.name ?? path.basename(cwd),
     projectDescription: typeof pkg?.description === 'string' ? pkg.description : null,
     entries,
+    areas: areasOf(entries),
+    rootFileEntries: entries.filter((entry) => !entry.isDir),
+    exclude: exclude ? normalizeExclusions(exclude) : configuredExclusions(await readConfig(cwd)),
     branch: gitInfo.ok ? gitInfo.stdout.trim() : null,
     conventions: await detectConventions(cwd, files, pkg),
     validation: await detectValidationCommands(cwd, pkg),
@@ -1189,26 +1224,31 @@ export function readBriefingMarkerValue(content, field) {
 }
 
 /**
- * Re-render the briefing, keeping the version stamp if the file already has one.
+ * Move the `<!-- version: X -->` stamp, and nothing else in the file.
  *
- * Used by `--refresh`, whose whole promise is that a briefing somebody spent
- * twenty minutes on survives a version bump. The stamp moves; nothing else does.
+ * Used by `refresh`, whose whole promise is that a briefing somebody spent twenty minutes
+ * on survives a version bump. Only the stamp line is rewritten; every other byte is
+ * written back untouched.
+ *
+ * The stamp only ever moves forward. A briefing generated by a newer NASO than the tool
+ * asking is reported and left alone: rewriting it would erase the only evidence that the
+ * tool — not the briefing — needs updating.
  */
-export async function refreshBriefingStamp(cwd) {
+export async function refreshBriefingStamp(cwd, { current } = {}) {
   const agentsPath = path.join(cwd, AGENTS_FILE);
   if (!(await pathExists(agentsPath))) {
     return { ok: false, reason: 'missing', agentsPath };
   }
 
-  const version = await toolVersion();
+  const version = current ?? (await toolVersion());
   const content = await readFile(agentsPath, 'utf8');
   const stamped = readBriefingMarkerValue(content, 'version');
 
   if (!stamped) {
     return { ok: false, reason: 'unstamped', agentsPath };
   }
-  if (stamped === version) {
-    return { ok: true, changed: false, agentsPath, version };
+  if (stamped === version || compareVersions(stamped, version) > 0) {
+    return { ok: true, changed: false, agentsPath, version, previous: stamped };
   }
 
   await writeFile(
@@ -1318,7 +1358,14 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
     if (!result.changed) {
-      console.log(`- ${AGENTS_FILE} is already stamped ${result.version} — nothing to refresh.`);
+      if (compareVersions(result.previous, result.version) > 0) {
+        console.log(
+          `- ${AGENTS_FILE} was written by a newer NASO (${result.previous}); this tool is ${result.version}. ` +
+            `Update naso-dev rather than downgrading the briefing.`,
+        );
+      } else {
+        console.log(`- ${AGENTS_FILE} is already stamped ${result.version} — nothing to refresh.`);
+      }
       return;
     }
     console.log(`- Refreshed ${AGENTS_FILE} version stamp: ${result.previous} -> ${result.version}`);

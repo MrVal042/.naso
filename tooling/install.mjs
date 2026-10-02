@@ -17,6 +17,7 @@ import {
   toPosixPath,
   nasoDir,
 } from './lib.mjs';
+import { NASO_DIR, vendoredToolingDir, vendoredScriptPath } from './vendor.mjs';
 
 const HOOK_MARKER = '# managed-by: naso-dev';
 const EXCLUDE_MARKER = '# added by naso-dev setup';
@@ -30,6 +31,16 @@ const EXCLUDE_MARKER = '# added by naso-dev setup';
  */
 export const OWNED_FILES = ['AGENTS.md', 'SETUP_INSTRUCTIONS.md'];
 
+/**
+ * Everything NASO writes into a repository, and everything `.git/info/exclude` should
+ * keep out of git in local mode.
+ *
+ * `.naso/` is here because it is NASO's, not the project's: a vendored copy of a
+ * development tool has no business in a client's history, and a teammate gets their own
+ * from `setup` in three seconds.
+ */
+export const LOCAL_EXCLUDE_PATTERNS = [NASO_DIR, 'AGENTS.md'];
+
 /** The tool scripts the hook calls, by their file name. */
 export function toolPaths() {
   const dir = path.join(nasoDir(), 'tooling');
@@ -39,6 +50,9 @@ export function toolPaths() {
   };
 }
 
+/** What a human should type to run the gate by hand, without a hook. */
+export const HOOK_MANUAL_LINE = `node ${NASO_DIR}/tooling/validate.mjs --staged`;
+
 /**
  * The pre-commit hook body.
  *
@@ -47,6 +61,19 @@ export function toolPaths() {
  * are the first thing validate does, so a blocked secret is reported in
  * milliseconds and never behind a test run.
  *
+ * The script it runs is the copy inside this repository, resolved from
+ * `git rev-parse --show-toplevel` rather than from whatever the package happened to be
+ * installed as. Three consequences, all of them the point:
+ *
+ *   - it works in the npx cache, in a global install, or on a machine that never
+ *     installed the package at all;
+ *   - it survives the package being deleted, upgraded or cache-evicted;
+ *   - it is identical for every clone, so a teammate gets the same gate.
+ *
+ * When the copy is missing, the hook says so in one loud line and exits 0. Blocking every
+ * commit in a repository over a missing helper — with a stack trace, from inside a hook
+ * nobody thinks to read — is a worse failure than a skipped check with a visible warning.
+ *
  * Cross-platform notes, since this is the one piece that genuinely differs.
  * Git for Windows executes hooks through its bundled POSIX `sh`, so `#!/bin/sh`
  * is correct on both platforms and needs no `.cmd` variant. What does differ is
@@ -54,13 +81,19 @@ export function toolPaths() {
  * interpolated path is converted to forward slashes and single-quoted before it
  * reaches the shell body.
  */
-export function buildHookScript(validateScriptPath) {
-  const validate = shellSingleQuote(toPosixPath(validateScriptPath));
+export function buildHookScript() {
+  // No shellSingleQuote here. The value lands inside a double-quoted assignment, so
+  // single quotes would be taken as part of the *path* and `[ -f "$NASO_SCRIPT" ]` would
+  // never match — the hook would report itself missing on every commit.
+  const script = toPosixPath(`${NASO_DIR}/tooling/validate.mjs`);
   return `#!/bin/sh
 ${HOOK_MARKER}
-# Installed by NASO. Runs the briefing, secret, scope, format and lint checks
-# before each commit. Remove or edit this file freely; it is not reinstalled
-# behind your back.
+# Installed by NASO. Runs the secret, scope, format and lint checks on staged files
+# before each commit, and keeps AGENTS.md current.
+#
+# The gate itself is the copy in this repository, so it keeps working with no
+# network, no global install and no package cache. Edit or delete this file
+# freely; it is not reinstalled behind your back.
 
 # Resolve node: hooks inherit a minimal PATH on some systems, so fall back to
 # the common install locations rather than failing with "command not found".
@@ -71,13 +104,23 @@ elif [ -x "/c/Program Files/nodejs/node.exe" ]; then
 elif [ -x "/usr/local/bin/node" ]; then
   NODE_BIN="/usr/local/bin/node"
 else
-  echo "naso: node not found in PATH - skipping pre-commit checks." >&2
+  echo "naso-dev: node not found in PATH - pre-commit checks skipped." >&2
+  exit 0
+fi
+
+# --show-toplevel, not $(pwd): git runs hooks from the top of the worktree, but a
+# subdirectory or a linked worktree makes guessing the wrong answer easy.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=$(pwd)
+NASO_SCRIPT="$REPO_ROOT/${script}"
+
+if [ ! -f "$NASO_SCRIPT" ]; then
+  echo "naso-dev: $NASO_SCRIPT is missing - pre-commit checks skipped. Run: npx naso-dev refresh" >&2
   exit 0
 fi
 
 # --staged keeps this under a second on a normal commit: secrets, scope, format
 # and lint on the staged files only, plus the one-line briefing append.
-"$NODE_BIN" ${validate} --staged
+"$NODE_BIN" "$NASO_SCRIPT" --staged
 exit $?
 `;
 }
@@ -105,13 +148,12 @@ export async function resolveHooksDir(targetDir) {
  * replacing it with ours would silently disable all three.
  */
 export async function installPreCommitHook(targetDir, { report = () => {} } = {}) {
-  const { validate } = toolPaths();
   const hooksDir = await resolveHooksDir(targetDir);
 
   if (!hooksDir) {
     report('- Skipped the pre-commit hook: not a git repository.', 'warn');
-    report(`  To install it later, add one line to .git/hooks/pre-commit:`, 'info');
-    report(`    node ${shellSingleQuote(toPosixPath(validate))} --staged`, 'info');
+    report('  To install it later, copy this into .git/hooks/pre-commit:', 'info');
+    report(`    ${HOOK_MANUAL_LINE}`, 'info');
     return { ok: false, reason: 'not-a-repo' };
   }
 
@@ -122,7 +164,7 @@ export async function installPreCommitHook(targetDir, { report = () => {} } = {}
     if (!existing.includes(HOOK_MARKER)) {
       report(`- Skipped the pre-commit hook: ${hookPath} exists and was not written by NASO.`, 'warn');
       report('  To run the NASO checks, add this to it yourself:', 'info');
-      report(`    node ${shellSingleQuote(toPosixPath(validate))} --staged`, 'info');
+      report(`    ${HOOK_MANUAL_LINE}`, 'info');
       return { ok: false, reason: 'foreign-hook' };
     }
   }
@@ -130,12 +172,13 @@ export async function installPreCommitHook(targetDir, { report = () => {} } = {}
   await mkdir(hooksDir, { recursive: true });
   // No BOM and LF endings: Git for Windows runs this through `sh`, and a BOM
   // would make the shebang unrecognisable while CRLF would break it outright.
-  await writeFile(hookPath, buildHookScript(validate), 'utf8');
+  await writeFile(hookPath, buildHookScript(), 'utf8');
   // A no-op on Windows filesystems, harmless there; on POSIX this is what makes
   // the hook executable.
   await chmod(hookPath, 0o755).catch(() => {});
 
   report(`- Installed the pre-commit hook: ${hookPath}`, 'pass');
+  report(`  It runs ${NASO_DIR}/tooling/validate.mjs from this repository.`, 'info');
   return { ok: true, hookPath };
 }
 
@@ -162,7 +205,7 @@ export function isNasoHook(hook) {
  * machine. Repos that want the briefing reviewed like any other file pass --track
  * and skip this entirely.
  */
-export async function excludeLocally(targetDir, patterns = OWNED_FILES) {
+export async function excludeLocally(targetDir, patterns = LOCAL_EXCLUDE_PATTERNS) {
   const gitDirRes = await run('git', ['rev-parse', '--git-dir'], { cwd: targetDir });
   if (!gitDirRes.ok) return false;
 
@@ -185,7 +228,7 @@ export async function excludeLocally(targetDir, patterns = OWNED_FILES) {
 }
 
 /** Remove NASO's block from .git/info/exclude. Undoes excludeLocally. */
-export async function removeLocalExclusions(targetDir, patterns = OWNED_FILES) {
+export async function removeLocalExclusions(targetDir, patterns = LOCAL_EXCLUDE_PATTERNS) {
   const gitDirRes = await run('git', ['rev-parse', '--git-dir'], { cwd: targetDir });
   if (!gitDirRes.ok) return false;
 

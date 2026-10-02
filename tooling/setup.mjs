@@ -24,6 +24,7 @@
 // Zero external dependencies — Node.js core modules only.
 
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import {
   pathExists,
   parseArgs,
@@ -46,7 +47,15 @@ import {
   removeArtifacts,
   readHook,
   isNasoHook,
+  LOCAL_EXCLUDE_PATTERNS,
 } from './install.mjs';
+import {
+  NASO_DIR,
+  readConfig,
+  configuredExclusions,
+  vendorTooling,
+  writeConfig,
+} from './vendor.mjs';
 
 /** Greedy word wrap, for the explanatory paragraphs in the plan. */
 const wrap = (text, width = 74) => {
@@ -97,10 +106,22 @@ Do not propose changes to AGENTS.md yet. I want to see your reading of it first.
 --------------------------------------------------------------`;
 }
 
-/** Absolute paths of everything in the shared tool directory, for display. */
+/**
+ * Absolute paths of everything that gets copied into the repository, for display.
+ *
+ * The command-line tools come from `TOOLS`; the two libraries they share are listed
+ * by hand, because they are not things anybody invokes. A preview that named only
+ * the tools would understate the copy and invite the question of where `lock.mjs`
+ * came from.
+ */
 function toolingTree() {
   const dir = path.join(nasoDir(), 'tooling');
-  const entries = [{ file: 'README.md', blurb: 'how to use, maintain and troubleshoot each tool' }];
+  const entries = [
+    { file: 'README.md', blurb: 'how to use, maintain and troubleshoot each tool' },
+    { file: 'lib.mjs', blurb: 'shared helpers every tool imports' },
+    { file: 'lock.mjs', blurb: 'the file lock, so two agents cannot write AGENTS.md at once' },
+    { file: 'vendor.mjs', blurb: 'locates and refreshes this copy; reads .naso/config.json' },
+  ];
   for (const tool of TOOLS) entries.push({ file: tool.file, blurb: tool.blurb });
   return entries.map((entry) => ({ ...entry, path: path.join(dir, entry.file) }));
 }
@@ -111,29 +132,71 @@ function toolingTree() {
  * The scan is the expensive part and it is what both a rejection and an accept
  * are decided on, so it is done up front and reused for the whole flow.
  */
-async function inspect(cwd, { track, noHook }) {
-  const facts = await scanRepo(cwd);
+async function inspect(cwd, { track, noHook, exclude }) {
+  const config = await readConfig(cwd);
+
+  // Saved exclusions survive the run, and a --exclude flag adds to them. The union is
+  // what the scan is filtered against, and the same union is handed to the write, so the
+  // preview cannot disagree with what lands in AGENTS.md — a --exclude that only took
+  // effect after the accept would be a lie the user caught one step too late.
+  const savedExclusions = configuredExclusions(config);
+  const excluded = [
+    ...new Set([...savedExclusions, ...(Array.isArray(exclude) ? exclude : [])]),
+  ].sort();
+
+  const facts = await scanRepo(cwd, { exclude: excluded });
   const artifacts = await findArtifacts(cwd);
   const hook = await readHook(cwd);
   const version = await toolVersion();
 
   const plans = [];
 
-  if (await pathExists(path.join(cwd, 'AGENTS.md'))) {
+  const agentsPath = path.join(cwd, 'AGENTS.md');
+  const hasAgents = await pathExists(agentsPath);
+  const existing = hasAgents ? await readFile(agentsPath, 'utf8').catch(() => '') : '';
+  const hasBlock = existing.includes(NASO_START) && existing.includes(NASO_END);
+
+  if (!hasAgents) {
     plans.push({
       target: 'AGENTS.md',
-      verb: 'Overwrite',
+      verb: 'Write',
+      detail: 'Generated from the scan below, wrapped in the naso:start / naso:end markers.',
+    });
+  } else if (hasBlock) {
+    plans.push({
+      target: 'AGENTS.md',
+      verb: 'Keep',
       detail:
-        'It already exists. It will be replaced with a briefing generated from the scan below — ' +
-        'anything written in it by hand is lost. Say no if that is not what you want.',
+        'It already carries a NASO block. Everything you wrote around the markers is kept, and ' +
+        'the block itself is left as it is — pass --force to regenerate just that block.',
     });
   } else {
     plans.push({
       target: 'AGENTS.md',
-      verb: 'Write',
-      detail: 'Generated from the scan below. No placeholders, no sections left empty.',
+      verb: 'Append',
+      detail:
+        `${existing.split('\n').length} lines are already in it and none of them is ours. The NASO ` +
+        'block goes at the end, between <!-- naso:start --> and <!-- naso:end -->. Nothing above or ' +
+        'below those two markers is touched.',
     });
   }
+
+  plans.push({
+    target: `${NASO_DIR}/tooling/`,
+    verb: 'Copy',
+    detail:
+      'Every script the gate needs, plus this tooling README and a VERSION file, are copied into ' +
+      'this repository so the pre-commit hook keeps working with no package installed, no network, ' +
+      'and no dependency on the npm cache.',
+  });
+
+  plans.push({
+    target: `${NASO_DIR}/config.json`,
+    verb: 'Write',
+    detail:
+      'The settings this run used: the mode, the version, and the areas you exclude from the ' +
+      'briefing. Re-running setup rewrites it; `refresh` never does.',
+  });
 
   if (noHook) {
     plans.push({
@@ -153,7 +216,9 @@ async function inspect(cwd, { track, noHook }) {
     plans.push({
       target: '.git/hooks/pre-commit',
       verb: 'Install',
-      detail: 'Runs the secret, scope, format, lint and briefing checks on staged files.',
+      detail:
+        `Runs ${NASO_DIR}/tooling/validate.mjs from this repository: the secret, scope, format and ` +
+        'lint checks on staged files, plus the briefing upkeep.',
     });
   }
 
@@ -163,25 +228,26 @@ async function inspect(cwd, { track, noHook }) {
           target: 'Tracking',
           verb: 'Track',
           detail:
-            '--track was passed, so AGENTS.md is meant to be committed and reviewed like any other file.',
+            `--track was passed, so both ${NASO_DIR}/ and AGENTS.md are meant to be committed and ` +
+            'reviewed like any other file. Commit both when you are ready.',
         }
       : {
           target: '.git/info/exclude',
           verb: 'Exclude',
           detail:
-            'Keeps AGENTS.md out of git entirely, and only on this machine. Set-up leaves no trace ' +
-            'in the history, and no teammate gets a briefing generated for someone else’s machine. ' +
-            'Pass --track to commit it instead.',
+            `Keeps ${LOCAL_EXCLUDE_PATTERNS.join(' and ')} out of git entirely, and only on this ` +
+            'machine. Set-up leaves no trace in the history, and no teammate gets a briefing ' +
+            'generated for someone else’s machine. Pass --track to commit both instead.',
         },
   );
 
-  return { facts, artifacts, hook, version, plans };
+  return { facts, artifacts, hook, version, plans, excluded, hasAgents, hasBlock };
 }
 
 /** Step 2's screen. Printed identically on every pass, so a second read is comparable. */
 function displayPlan(state, cwd) {
-  const { facts, plans, version } = state;
-  const dirs = facts.entries.filter((entry) => entry.isDir);
+  const { facts, plans, version, excluded } = state;
+  const dirs = facts.areas;
   const rootFiles = renderRootFiles(facts.entries);
 
   console.log(`# NASO Setup ${version} — ${cwd}`);
@@ -201,6 +267,10 @@ function displayPlan(state, cwd) {
     for (const entry of dirs) console.log(`  ${describeEntry(entry)}`);
   }
   if (rootFiles) console.log(`\n  ${rootFiles.split('\n').join('\n  ')}`);
+  if (excluded.length > 0) {
+    console.log('');
+    console.log(`  Kept out of the briefing on request: ${excluded.map((p) => `${p}/`).join(', ')}`);
+  }
 
   if (facts.validation.length > 0) {
     console.log('');
@@ -209,15 +279,16 @@ function displayPlan(state, cwd) {
   }
   console.log('');
 
-  console.log('## Tooling — the scripts behind it');
+  console.log('## The toolset');
   console.log('');
-  console.log('One shared tool directory. Every repository you set up uses these same');
-  console.log('files, so a fix in one is a fix in all of them:');
+  console.log(`These scripts are copied into ${NASO_DIR}/tooling/ in this repository:`);
   console.log('');
   for (const entry of toolingTree()) {
-    console.log(`  ${entry.path}`);
+    console.log(`  ${path.basename(entry.path)}`);
     console.log(`      ${entry.blurb}`);
   }
+  console.log('');
+  console.log('The copy is why the hook survives: no package install, no network, no npm cache.');
   console.log('');
 
   console.log('## What will change');
@@ -276,11 +347,11 @@ async function install(cwd, { track, noHook, force, state }) {
     const excluded = await excludeLocally(cwd);
     console.log(
       excluded
-        ? '- Kept AGENTS.md out of git via .git/info/exclude (this machine only, never committed).'
-        : '- Could not update .git/info/exclude (no git repository here); AGENTS.md is untracked.',
+        ? `- Kept ${LOCAL_EXCLUDE_PATTERNS.join(' and ')} out of git via .git/info/exclude (this machine only, never committed).`
+        : '- Could not update .git/info/exclude (no git repository here); those files are untracked.',
     );
   } else {
-    console.log('- Tracking AGENTS.md in git, as --track asked. Commit it when you are ready.');
+    console.log(`- Tracking ${NASO_DIR}/ and AGENTS.md in git, as --track asked. Commit both when ready.`);
   }
   console.log('');
 
@@ -372,7 +443,7 @@ async function afterSecondRejection(cwd, state) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  const { flags, positional } = parseArgs(argv);
+  const { flags, values, positional } = parseArgs(argv);
 
   if (flags.has('help') || flags.has('h')) {
     console.log(`NASO setup
@@ -380,11 +451,16 @@ export async function main(argv = process.argv.slice(2)) {
 Usage:
   npx naso-dev setup [target-dir] [options]
 
-  --track      commit AGENTS.md instead of keeping it out of git locally
-  --no-hook    do not install the pre-commit hook
-  --force      overwrite an existing AGENTS.md (implied when one exists)
-  --yes        accept without asking; for CI and scripts
-  --dry-run    print the plan and stop
+  --track              commit ${NASO_DIR}/ and AGENTS.md instead of excluding them locally
+  --no-hook            do not install the pre-commit hook
+  --exclude <prefix>   keep an area out of the briefing; repeatable, saved to config.json
+  --force              replace an existing naso:start / naso:end block, and nothing else
+  --yes                accept without asking; for CI and scripts
+  --dry-run            print the plan and stop
+
+An AGENTS.md you wrote yourself is never replaced. NASO's content lives between
+<!-- naso:start --> and <!-- naso:end -->, and nothing outside those markers is
+touched, with or without --force.
 
 With no --yes and no terminal, setup prints the plan and exits rather than
 waiting for input nobody can type.
@@ -400,6 +476,10 @@ Support: ${SUPPORT_EMAIL}`);
     force: flags.has('force'),
     yes: flags.has('yes') || flags.has('y'),
     dryRun: flags.has('dry-run'),
+    exclude: (values.get('exclude') ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
   };
 
   if (!(await pathExists(cwd))) {
@@ -411,17 +491,17 @@ Support: ${SUPPORT_EMAIL}`);
   if (!(await run('git', ['rev-parse', '--is-inside-work-tree'], { cwd })).ok) {
     console.log(`# NASO Setup — ${cwd}`);
     console.log('');
-    console.log('Not a git repository. You can still get AGENTS.md, but two of the four');
-    console.log('tools will have nothing to work with: the pre-commit hook needs a git');
+    console.log('Not a git repository. You can still get AGENTS.md and the toolset, but two');
+    console.log('of the checks will have nothing to work with: the pre-commit hook needs a git');
     console.log('repository, and the scope check reads the staged diff.');
     console.log('');
     if (!options.yes && !isInteractive()) {
-      console.log('Re-run with --yes to write AGENTS.md anyway.');
+      console.log('Re-run with --yes to write it anyway.');
       return;
     }
     if (!options.yes) {
       const proceed = await promptChoice('Continue anyway?', [
-        { label: 'Continue — write AGENTS.md only' },
+        { label: 'Continue — write AGENTS.md and the toolset only' },
         { label: 'Stop — leave this directory alone' },
       ]);
       if (proceed !== 0) return;
@@ -443,9 +523,12 @@ Support: ${SUPPORT_EMAIL}`);
     return;
   }
 
-  // Two passes maximum. The second reject is the answer; after that the useful
-  // move is to stop and let the user come back with a reason.
-  for (let pass = 1; pass <= 2; pass++) {
+  // Rejections are capped at two. A third would be somebody stuck rather than somebody
+  // unconvinced, and the useful move after two is to stop and let them come back with a
+  // reason. Choosing "exclude" is not a rejection: it changes the plan and asks again.
+  let rejections = 0;
+
+  for (;;) {
     const state = await inspect(cwd, options);
     displayPlan(state, cwd);
 
@@ -463,12 +546,18 @@ Support: ${SUPPORT_EMAIL}`);
     }
 
     const choice = await promptChoice(
-      pass === 1
+      rejections === 0
         ? 'Accept this plan?'
         : 'Read the repository again and show you the plan again. Accept this one?',
       [
-        { label: 'Accept — write AGENTS.md, install the hook, clean up leftovers' },
-        { label: 'Reject — write nothing and read the repository again' },
+        { label: 'Accept — write the briefing, vendor the toolset, install the hook' },
+        {
+          label:
+            rejections === 0
+              ? 'Reject — write nothing and read the repository again'
+              : 'Reject — write nothing and leave this repository as it is',
+        },
+        { label: 'Exclude an area — keep it out of the briefing, then show the plan again' },
       ],
     );
 
@@ -478,11 +567,35 @@ Support: ${SUPPORT_EMAIL}`);
       return;
     }
 
+    if (choice === 2) {
+      const areas = state.facts.areas.filter(
+        (entry) => !state.excluded.includes(entry.name),
+      );
+      if (areas.length === 0) {
+        console.log('');
+        console.log('Every top-level area is already excluded, or there are none. Nothing to pick.');
+        console.log('');
+        continue;
+      }
+      const picked = await promptChoice(
+        'Which area should the briefing ignore?',
+        areas.map((entry) => ({ label: `${entry.name}/ — ${entry.files.length} files` })),
+      );
+      options.exclude = [...new Set([...options.exclude, areas[picked].name])].sort();
+      console.log('');
+      console.log(`${areas[picked].name}/ will be left out of the briefing, and recorded in`);
+      console.log(`${NASO_DIR}/config.json so it stays out after a refresh.`);
+      console.log('');
+      continue;
+    }
+
+    rejections++;
+
     console.log('');
     console.log('Rejected. Nothing was written.');
     console.log('');
 
-    if (pass === 2) {
+    if (rejections >= 2) {
       await afterSecondRejection(cwd, state);
       return;
     }
