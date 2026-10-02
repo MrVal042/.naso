@@ -3,15 +3,16 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile, appendFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, appendFile, readFile, readdir } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { coversUnit, countTodoMarkers, parseArgs } from '../tooling/lib.mjs';
+import { coversUnit, countTodoMarkers, parseArgs, toolVersion, pathExists } from '../tooling/lib.mjs';
 import { extractPathTokens } from '../tooling/briefing.mjs';
 
-const TOOL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const TOOL_DIR = path.join(PACKAGE_ROOT, 'tooling');
 
 function exec(cmd, args, cwd) {
   return new Promise((resolve) => {
@@ -22,6 +23,16 @@ function exec(cmd, args, cwd) {
     child.stderr.on('data', (c) => (stderr += c));
     child.on('close', (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+async function filesIn(dir, suffixes) {
+  const out = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (entry.isFile() && suffixes.some((s) => entry.name.endsWith(s))) {
+      out.push(path.join(dir, entry.name));
+    }
+  }
+  return out;
 }
 
 async function withRepo(fn) {
@@ -78,4 +89,38 @@ test('parseArgs handles flags and positionals', () => {
 test('extractPathTokens pulls backtick-quoted paths', () => {
   const tokens = extractPathTokens('- `src/foo.ts` — does a thing\n`docs/guide.md`');
   assert.deepEqual(new Set(tokens), new Set(['src/foo.ts', 'docs/guide.md']));
+});
+
+// version identity
+test('VERSION and package.json declare the same version', async () => {
+  const pkg = JSON.parse(await readFile(path.join(PACKAGE_ROOT, 'package.json'), 'utf8'));
+  const versionFile = (await readFile(path.join(PACKAGE_ROOT, 'VERSION'), 'utf8')).trim();
+  assert.equal(versionFile, pkg.version);
+  assert.equal(await toolVersion(), pkg.version);
+});
+
+test('the package is named naso-dev and the bin matches it', async () => {
+  const pkg = JSON.parse(await readFile(path.join(PACKAGE_ROOT, 'package.json'), 'utf8'));
+  assert.equal(pkg.name, 'naso-dev');
+  assert.equal(pkg.bin['naso-dev'], './bin/naso-dev.mjs');
+  assert.ok(await pathExists(path.join(PACKAGE_ROOT, 'bin', 'naso-dev.mjs')));
+});
+
+test('no printed text suggests `npx naso` or hardcodes a home directory', async () => {
+  const sources = [
+    ...(await filesIn(path.join(PACKAGE_ROOT, 'tooling'), ['.mjs', '.md'])),
+    path.join(PACKAGE_ROOT, 'bin', 'naso-dev.mjs'),
+    path.join(PACKAGE_ROOT, 'README.md'),
+  ];
+  const homePattern = /\/(?:home|Users)\/[A-Za-z0-9._-]+\//;
+
+  for (const file of sources) {
+    const text = await readFile(file, 'utf8');
+    assert.ok(!text.includes('npx naso '), `${file} still suggests \`npx naso\``);
+    const offending = text
+      .split('\n')
+      .map((line, i) => [i + 1, line])
+      .filter(([, line]) => homePattern.test(line) && !line.trimStart().startsWith('//'));
+    assert.deepEqual(offending, [], `${file} hardcodes an absolute home path`);
+  }
 });

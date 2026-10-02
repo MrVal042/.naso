@@ -1,15 +1,17 @@
 # NASO — Agent Briefing System
 
-NASO (Never Assume, Scan Once) generates a truthful `AGENTS.md` from your repository and keeps it consistent with what actually exists. It runs a one-time `init` → `setup`, installs a minimal pre-commit gate, and gives four tools: `briefing`, `guide`, `validate`, and `doctor`.
+NASO (Never Assume, Scan Once) generates a truthful `AGENTS.md` from your repository and keeps it consistent with what actually exists. It runs a one-time `init` → `setup`, copies a small toolset into the repository, installs a minimal pre-commit gate, and gives five tools: `briefing`, `refresh`, `guide`, `validate`, and `doctor`.
+
+The npm package is `naso-dev`, so every command below is `npx naso-dev <command>`.
 
 ## Why
 
-An AI coding agent starts every session knowing nothing about your repository. Without a briefing it guesses at architecture and invents files. NASO writes that briefing by reading the repository, with no placeholders and no sections left to "fill later". The pre-commit hook keeps it true by refusing changes that leak secrets, go outside claimed scope, or drift from the briefing.
+An AI coding agent starts every session knowing nothing about your repository. Without a briefing it guesses at architecture and invents files. NASO writes that briefing by reading the repository, with no placeholders and no sections left to "fill later". The pre-commit hook keeps it true by refusing changes that leak secrets or go outside claimed scope, and by appending one line for a genuinely new area.
 
 ## Requirements
 
-- Node.js 18.17+ (20+ recommended)
-- Git 2.30+
+- Node.js 20 or newer
+- Git 2.30 or newer
 - A git repository
 
 ## Quick Start
@@ -17,49 +19,60 @@ An AI coding agent starts every session knowing nothing about your repository. W
 Two commands, once per repository:
 
 ```bash
-npx naso init  # read-only: explains the setup and shows the next command
-npx naso setup     # scan, show plan, accept or reject; writes AGENTS.md + hook
+npx naso-dev init      # read-only: explains the setup and prints the next command
+npx naso-dev setup     # scan, show the plan, accept or reject
 ```
 
-- Accept: writes `AGENTS.md`, installs `.git/hooks/pre-commit`, keeps the file local to this machine by default (`.git/info/exclude`). Pass `--track` to commit it.
-- Reject: writes nothing, rescans, shows the plan again. Rejecting twice offers support or exits and leaves the repository unchanged.
-- Exit/abort: removes only NASO-owned leftovers and leaves everything else as it was.
+- **Accept** writes `AGENTS.md`, vendors the toolset into `.naso/tooling/`, installs `.git/hooks/pre-commit`, and — unless you pass `--track` — keeps both `.naso/` and `AGENTS.md` out of git via `.git/info/exclude`.
+- **Reject** writes nothing, rescans, and shows the plan again. Rejecting twice offers support or exits and leaves the repository exactly as it was.
+- **An existing `AGENTS.md` is never replaced.** The NASO block goes between `<!-- naso:start -->` and `<!-- naso:end -->`; everything outside those markers stays byte-identical.
 
 ## What gets installed
 
-After accept, you get:
+| Path                        | Purpose                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------ |
+| `AGENTS.md`                 | The briefing, inside its `naso:start` / `naso:end` markers. Never overwritten outside them.     |
+| `.naso/tooling/*.mjs`       | A copy of the toolset, so the hook works with no network and no global install.                  |
+| `.naso/tooling/VERSION`     | The version that copy was vendored from — the briefing stamp is compared against it.             |
+| `.naso/config.json`         | Per-repository setup choices, including any areas you excluded.                                  |
+| `.git/hooks/pre-commit`     | Runs the secret, scope, format and lint checks on staged files and keeps the briefing current.   |
+| `.git/info/exclude`         | Keeps `.naso/` and `AGENTS.md` untracked locally (default mode). Use `--track` to version them.  |
 
-- `AGENTS.md` — mechanically derived briefing (no `TODO(fill)` or `TODO(describe)` markers)
-- `.git/hooks/pre-commit` — runs secret checks, scope checks, staged format/lint hints, and briefing upkeep
-- `.git/info/exclude` — keeps `AGENTS.md` untracked locally (default). Use `--track` to version it.
-
-The tooling itself lives at `/Users/MrVal/WorkSpace/.naso/tooling/` and is shared across all repositories you set up. No `tooling/` directory is copied into each target repo.
+The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplevel`, so it runs identically from a clone, from the npx cache, or from a teammate's machine that never installed the package. If the vendored script is ever missing, the hook prints one loud line and lets the commit through rather than failing silently.
 
 ## Commands
 
-| Command                                                                       | Purpose                                                                                                                                                        |
-| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npx naso init [target]`                                                      | Read-only orientation. Explains value and prints `npx naso setup [target]`. Never writes.                                                                      |
-| `npx naso setup [target] [--track] [--no-hook] [--force] [--yes] [--dry-run]` | Scan, display plan, prompt accept/reject (twice max), write on accept. Non-TTY + no `--yes` prints plan and stops.                                             |
-| `npx naso briefing [target] [refresh\|--force]`                               | Regenerate or verify `AGENTS.md` against the current filesystem. Maintains the version stamp. The hook uses this to append lines only for genuinely new areas. |
-| `npx naso guide [target] [--short]`                                           | Tour the briefing section-by-section, run the consistency check, list unnamed areas, and suggest next steps.                                                   |
-| `npx naso validate [target] [--staged-only] [--strict]`                       | Pre-commit gate: secret blocking, scope enforcement, staged format/lint (non-blocking hints unless `--strict`), briefing upkeep, and branch/append safety.     |
-| `npx naso doctor [target]`                                                    | Environment + install diagnostics (Node, git, hook, briefing consistency, leftovers). Read-only.                                                               |
+| Command                                                            | What it does                                                                                                     |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `npx naso-dev init [target]`                                        | Read-only orientation. Explains the value, prints the exact next command, writes nothing.                        |
+| `npx naso-dev setup [target] [options]`                             | Scan, display the plan, prompt accept/reject (twice max), write on accept. Non-TTY without `--yes` prints and stops. |
+| `npx naso-dev briefing [target] [check\|create\|refresh]`           | Verify `AGENTS.md` against disk, write the NASO block, or move the version stamp only.                            |
+| `npx naso-dev refresh [target]`                                     | Re-copy the toolset, re-stamp the briefing, reinstall the hook. Never rewrites briefing prose or `.naso/config.json`. |
+| `npx naso-dev guide [target] [area]`                                | The guide for one area: its paths, its checks, its boundary rules, and a ready-to-paste `NASO_SCOPE`.            |
+| `npx naso-dev guide [target] --tour`                                | The read-through: every section of the briefing in reading order, plus the consistency check.                    |
+| `npx naso-dev validate [target] [--staged] [--scope a,b] [--strict]` | The pre-commit gate, and the full CI run without `--staged`.                                                     |
+| `npx naso-dev doctor [target]`                                      | Environment and install diagnostics: Node, git, hook, vendored copy, briefing consistency, leftovers.             |
 
 All commands accept `--help`.
 
 ## Options
 
-- `--track` — commit `AGENTS.md` (default: keep local only via `.git/info/exclude`)
-- `--no-hook` — skip installing the pre-commit hook
-- `--force` — overwrite existing `AGENTS.md` (implied when one exists)
-- `--yes` — accept without prompting (useful in CI/non-interactive contexts)
-- `--dry-run` — print the plan and stop (no writes)
-- `--staged-only`/`--strict` — passed through to `validate`
+- `--track` — commit `.naso/` and `AGENTS.md` instead of excluding them locally.
+- `--no-hook` — do not install the pre-commit hook.
+- `--exclude <prefix>` — keep an area out of the briefing. Repeatable. Saved to `.naso/config.json`.
+- `--yes` — accept without prompting (CI and scripts).
+- `--dry-run` — print the plan and stop. Writes nothing.
+- `--force` — on `briefing create`, replace an existing `naso:start` / `naso:end` block. It never touches anything outside the markers.
 
-## Notes on the package name
+## Running it without installing
 
-`init` is invoked as `npx naso init` (package `naso`). The remaining commands are `npx naso <cmd>` (binary `naso`). Both resolve from the same installed package in this distribution. If your environment aliases packages differently, you can also run directly with Node: `node /Users/MrVal/WorkSpace/.naso/tooling/<cmd>.mjs`.
+Every command is also a script you can run directly:
+
+```bash
+node <path-to-the-naso-dev-package>/bin/naso-dev.mjs setup .
+```
+
+The path is wherever the package landed — a clone, `npm i -g`, or the npx cache. `npx naso-dev ...` and `node .../bin/naso-dev.mjs ...` run exactly the same code.
 
 ## Support
 
@@ -67,4 +80,4 @@ Email: contactmrval@gmail.com
 
 ## License
 
-See `LICENSE` if present in the repository root.
+MIT — see [LICENSE](LICENSE).

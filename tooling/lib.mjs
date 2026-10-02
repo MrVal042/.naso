@@ -374,7 +374,7 @@ export async function toolVersion() {
  * Is a human sitting at this terminal?
  *
  * Everything that can prompt checks this first. A prompt written to a
- * non-interactive stream — CI, a pipe, `npx naso setup | tee log` — blocks
+ * non-interactive stream — CI, a pipe, `npx naso-dev setup | tee log` — blocks
  * forever on input nobody can type, which is a far worse failure than refusing
  * to run and printing the same information as plain text.
  */

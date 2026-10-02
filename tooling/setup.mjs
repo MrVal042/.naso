@@ -18,8 +18,8 @@
 // somebody's AGENTS.md.
 //
 // Usage:
-//   node tooling/setup.mjs [target-dir] [--track] [--no-hook] [--force]
-//                          [--yes] [--dry-run]
+//   npx naso-dev setup [target-dir] [--track] [--no-hook] [--force]
+//                           [--yes] [--dry-run]
 //
 // Zero external dependencies — Node.js core modules only.
 
@@ -301,9 +301,9 @@ async function install(cwd, { track, noHook, force, state }) {
   console.log('');
   console.log('Next:');
   console.log('');
-  console.log(`  npx naso briefing ${cwd}     re-check the briefing against the code`);
-  console.log(`  npx naso guide ${cwd}        read it back as a walkthrough`);
-  console.log(`  npx naso doctor ${cwd}       confirm the install end to end`);
+  console.log(`  npx naso-dev briefing ${cwd}     re-check the briefing against the code`);
+  console.log(`  npx naso-dev guide ${cwd}        read it back as a walkthrough`);
+  console.log(`  npx naso-dev doctor ${cwd}       confirm the install end to end`);
   console.log('');
   console.log('## Hand this to your coding agent');
   console.log('');
@@ -368,7 +368,7 @@ async function afterSecondRejection(cwd, state) {
   }
   console.log('');
   console.log('If you change your mind later, nothing is lost:');
-  console.log(`  npx naso setup ${cwd}`);
+  console.log(`  npx naso-dev setup ${cwd}`);
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -378,7 +378,7 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(`NASO setup
 
 Usage:
-  node tooling/setup.mjs [target-dir] [options]
+  npx naso-dev setup [target-dir] [options]
 
   --track      commit AGENTS.md instead of keeping it out of git locally
   --no-hook    do not install the pre-commit hook
@@ -403,7 +403,7 @@ Support: ${SUPPORT_EMAIL}`);
   };
 
   if (!(await pathExists(cwd))) {
-    console.error(`naso setup: target directory does not exist: ${cwd}`);
+    console.error(`naso-dev setup: target directory does not exist: ${cwd}`);
     process.exitCode = 1;
     return;
   }
@@ -491,7 +491,7 @@ Support: ${SUPPORT_EMAIL}`);
 
 if (isMainModule(import.meta.url)) {
   main().catch((err) => {
-    console.error(`naso setup: unexpected error — ${err?.stack ?? err}`);
+    console.error(`naso-dev setup: unexpected error — ${err?.stack ?? err}`);
     console.error(`Support: ${SUPPORT_EMAIL}`);
     process.exitCode = 1;
   });

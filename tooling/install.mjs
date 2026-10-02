@@ -18,8 +18,8 @@ import {
   nasoDir,
 } from './lib.mjs';
 
-const HOOK_MARKER = '# managed-by: naso';
-const EXCLUDE_MARKER = '# added by naso setup';
+const HOOK_MARKER = '# managed-by: naso-dev';
+const EXCLUDE_MARKER = '# added by naso-dev setup';
 
 /**
  * Files NASO may have written into a target repository.

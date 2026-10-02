@@ -31,7 +31,7 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(`NASO doctor
 
 Usage:
-  node tooling/doctor.mjs [target-dir]
+  npx naso-dev doctor [target-dir]
 
 No changes are made.
 
@@ -66,7 +66,7 @@ Support: ${SUPPORT_EMAIL}`);
   } else {
     const briefing = await readFile(agentsPath, 'utf8');
     const stamp = readBriefingMarkerValue(briefing, 'version');
-    printRow('AGENTS.md', stamp ? OK : WARN, stamp ? `naso ${stamp}, ${briefing.split('\n').length} lines` : `${briefing.split('\n').length} lines (no version stamp)`);
+    printRow('AGENTS.md', stamp ? OK : WARN, stamp ? `NASO ${stamp}, ${briefing.split('\n').length} lines` : `${briefing.split('\n').length} lines (no version stamp)`);
   }
 
   const hookPath = path.join(cwd, '.git', 'hooks', 'pre-commit');
@@ -105,13 +105,13 @@ Support: ${SUPPORT_EMAIL}`);
 
   console.log('');
   console.log('If anything is FAIL or WARN, the safest next step is:');
-  console.log(`  npx naso guide ${cwd}`);
+  console.log(`  npx naso-dev guide ${cwd}`);
   console.log('');
 }
 
 if (isMainModule(import.meta.url)) {
   main().catch((err) => {
-    console.error(`naso doctor: unexpected error — ${err?.stack ?? err}`);
+    console.error(`naso-dev doctor: unexpected error — ${err?.stack ?? err}`);
     console.error(`Support: ${SUPPORT_EMAIL}`);
     process.exitCode = 1;
   });

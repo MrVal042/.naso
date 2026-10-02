@@ -20,9 +20,9 @@
 // worse than no briefing at all.
 //
 // Usage:
-//   node tooling/briefing.mjs [dir]              # check (exit 1 on problems)
-//   node tooling/briefing.mjs [dir] create       # write AGENTS.md
-//   node tooling/briefing.mjs [dir] create --force --track
+//   npx naso-dev briefing [dir]              # check (exit 1 on problems)
+//   npx naso-dev briefing [dir] create       # write the NASO block
+//   npx naso-dev briefing [dir] refresh      # move the version stamp only
 //
 // Zero external dependencies — Node.js core modules only.
 
@@ -1103,8 +1103,8 @@ export async function checkBriefing(cwd) {
 /** Print a check result in the same shape for every caller. */
 export function printCheck(result) {
   if (result.reason === 'missing') {
-    console.error(`naso briefing: no ${AGENTS_FILE} in ${path.dirname(result.agentsPath)}.`);
-    console.error('  Run `naso setup` against this repository first.');
+    console.error(`naso-dev briefing: no ${AGENTS_FILE} in ${path.dirname(result.agentsPath)}.`);
+    console.error('  Run `npx naso-dev setup` against this repository first.');
     return;
   }
 
@@ -1137,7 +1137,7 @@ export function printCheck(result) {
   console.log(
     `${result.problems.length} problem(s). Every path the briefing claims must exist, every ` +
       'real area must be\nmentioned, and no placeholder marker may remain. ' +
-      'Regenerate with `naso briefing create --force`.',
+      'Regenerate with `npx naso-dev briefing create --force`.',
   );
 }
 
@@ -1227,11 +1227,13 @@ function usage() {
   console.log(`NASO briefing
 
 Usage:
-  node tooling/briefing.mjs [dir]                    check the briefing against the repo
-  node tooling/briefing.mjs [dir] check              same
-  node tooling/briefing.mjs [dir] create             write AGENTS.md from a fresh scan
-  node tooling/briefing.mjs [dir] create --force     overwrite an existing AGENTS.md
-  node tooling/briefing.mjs [dir] refresh            move the version stamp only
+  npx naso-dev briefing [dir]                    check the briefing against the repo
+  npx naso-dev briefing [dir] check              same
+  npx naso-dev briefing [dir] create             write the NASO block into AGENTS.md
+  npx naso-dev briefing [dir] create --force     replace an existing naso:start/naso:end block
+  npx naso-dev briefing [dir] refresh            move the version stamp only
+
+Never rewrites anything outside <!-- naso:start --> and <!-- naso:end -->.
 
 Exit codes: 0 clean, 1 problems found or the write was refused.
 Support: ${SUPPORT_EMAIL}`);
@@ -1266,7 +1268,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (!(await pathExists(cwd))) {
-    console.error(`naso briefing: target directory does not exist: ${cwd}`);
+    console.error(`naso-dev briefing: target directory does not exist: ${cwd}`);
     process.exitCode = 1;
     return;
   }
@@ -1332,7 +1334,7 @@ export async function main(argv = process.argv.slice(2)) {
 
 if (isMainModule(import.meta.url)) {
   main().catch((err) => {
-    console.error(`naso briefing: unexpected error — ${err?.stack ?? err}`);
+    console.error(`naso-dev briefing: unexpected error — ${err?.stack ?? err}`);
     console.error(`Support: ${SUPPORT_EMAIL}`);
     process.exitCode = 1;
   });
