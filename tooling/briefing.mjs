@@ -270,6 +270,11 @@ export function topLevelEntries(files) {
   );
 }
 
+/** The directories among `topLevelEntries`. This is the list of areas. */
+export function areasOf(entries) {
+  return (entries ?? []).filter((entry) => entry.isDir);
+}
+
 /** Which language dominates a file list, as { label, count, share }. */
 export function dominantLanguage(files) {
   const counts = new Map();
@@ -934,7 +939,7 @@ export async function renderBriefing(facts, { version, actor, now }) {
 > Maintained through normal code review. NASO never regenerates this file
 > wholesale; the pre-commit hook appends at most one line per genuinely new area.`);
 
-  const dirs = facts.entries.filter((entry) => entry.isDir);
+  const dirs = facts.areas;
   const rootFiles = renderRootFiles(facts.entries);
   const structure = [];
   if (dirs.length > 0) structure.push(dirs.map(describeEntry).join('\n'));
@@ -1084,14 +1089,19 @@ export function extractPathTokens(text) {
   return Array.from(tokens).sort();
 }
 
-/** Top-level entries git knows about, minus build output and root noise. */
-export async function listTopLevelEntries(cwd) {
-  const res = await run('git', ['ls-files', '-co', '--exclude-standard'], { cwd });
-  if (!res.ok) return null;
+/**
+ * The repository's areas, by name, as git currently sees them.
+ *
+ * Directories only, `-z` only, exclusions and deletions applied — same rules as
+ * `listRepoFiles`, because "the areas" has to mean one thing across the generator, the
+ * checker, the guide and the pre-commit append.
+ */
+export async function listTopLevelEntries(cwd, { exclude = null } = {}) {
+  const inside = await run('git', ['rev-parse', '--is-inside-work-tree'], { cwd });
+  if (!inside.ok) return null;
 
-  return topLevelEntries(res.stdout.split('\n').map((l) => l.trim()).filter(Boolean)).map(
-    (entry) => (entry.isDir ? `${entry.name}/` : entry.name),
-  );
+  const files = await listRepoFiles(cwd, { exclude });
+  return areasOf(topLevelEntries(files)).map((entry) => `${entry.name}/`);
 }
 
 /** Which entries the briefing fails to cover. */

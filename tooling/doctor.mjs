@@ -134,7 +134,7 @@ Support: ${SUPPORT_EMAIL}`);
         printRow('  problem', WARN, `${p.kind}: ${p.item}`);
       }
     }
-    const unknown = facts.entries.filter((e) => e.isDir && !e.role);
+    const unknown = facts.areas.filter((e) => !e.role);
     printRow('Unnamed areas', unknown.length === 0 ? OK : WARN, unknown.length === 0 ? 'none' : `${unknown.length} area(s)`);
   } catch (e) {
     printRow('Briefing scan', FAIL, e?.message ?? String(e));

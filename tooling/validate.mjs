@@ -74,9 +74,6 @@ const AGENTS_FILE = 'AGENTS.md';
 const AUTO_START = '<!-- naso:auto:start -->';
 const AUTO_END = '<!-- naso:auto:end -->';
 
-/** NASO-managed files in the target repo. Not areas of the codebase. */
-const BRIEFING_FILES = new Set([AGENTS_FILE, 'SETUP_INSTRUCTIONS.md']);
-
 /** Beyond this, the auto-appended block is too big to stay a briefing aid. */
 const AUTO_LINE_WARN_THRESHOLD = 40;
 
@@ -174,6 +171,15 @@ const WARNS = [
 const SCOPE_ALWAYS_ALLOWED = new Set([AGENTS_FILE, '.naso.lock', 'SETUP_INSTRUCTIONS.md']);
 
 /**
+ * Prefixes always inside scope, whatever NASO_SCOPE says.
+ *
+ * NASO's own vendored copy belongs to NASO. A commit that refreshes `.naso/tooling/`
+ * is not a task that wandered outside its declared scope, and a gate that said so would
+ * be telling an agent to lie about its scope to get a legitimate commit through.
+ */
+const SCOPE_ALWAYS_ALLOWED_PREFIXES = ['.naso'];
+
+/**
  * Resolve scope prefixes from --scope or NASO_SCOPE.
  * Returns null when no scope is configured, meaning "do not check".
  */
@@ -189,16 +195,19 @@ export function resolveScope(flagValue, envValue) {
 
 /** Is `p` inside at least one scope prefix? */
 export function inScope(p, prefixes) {
-  const normalized = p.replace(/\\/g, '/');
-  return prefixes.some(
-    (prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`),
-  );
+  const normalized = String(p).replace(/\\/g, '/');
+  return prefixes.some((raw) => {
+    const prefix = String(raw).replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+    if (!prefix) return false;
+    return normalized === prefix || normalized.startsWith(`${prefix}/`);
+  });
 }
 
 function outOfScopePaths(paths, prefixes) {
   return paths
     .filter((p) => !inScope(p, prefixes))
     .filter((p) => !SCOPE_ALWAYS_ALLOWED.has(basename(p)))
+    .filter((p) => !SCOPE_ALWAYS_ALLOWED_PREFIXES.some((prefix) => inScope(p, [prefix])))
     .sort();
 }
 
@@ -210,8 +219,13 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
  * Reduce staged additions to the units a briefing cares about: new top-level
- * directories, and new root-level files that signal something structural.
- * Files nested inside an area the briefing already covers are not news.
+ * directories. Files nested inside an area the briefing already covers are not news.
+ *
+ * A new file at the root is not news either. `vitest.config.ts` and `.env.production`
+ * are structure in the way a single `LICENSE` is structure, and a hook that blocks a
+ * commit until a human explains a new root file is a hook that gets uninstalled. The
+ * briefing's root-file inventory is a one-line snapshot, refreshed by `setup` or
+ * `refresh`, not a claim kept honest per commit.
  */
 export function notableAdditions(paths) {
   const units = new Set();
@@ -219,18 +233,10 @@ export function notableAdditions(paths) {
     const segments_ = p.split('/').filter(Boolean);
     if (segments_.length === 0) continue;
 
-    // The briefing describes the codebase; it is not part of the codebase.
-    // Committing it would otherwise append a line about itself.
-    if (segments_.length === 1 && BRIEFING_FILES.has(segments_[0])) continue;
-
     const [first, ...rest] = segments_;
-    if (rest.length > 0) {
-      if (!isNoisyDir(first) && !first.startsWith('.')) units.add(`${first}/`);
-      continue;
-    }
-
-    if (isRootNoise(first) || first.startsWith('.')) continue;
-    units.add(first);
+    if (rest.length === 0) continue; // a root file: an inventory item, not an area
+    if (first.startsWith('.') || isNoisyDir(first)) continue;
+    units.add(`${first}/`);
   }
   return Array.from(units).sort();
 }

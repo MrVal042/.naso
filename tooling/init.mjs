@@ -84,8 +84,8 @@ async function describeRepository(cwd) {
     isRepo: true,
     branch: branchRes.ok ? branchRes.stdout.trim() : null,
     files: files.length,
-    areas: entries.filter((entry) => entry.isDir).map((entry) => entry.name),
-    rootFiles: entries.filter((entry) => !entry.isDir).length,
+    areas: areasOf(entries).map((entry) => entry.name),
+    rootFiles: entries.length - areasOf(entries).length,
     language,
   };
 }
