@@ -2,6 +2,7 @@
 // Built entirely on Node.js core modules — no npm packages.
 
 import { access, readFile, constants } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
@@ -178,7 +179,48 @@ export async function getGitInfo(cwd) {
   return { branch, changes, upstream, ahead, behind };
 }
 
-/** Parse `git status --porcelain` output into { status, path } entries, resolving renames. */
+/** Split NUL-delimited git output into fields, dropping the empty tail. */
+export function splitNul(stdout) {
+  return String(stdout).split('\0').filter((field) => field.length > 0);
+}
+
+/**
+ * Parse `git status --porcelain -z` into { status, path, from } entries.
+ *
+ * `-z`, always, for two reasons. A newline-delimited status breaks on any filename
+ * containing one, and git *quotes* a path with a non-ASCII character unless
+ * `core.quotePath` is off — so `café/` arrives as `"caf\303\251/"`, which no command line
+ * and no human can paste. NUL output is the only form where every byte of the name
+ * survives, and it is unambiguous.
+ *
+ * A rename or copy record is `XY new\0old\0` — the destination comes first, then the
+ * source in its own field. Parsing it as a line would leave the source stranded and
+ * shift every record after it, which is the kind of bug that shows up as one mysterious
+ * unlisted file rather than as a crash.
+ */
+export function parseGitStatusPorcelainZ(raw) {
+  const fields = String(raw).split('\0');
+  const entries = [];
+  let i = 0;
+
+  while (i < fields.length) {
+    const record = fields[i++];
+    if (record.length < 4) continue; // trailing empty, or a truncated tail
+
+    const status = record.slice(0, 2);
+    const filePath = record.slice(3);
+    // A rename or copy consumes a second field; everything else does not.
+    const from = status[0] === 'R' || status[0] === 'C' || status[1] === 'R' || status[1] === 'C'
+      ? (fields[i++] ?? null)
+      : null;
+
+    entries.push({ status: status.trim() || '??', path: filePath, from });
+  }
+
+  return entries;
+}
+
+/** Parse `git status --porcelain`, newline form. Kept for the doctor and for tests. */
 export function parseGitStatusPorcelain(raw) {
   return raw
     .split('\n')
@@ -190,7 +232,7 @@ export function parseGitStatusPorcelain(raw) {
       const filePath = rawPath.includes(' -> ')
         ? (rawPath.split(' -> ').at(-1)?.trim() ?? rawPath)
         : rawPath;
-      return { status, path: filePath };
+      return { status, path: filePath, from: null };
     });
 }
 
@@ -198,10 +240,10 @@ export function parseGitStatusPorcelain(raw) {
 export async function getStagedFiles(cwd) {
   const res = await run(
     'git',
-    ['diff', '--cached', '--name-only', '--diff-filter=ACMR'],
+    ['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z'],
     { cwd },
   );
-  return res.ok ? res.stdout.split('\n').filter(Boolean) : [];
+  return res.ok ? splitNul(res.stdout) : [];
 }
 
 /**
@@ -472,8 +514,10 @@ export function parseAddedLines(diffText) {
         current = null;
         continue;
       }
-      // Strip the b/ prefix git adds.
-      current = target.replace(/^b\//, '');
+      // Unquote before stripping the b/ prefix: git quotes the *whole* header
+      // (`+++ "b/caf\303\251.env"`), so the prefix is inside the quotes and a
+      // replace(/^b\//) on the raw line finds nothing.
+      current = unquoteGitPath(target).replace(/^b\//, '');
       files.set(current, []);
       continue;
     }
@@ -520,9 +564,72 @@ export function scanAddedLines(files) {
   return hits;
 }
 
+/**
+ * Turn git's C-style quoted path back into the path.
+ *
+ * With `core.quotePath` off — and `scanStagedContent` always passes it off — a path
+ * containing a quote, a control character or a backslash is still emitted wrapped in
+ * double quotes with `\nnn` octal escapes, because there is no other way to keep the
+ * header parseable. Decoding is therefore not optional tidiness: without it, a file
+ * genuinely named `he"llo.ts` is reported under a name that does not exist, and a
+ * hit attributed to it cannot be found in an editor to be removed.
+ */
+export function unquoteGitPath(value) {
+  const raw = String(value);
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
+
+  const body = raw.slice(1, -1);
+  let out = '';
+  // Octal escapes are bytes, not code points: `\303\251` is one character, é, and
+  // decoding each escape as a code unit would hand back `Ã©`. Consecutive escapes are
+  // therefore collected and decoded as UTF-8 as a group, while the literal text
+  // between them is already a decoded JS string and passes straight through.
+  let bytes = [];
+
+  const flushBytes = () => {
+    if (bytes.length > 0) {
+      out += Buffer.from(bytes).toString('utf8');
+      bytes = [];
+    }
+  };
+
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== '\\') {
+      flushBytes();
+      out += ch;
+      continue;
+    }
+    const next = body[i + 1];
+    if (next >= '0' && next <= '7') {
+      const octal = body.slice(i + 1, i + 4);
+      if (/^[0-7]{3}$/.test(octal)) {
+        bytes.push(Number.parseInt(octal, 8));
+        i += 3;
+        continue;
+      }
+    }
+    flushBytes();
+    if (next === 'n') { out += '\n'; i += 1; continue; }
+    if (next === 't') { out += '\t'; i += 1; continue; }
+    if (next === 'r') { out += '\r'; i += 1; continue; }
+    if (next === '"' || next === '\\') { out += next; i += 1; continue; }
+    out += next ?? '';
+    i += 1;
+  }
+  flushBytes();
+  return out;
+}
+
 /** Run the staged-diff content scan for a repository. */
 export async function scanStagedContent(cwd) {
-  const res = await run('git', ['diff', '--cached', '-U0'], { cwd });
+  // core.quotePath=false keeps `é.env` readable; unquoteGitPath handles the rest,
+  // since a path with a quote or a control character is quoted whether or not you asked.
+  const res = await run(
+    'git',
+    ['-c', 'core.quotePath=false', 'diff', '--cached', '-U0'],
+    { cwd },
+  );
   if (!res.ok) return [];
   return scanAddedLines(parseAddedLines(res.stdout));
 }
@@ -538,7 +645,20 @@ export function isMainModule(importMetaUrl) {
   const invoked = process.argv[1];
   if (!invoked) return false;
   try {
-    return path.resolve(invoked) === path.resolve(fileURLToPath(importMetaUrl));
+    const asUrl = fileURLToPath(importMetaUrl);
+    // Compare real paths, not resolved strings. On macOS `/tmp` and `/var` are
+    // symlinks: the ESM loader reports the real path in import.meta.url while
+    // process.argv[1] keeps the symlinked one, so `path.resolve` alone would say a
+    // vendored tool invoked from a temp directory is not the main module and it
+    // would exit silently with code 0.
+    const real = (p) => {
+      try {
+        return realpathSync.native(p);
+      } catch {
+        return path.resolve(p);
+      }
+    };
+    return real(invoked) === real(asUrl);
   } catch {
     return false;
   }

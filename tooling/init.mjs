@@ -72,10 +72,10 @@ async function describeRepository(cwd) {
   if (!isRepo) return { isRepo: false };
 
   const branchRes = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
-  const filesRes = await run('git', ['ls-files', '-c', '-o', '--exclude-standard'], { cwd });
-  const files = filesRes.ok
-    ? filesRes.stdout.split('\n').map((l) => l.trim()).filter(Boolean)
-    : [];
+  // -z and split on NUL: a repository with a non-ASCII filename is not an exotic one,
+  // and `"\303\251.env"` is not a path anybody can paste into a command.
+  const filesRes = await run('git', ['ls-files', '-c', '-o', '--exclude-standard', '-z'], { cwd });
+  const files = filesRes.ok ? splitNul(filesRes.stdout) : [];
 
   const entries = topLevelEntries(files);
   const language = dominantLanguage(files);

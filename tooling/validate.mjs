@@ -40,7 +40,8 @@ import {
   pmExecCommand,
   hasLocalBin,
   getStagedFiles,
-  parseGitStatusPorcelain,
+  parseGitStatusPorcelainZ,
+  splitNul,
   parseArgs,
   run,
   scanStagedContent,
@@ -314,9 +315,13 @@ async function secretWarnings(paths) {
 async function changedPaths(cwd, staged) {
   if (staged) return getStagedFiles(cwd);
 
-  const res = await run('git', ['status', '--porcelain'], { cwd });
+  const res = await run('git', ['status', '--porcelain', '-z'], { cwd });
   if (!res.ok) return null;
-  return parseGitStatusPorcelain(res.stdout).map((entry) => entry.path);
+  // A rename contributes both ends: the destination is what the commit adds, and the
+  // source is a path that is about to stop existing, so both are worth reading.
+  return parseGitStatusPorcelainZ(res.stdout).flatMap((entry) =>
+    entry.from ? [entry.path, entry.from] : [entry.path],
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -445,13 +450,17 @@ async function appendBriefingNotes(cwd) {
     return;
   }
 
-  const added = await run('git', ['diff', '--cached', '--name-only', '--diff-filter=A'], { cwd });
+  const added = await run(
+    'git',
+    ['diff', '--cached', '--name-only', '--diff-filter=A', '-z'],
+    { cwd },
+  );
   if (!added.ok) {
     record('AGENTS.md update', 'skip', 'could not read staged additions');
     return;
   }
 
-  const additions = added.stdout.split('\n').filter(Boolean);
+  const additions = splitNul(added.stdout);
   if (additions.length === 0) {
     record('AGENTS.md update', 'skip', 'no newly added files in this commit');
     return;
