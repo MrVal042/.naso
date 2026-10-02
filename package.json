@@ -4,7 +4,7 @@
   "description": "A two-step setup for AI coding agents: generate a briefing the agent can trust, then keep it true mechanically.",
   "type": "module",
   "bin": {
-    "naso-dev": "./bin/naso-dev.mjs"
+    "naso-dev": "bin/naso-dev.mjs"
   },
   "exports": {
     ".": "./bin/naso-dev.mjs"

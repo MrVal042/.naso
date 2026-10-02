@@ -244,7 +244,9 @@ test('VERSION and package.json declare the same version', async () => {
 test('the package is named naso-dev and the bin matches it', async () => {
   const pkg = JSON.parse(await readFile(path.join(PACKAGE_ROOT, 'package.json'), 'utf8'));
   assert.equal(pkg.name, 'naso-dev');
-  assert.equal(pkg.bin['naso-dev'], './bin/naso-dev.mjs');
+  // The published form: npm strips a leading ./ from bin paths and warns if it has to,
+  // so the manifest carries what npm ships rather than what it would rewrite on publish.
+  assert.equal(pkg.bin['naso-dev'], 'bin/naso-dev.mjs');
   assert.ok(await pathExists(BIN));
 });
 
