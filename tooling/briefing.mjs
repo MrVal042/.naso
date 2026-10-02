@@ -46,8 +46,22 @@ import {
   SUPPORT_EMAIL,
 } from './lib.mjs';
 import { withLock } from './lock.mjs';
+import { readConfig, configuredExclusions, normalizeExclusions, isExcluded } from './vendor.mjs';
 
 const AGENTS_FILE = 'AGENTS.md';
+
+/** The briefing file's name, for modules that report on it. */
+export { AGENTS_FILE };
+
+/**
+ * The two markers that delimit everything NASO owns inside AGENTS.md.
+ *
+ * Exported rather than re-declared per module because `setup`, `refresh` and the
+ * pre-commit append all have to agree on them exactly: a marker spelled two ways is an
+ * append that lands outside the block and a refresh that rewrites somebody's prose.
+ */
+export const NASO_START = '<!-- naso:start -->';
+export const NASO_END = '<!-- naso:end -->';
 
 const TEMPLATE_HEADER = `<!-- naso-briefing -->
 <!-- version: __VERSION__ -->
@@ -641,13 +655,13 @@ export async function scanRepo(cwd, { exclude = null } = {}) {
 // Rendering
 // ---------------------------------------------------------------------------
 
-const humanize = (key) =>
+export const humanize = (key) =>
   key
     .replace(/[-_]+/g, ' ')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/^\w/, (c) => c.toUpperCase());
 
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
  * "61 files, 2 of them Kotlin" — the size of an area, and the language that
@@ -906,9 +920,9 @@ export async function renderBriefing(facts, { version, actor, now }) {
   const parts = [];
 
   parts.push(
-    TEMPLATE_HEADER.replace('__VERSION__', version)
+    `${NASO_START}\n${TEMPLATE_HEADER.replace('__VERSION__', version)
       .replace('__ACTOR__', actor)
-      .replace('__DATE__', now),
+      .replace('__DATE__', now)}`,
   );
 
   parts.push(`# ${facts.projectName} — Agent Instructions`);
@@ -1009,7 +1023,7 @@ State, when the work is done:
 - anything left uncommitted, and why
 - remaining risks, gaps, or assumptions not verified`);
 
-  parts.push('<!-- naso-briefing:end -->');
+  parts.push(`${NASO_END}`);
 
   return `${parts.join('\n\n')}\n`;
 }
@@ -1183,13 +1197,28 @@ export function printCheck(result) {
  * finds there, so two concurrent setups produce one of two complete briefings
  * rather than a half-written file.
  */
-export async function createBriefing(cwd, { force = false } = {}) {
+/**
+ * Write the NASO block into AGENTS.md, under the repo lock, without ever touching
+ * anything a person wrote.
+ *
+ * Four cases, and the differences between them are the whole point:
+ *
+ *   no file            write the block as the whole file
+ *   file, no markers   append the block below what is there, byte for byte
+ *   file, markers     replace only what is between them — and only with --force
+ *   --force            never reaches outside the markers, whatever else it does
+ *
+ * The 2.x behaviour — "AGENTS.md exists, so overwrite it" — is gone. A 193-line
+ * hand-written AGENTS.md is not a stale cache entry, and a tool that deletes it on
+ * setup is a tool nobody runs twice. `--force` now means exactly one thing: replace
+ * the block between the markers. It is not, and cannot be, permission to rewrite the file.
+ *
+ * Generation re-reads the repository inside the lock and re-renders from what it
+ * finds there, so two concurrent setups produce one of two complete briefings
+ * rather than a half-written file.
+ */
+export async function createBriefing(cwd, { force = false, exclude = null } = {}) {
   const agentsPath = path.join(cwd, AGENTS_FILE);
-  const existing = await pathExists(agentsPath);
-
-  if (existing && !force) {
-    return { ok: false, reason: 'exists', agentsPath };
-  }
 
   const version = await toolVersion();
   const actor = actorIdentity();
@@ -1198,13 +1227,49 @@ export async function createBriefing(cwd, { force = false } = {}) {
   const outcome = await withLock(
     cwd,
     async () => {
-      if ((await pathExists(agentsPath)) && !force) {
-        return { ok: false, reason: 'exists', agentsPath };
+      const before = await readFile(agentsPath, 'utf8').catch(() => null);
+      const existingLines = before === null ? 0 : before.split('\n').length;
+
+      const facts = await scanRepo(cwd, { exclude });
+      const block = await renderBriefing(facts, { version, actor, now });
+
+      if (before === null) {
+        await writeFile(agentsPath, block, 'utf8');
+        return { ok: true, appended: false, agentsPath, content: block, facts };
       }
-      const facts = await scanRepo(cwd);
-      const content = await renderBriefing(facts, { version, actor, now });
-      await writeFile(agentsPath, content, 'utf8');
-      return { ok: true, agentsPath, content, facts };
+
+      const start = before.indexOf(NASO_START);
+      const end = before.indexOf(NASO_END);
+
+      if (start === -1 || end === -1 || end < start) {
+        // No block of ours in the file: append one and keep every existing line.
+        const separator =
+          before.length === 0 || before.endsWith('\n\n')
+            ? ''
+            : before.endsWith('\n')
+              ? '\n'
+              : '\n\n';
+        const appended = `${before}${separator}${block}`;
+        await writeFile(agentsPath, appended, 'utf8');
+        return { ok: true, appended: true, existingLines, agentsPath, content: appended, facts };
+      }
+
+      if (!force) {
+        return { ok: false, reason: 'has-block', agentsPath, existingLines };
+      }
+
+      const replaced =
+        before.slice(0, start) + block.trimEnd() + before.slice(end + NASO_END.length);
+      await writeFile(agentsPath, replaced, 'utf8');
+      return {
+        ok: true,
+        appended: false,
+        replacedBlock: true,
+        existingLines,
+        agentsPath,
+        content: replaced,
+        facts,
+      };
     },
     {
       reason: 'write the AGENTS.md briefing',
@@ -1316,10 +1381,11 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'create') {
     const result = await createBriefing(cwd, { force: flags.has('force') });
     if (!result.ok) {
-      if (result.reason === 'exists') {
+      if (result.reason === 'has-block') {
         console.log(
-          `- Skipped ${AGENTS_FILE}: it already exists. Re-run with --force to regenerate it.\n` +
-            '  Regenerating replaces any prose a person or agent added by hand.',
+          `- ${AGENTS_FILE} already has a naso:start / naso:end block. Left it exactly as it is.\n` +
+            '  Re-run with --force to replace just that block. Nothing outside the markers\n' +
+            '  is ever rewritten, with or without --force.',
         );
       } else {
         console.log(`- Skipped ${AGENTS_FILE}: locked by ${result.holder}.`);
@@ -1329,9 +1395,15 @@ export async function main(argv = process.argv.slice(2)) {
     }
 
     banner('Briefing', result.agentsPath);
-    console.log(`Wrote ${AGENTS_FILE} from ${plural(result.facts.trackedCount, 'file')}.`);
+    console.log(
+      result.appended
+        ? `Appended the NASO block below the ${plural(result.existingLines, 'line')} already in ${AGENTS_FILE}. Nothing existing was changed.`
+        : result.replacedBlock
+          ? `Replaced the naso:start / naso:end block. The other ${plural(result.existingLines, 'line')} of ${AGENTS_FILE} are byte for byte as you left them.`
+          : `Wrote ${AGENTS_FILE} from ${plural(result.facts.trackedCount, 'file')}.`,
+    );
     console.log('');
-    for (const entry of result.facts.entries.filter((e) => e.isDir)) {
+    for (const entry of result.facts.areas) {
       console.log(`  ${describeEntry(entry)}`);
     }
     const rootFiles = renderRootFiles(result.facts.entries);

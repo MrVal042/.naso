@@ -39,7 +39,16 @@ import {
   TOOLS,
   SUPPORT_EMAIL,
 } from './lib.mjs';
-import { scanRepo, createBriefing, checkBriefing, printCheck, renderRootFiles, describeEntry } from './briefing.mjs';
+import {
+  scanRepo,
+  createBriefing,
+  checkBriefing,
+  printCheck,
+  renderRootFiles,
+  describeEntry,
+  NASO_START,
+  NASO_END,
+} from './briefing.mjs';
 import {
   installPreCommitHook,
   excludeLocally,
@@ -318,25 +327,57 @@ async function install(cwd, { track, noHook, force, state }) {
   console.log('## Accepted — writing');
   console.log('');
 
-  const created = await createBriefing(cwd, { force: force || (await pathExists(path.join(cwd, 'AGENTS.md'))) });
+  const created = await createBriefing(cwd, { force, exclude: state.excluded });
 
   if (created.ok) {
-    const dirs = created.facts.entries.filter((entry) => entry.isDir);
-    console.log(`- Wrote AGENTS.md from ${created.facts.files.length} files.`);
+    const dirs = created.facts.areas;
+    if (created.appended) {
+      console.log(
+        `- Appended the NASO block to AGENTS.md below the ${created.existingLines} lines already in it.`,
+      );
+    } else if (created.replacedBlock) {
+      console.log(
+        `- Replaced the naso:start / naso:end block in AGENTS.md. The other ${created.existingLines} lines are untouched.`,
+      );
+    } else {
+      console.log(`- Wrote the NASO block in AGENTS.md from ${created.facts.files.length} files.`);
+    }
     for (const entry of dirs) console.log(`    ${describeEntry(entry)}`);
     const rootFiles = renderRootFiles(created.facts.entries);
     if (rootFiles) console.log(`    ${rootFiles.split('\n').join('\n    ')}`);
+  } else if (created.reason === 'has-block') {
+    console.log('- Left the existing NASO block in AGENTS.md exactly as it is.');
+    console.log('  To regenerate just that block, re-run setup with --force.');
   } else {
-    console.log(`- Skipped AGENTS.md: ${created.reason === 'locked' ? `locked by ${created.holder}` : 'already exists'}.`);
-    console.log('  Nothing was overwritten.');
+    console.log(
+      `- Left AGENTS.md alone: ${
+        created.reason === 'locked' ? `locked by ${created.holder}` : created.reason
+      }.`,
+    );
+    console.log('  Nothing outside the naso:start / naso:end markers is ever rewritten.');
   }
   console.log('');
 
+  const vendored = await vendorTooling(cwd);
+  console.log(`- Copied ${vendored.length} files into ${NASO_DIR}/tooling/ in this repository.`);
+  console.log('  The pre-commit hook runs that copy, so nothing depends on the package staying put.');
+  console.log('');
+
+  await writeConfig(cwd, {
+    version: state.version,
+    actor: actorIdentity(),
+    now: new Date().toISOString().slice(0, 10),
+    track,
+    hook: !noHook,
+    exclude: state.excluded,
+  });
+  console.log(`- Wrote ${NASO_DIR}/config.json with the settings this run used.`);
+  console.log('');
+
   if (!noHook) {
-    const hook = await installPreCommitHook(cwd, {
-      report: (line, kind) => console.log(`  ${line}`),
+    await installPreCommitHook(cwd, {
+      report: (line) => console.log(`  ${line}`),
     });
-    void hook;
     console.log('');
   } else {
     console.log('- Skipped the pre-commit hook (--no-hook).');
