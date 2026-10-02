@@ -17,7 +17,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "prepublishOnly": "node --test"
   },
   "keywords": [
     "agents",
@@ -26,6 +27,14 @@
     "pre-commit",
     "code-review"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrVal042/.naso.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MrVal042/.naso/issues"
+  },
+  "homepage": "https://github.com/MrVal042/.naso#readme",
   "license": "MIT",
   "engines": {
     "node": ">=20"
