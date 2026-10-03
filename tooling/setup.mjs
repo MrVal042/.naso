@@ -338,7 +338,7 @@ async function install(cwd, { track, noHook, force, state }) {
   console.log('## Accepted — writing');
   console.log('');
 
-  const created = await createBriefing(cwd, { force, exclude: state.excluded });
+  const created = await createBriefing(cwd, { force, exclude: state.excluded, track });
 
   if (created.ok) {
     const dirs = created.facts.areas;

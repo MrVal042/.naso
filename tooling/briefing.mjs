@@ -1382,7 +1382,7 @@ function detectFeatureMap(files, pkg) {
  * the shape of a repository, and reading code to summarise it would produce the
  * confident fiction this tool exists to replace.
  */
-export async function scanRepo(cwd, { exclude = null } = {}) {
+export async function scanRepo(cwd, { exclude = null, track = null } = {}) {
   const { files, source } = await readFileIndex(cwd, { exclude });
   const pkg = await readJSONFile(path.join(cwd, 'package.json'));
   const entries = topLevelEntries(files);
@@ -1405,7 +1405,7 @@ export async function scanRepo(cwd, { exclude = null } = {}) {
   // the briefing is regenerated, for no reason a reader can account for. In local mode it
   // is excluded via .git/info/exclude and never reaches the index; in --track mode it is
   // there, and it is subtracted here so both modes report the same repository.
-  const agentsTracked = files.includes(AGENTS_FILE);
+  const agentsTracked = files.includes(AGENTS_FILE) || track === true;
 
   const conventions = await detectConventions(cwd, files, pkg);
 
@@ -1782,6 +1782,34 @@ async function renderBoundaries(facts) {
 }
 
 /**
+ * Rule 8, which depends on whether this file is in the index.
+ *
+ * The old wording told every reader to stage the line the hook appends, in a repository
+ * where the default run leaves AGENTS.md out of git entirely — so it described a commit
+ * that could not be made, and invited an agent to `git add -f` a file the user chose to
+ * keep local. Two different situations, two different rules, chosen from the index rather
+ * than from a flag: tracked means the briefing is reviewed like any other file and the
+ * appended line belongs in the commit; untracked means it never is.
+ */
+function commitStandardRule8(facts) {
+  if (facts.agentsTracked) {
+    return (
+      '8. When a commit adds a genuinely new area, the hook appends one line for it\n' +
+      '   above and stages it with the commit. This file is tracked, so it is reviewed\n' +
+      '   like any other: if the hook reports it unstaged, that is a finding to fix.'
+    );
+  }
+
+  return (
+    '8. This file is not in the index and never will be: it is local to this machine,\n' +
+    '   excluded through .git/info/exclude so setup leaves no trace in the history. Do\n' +
+    '   not stage it, do not `git add -f` it, and do not mention it in a commit message.\n' +
+    '   The line the hook appends for a new area stays unstaged and is reported; every\n' +
+    "   teammate's briefing is generated from their own scan of their own checkout."
+  );
+}
+
+/**
  * Render the whole briefing.
  *
  * Sections that derive nothing are omitted rather than left as an invitation to
@@ -1983,9 +2011,7 @@ report the path — never paste the value, not into a chat, not into a log.`);
 6. No \`Co-Authored-By:\` trailer for the assisting agent or tool.
 7. Never bypass the pre-commit hook, never amend a pushed commit, never
    force-push. Fix the finding and make a new commit.
-8. When a commit adds a genuinely new area, the hook appends one line for it
-   above. If this file is tracked and clean, that line is staged with the commit;
-   otherwise it is left unstaged and reported.`);
+${commitStandardRule8(facts)}`);
 
   parts.push(`## Final Response Expectations
 
@@ -2195,8 +2221,14 @@ export function printCheck(result) {
  * finds there, so two concurrent setups produce one of two complete briefings
  * rather than a half-written file.
  */
-export async function createBriefing(cwd, { force = false, exclude = null } = {}) {
+export async function createBriefing(cwd, { force = false, exclude = null, track = null } = {}) {
   const agentsPath = path.join(cwd, AGENTS_FILE);
+
+  // Whether AGENTS.md is meant to be committed is a property of the run, not of the
+  // index: on a first --track run the file does not exist yet, so the index cannot say.
+  // The saved config is the fallback, so a later `briefing create --force` reaches the
+  // same conclusion the setup that wrote the file did.
+  const saved = track === null ? (await readConfig(cwd))?.track : track;
 
   const version = await toolVersion();
   const actor = actorIdentity();
@@ -2208,7 +2240,7 @@ export async function createBriefing(cwd, { force = false, exclude = null } = {}
       const before = await readFile(agentsPath, 'utf8').catch(() => null);
       const existingLines = before === null ? 0 : before.split('\n').length;
 
-      const facts = await scanRepo(cwd, { exclude });
+      const facts = await scanRepo(cwd, { exclude, track: saved });
       const block = await renderBriefing(facts, { version, actor, now });
 
       if (before === null) {

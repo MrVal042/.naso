@@ -693,6 +693,48 @@ test('parseAliasBlocks reads alias maps, and does not mistake root for one', () 
   assert.deepEqual([...parseAliasBlocks('export default {};')], []);
 });
 
+test('an excluded AGENTS.md is local-only, with no staging rule to follow', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await seedProject(dir, git);
+
+    // The default run keeps AGENTS.md out of git entirely.
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    assert.match(
+      text,
+      /8\. This file is not in the index and never will be: it is local to this machine/,
+    );
+    assert.match(text, /excluded through \.git\/info\/exclude so setup leaves no trace/);
+    assert.match(text, /Do\n\s+not stage it, do not `git add -f` it/);
+    assert.ok(
+      !/staged with the commit/.test(text),
+      'a rule about staging a line cannot apply to a file that is never committed',
+    );
+
+    const tracked = (await git('ls-files')).stdout;
+    assert.ok(!tracked.includes('AGENTS.md'), 'the default run must not track AGENTS.md');
+  });
+});
+
+test('a tracked AGENTS.md keeps the staging rule, because it is reviewable', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await seedProject(dir, git);
+
+    const res = await script('setup', ['--yes', '--track']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    assert.match(
+      text,
+      /8\. When a commit adds a genuinely new area, the hook appends one line for it/,
+    );
+    assert.match(text, /stages it with the commit\. This file is tracked/);
+    assert.ok(!/never will be/.test(text), 'a tracked file is not local-only');
+  });
+});
+
 test('a gate that cannot be parsed says so and names the file instead of guessing', async () => {
   await withRepo(async ({ dir, git, script }) => {
     await put(
