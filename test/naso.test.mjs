@@ -1136,6 +1136,58 @@ test('boundaries lead the section: enforced seams, then aliases, then ignores', 
   });
 });
 
+test('an unreadable gate does not claim the boundary scripts are not in it', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({
+        name: 'opaque',
+        scripts: {
+          verify: 'node scripts/gate.mjs',
+          'verify:boundary': 'node scripts/verify-boundary-auth.mjs',
+          'verify:db-boundary': 'node scripts/verify-db-boundary.mjs',
+        },
+      }),
+    );
+    await put(dir, 'src/index.ts', 'export const x = 1;\n');
+    await put(
+      dir,
+      '.github/workflows/ci.yml',
+      'name: CI\non: [push]\njobs:\n  verify:\n    name: verify\n    runs-on: ubuntu-latest\n    steps:\n      - run: pnpm run verify\n',
+    );
+    // A gate NASO cannot read. It almost certainly runs both boundary scripts; NASO
+    // cannot know that either way, and saying "not in the gate" is a claim.
+    await put(
+      dir,
+      'scripts/gate.mjs',
+      'const steps = process.env.STEPS.split(",");\nfor (const s of steps) await import(s);\n',
+    );
+    await put(dir, 'scripts/verify-boundary-auth.mjs', '// see docs/boundaries/auth.md\nexport const check = 1;\n');
+    await put(dir, 'scripts/verify-db-boundary.mjs', '// see docs/boundaries/db.md\nexport const check = 1;\n');
+    await put(dir, 'docs/boundaries/auth.md', '# auth\n');
+    await put(dir, 'docs/boundaries/db.md', '# db\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'opaque gate');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const text = await read(dir, AGENTS);
+    const section = text.slice(text.indexOf('## Boundaries'), text.indexOf('## Secrets'));
+
+    // The gate could not be read, so membership is unknown — and unknown is not "no".
+    assert.doesNotMatch(section, /not shown to run in the gate/);
+    assert.match(section, /could not be read/);
+    assert.match(section, /The gate could not be read \(scripts\/gate\.mjs\)/);
+    assert.match(section, /whether it runs these scripts is unknown/);
+    assert.match(section, /gate membership unknown/);
+
+    // The scripts themselves are still reported, with their docs: those are facts.
+    assert.match(section, /- `verify:boundary`[^\n]*`scripts\/verify-boundary-auth\.mjs`/);
+    assert.match(section, /the rule is in `docs\/boundaries\/auth\.md`/);
+  });
+});
+
 test('parseIgnorePatterns separates credentials from build output and reads negations', () => {
   const parsed = parseIgnorePatterns(
     ['node_modules/', 'dist/', '*.keystore', '*.p12', '.env*', '!src/app.ts', '# a comment'].join('\n'),

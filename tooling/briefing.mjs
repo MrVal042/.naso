@@ -1943,12 +1943,29 @@ async function renderBoundaries(facts) {
 
   const boundaries = await detectEnforcedBoundaries(facts);
   if (boundaries.length > 0) {
+    // An unread gate makes membership unknown. Reporting every boundary script as
+    // "not shown to run in the gate" in that case is a claim NASO cannot support:
+    // the gate may well run all of them, and the section is read as an audit rather
+    // than as a guess. It is the same reason an unparsed gate never claims a step
+    // list.
+    const gateUnknown = Boolean(facts.gate) && facts.gate.parsed === false;
+
     lines.push(
       `**Enforced boundaries.** ${plural(boundaries.length, 'script')} check the seams ` +
         'between areas, and each is named by what it protects:',
     );
+    if (gateUnknown) {
+      lines.push(
+        `The gate could not be read (${facts.gate.unparsed ?? 'the script it delegates to'}), ` +
+          'so whether it runs these scripts is unknown. Read it before trusting a commit to be checked.',
+      );
+    }
     for (const boundary of boundaries) {
-      const gate = boundary.inGate ? 'runs in the gate' : 'not shown to run in the gate';
+      const gate = gateUnknown
+        ? 'gate membership unknown'
+        : boundary.inGate
+          ? 'runs in the gate'
+          : 'not shown to run in the gate';
       const target = boundary.file
         ? boundary.fileExists
           ? `checks \`${boundary.file}\``
