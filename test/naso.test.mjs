@@ -35,6 +35,8 @@ import {
   listRepoFiles,
   readFileIndex,
   scanRepo,
+  parseTestTargets,
+  findUncoveredTests,
   extractInvocations,
   stepFamily,
   collapseSteps,
@@ -474,6 +476,84 @@ test('the gate is one command plus what it subsumes, not a list of peers', async
     const check = await script('briefing');
     assert.equal(check.code, 0, check.stdout + check.stderr);
   });
+});
+
+test('a tracked test file the test script never runs is named as a warning', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({ name: 'gapped', scripts: { test: 'node --test test/' } }),
+    );
+    await put(dir, 'src/index.ts', 'export const x = 1;\n');
+    await put(dir, 'test/unit.test.ts', "it('unit', () => {});\n");
+    // Tracked, so it reads as covered by anyone who lists the tree — and named by no command.
+    await put(dir, 'e2e/checkout.spec.ts', "describe('checkout', () => {});\n");
+    await git('add', '-A');
+    await git('commit', '-qm', 'gapped tests');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    assert.match(text, /runner node:test, 2 test files \(under `e2e\/`, `test\/`\), run by `npm run test` as `test\/`/);
+    assert.match(
+      text,
+      /\*\*WARN\*\* `npm run test` runs `test\/`, and 1 tracked test file is outside it: e2e\/checkout\.spec\.ts\./,
+    );
+    // The setup screen says it too, not only the file.
+    assert.match(res.stdout, /Warnings[\s\S]*e2e\/checkout\.spec\.ts/);
+  });
+});
+
+test('a test script that names no path makes no coverage claim', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({ name: 'open', scripts: { test: 'node --test' } }),
+    );
+    await put(dir, 'src/index.ts', 'export const x = 1;\n');
+    await put(dir, 'e2e/checkout.spec.ts', "describe('checkout', () => {});\n");
+    await git('add', '-A');
+    await git('commit', '-qm', 'open tests');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    assert.match(text, /`npm run test` names no path, so it discovers its own inputs/);
+    assert.ok(!/\*\*WARN\*\* `npm run test`/.test(text), 'no path means no claim, not a false alarm');
+  });
+});
+
+test('parseTestTargets reads dirs, globs and bare runner arguments', () => {
+  assert.deepEqual(parseTestTargets('node --test test/'), {
+    targets: ['test/'],
+    openEnded: false,
+  });
+  assert.deepEqual(parseTestTargets("mocha 'src/**/*.test.ts'"), {
+    targets: ['src/**/*.test.ts'],
+    openEnded: false,
+  });
+  assert.deepEqual(parseTestTargets('vitest run src'), { targets: ['src'], openEnded: false });
+  // A script that names nothing discovers its own inputs.
+  assert.deepEqual(parseTestTargets('jest --coverage'), { targets: [], openEnded: true });
+  // Prose in a script is not a target.
+  assert.deepEqual(parseTestTargets('echo "running the tests"'), { targets: [], openEnded: true });
+});
+
+test('findUncoveredTests compares tracked test files against what the script runs', () => {
+  const files = ['test/a.test.ts', 'test/nested/b.spec.ts', 'e2e/c.test.ts', 'src/d.test.ts'];
+
+  assert.deepEqual(findUncoveredTests(files, ['test/']), ['e2e/c.test.ts', 'src/d.test.ts']);
+  assert.deepEqual(findUncoveredTests(files, ['test/', 'e2e/']), ['src/d.test.ts']);
+  assert.deepEqual(findUncoveredTests(files, ['**/*.test.ts']), ['test/nested/b.spec.ts']);
+  assert.deepEqual(findUncoveredTests(files, ['test/a.test.ts']), [
+    'test/nested/b.spec.ts',
+    'e2e/c.test.ts',
+    'src/d.test.ts',
+  ]);
 });
 
 test('a gate that cannot be parsed says so and names the file instead of guessing', async () => {

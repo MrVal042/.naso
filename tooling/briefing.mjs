@@ -498,6 +498,126 @@ async function firstExistingFile(cwd, candidates) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// What the test script actually runs
+// ---------------------------------------------------------------------------
+
+/** Words in a test script that are the runner or how to drive it, never a path. */
+const RUNNER_WORD =
+  /^(?:node|npx|jest|vitest|mocha|ava|tsx|ts-node|playwright|pnpm|npm|yarn|bun|bunx|run|watch|t|ci|all|changed|related|coverage|silent|bail|passWithNoTests|ui|list|install|config|help|version|register|experimental-vm-modules)$/;
+
+/** A path-ish token: contains a separator, a glob, or a test file extension. */
+const PATH_LIKE = /[/\\*]|\.(?:test|spec)\.[cm]?[jt]sx?$/;
+
+/**
+ * The paths and globs a test script names, as a shell would see them.
+ *
+ * The distinction that matters is between a script that names its inputs and one that
+ * does not. `node --test test/` runs exactly what is under `test/`; `node --test` with no
+ * argument walks the whole tree. Those two look the same in a package manifest and mean
+ * opposite things about whether a test file is covered, so a script that names nothing is
+ * reported as `openEnded` and never produces a coverage claim in either direction.
+ */
+export function parseTestTargets(scriptBody) {
+  if (typeof scriptBody !== 'string' || scriptBody.trim() === '') {
+    return { targets: [], openEnded: true };
+  }
+
+  const tokens = scriptBody
+    .replace(/['"`]/g, ' ')
+    .split(/[\s|&;()]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  const runnerNamed = tokens.some((token) => /^(?:node|npx|jest|vitest|mocha|ava|tsx|ts-node|pnpm|npm|yarn|bun|bunx)$/.test(token));
+  const targets = tokens.filter((token) => {
+    if (token.startsWith('-')) return false;
+    if (RUNNER_WORD.test(token)) return false;
+    // A bare word is only a target when a runner is there to give it meaning: `vitest run
+    // src` targets src/, but `echo "no tests here"` targets nothing.
+    return PATH_LIKE.test(token) || runnerNamed;
+  });
+
+  return { targets, openEnded: targets.length === 0 };
+}
+
+/** Does one test-script target cover one tracked file? */
+function targetCovers(target, file) {
+  const pattern = target.replace(/[/\\]+$/, '');
+  if (!pattern) return false;
+
+  if (pattern.includes('*') || pattern.includes('?') || pattern.includes('{')) {
+    // `?` is translated before the globstar group is inserted, or the `?` this function
+    // writes would be translated again and turn `**/` into a single-segment match.
+    const GLOBSTAR = '~~globstar~~';
+    const source = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\?/g, '[^/]')
+      .replace(/\*\*\//g, GLOBSTAR)
+      .replace(/\*/g, '[^/]*')
+      .replaceAll(GLOBSTAR, '(?:.*/)?');
+    return new RegExp(`^${source}$`).test(file) || new RegExp(`(?:^|/)${source}$`).test(file);
+  }
+
+  if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(pattern)) return file === pattern;
+  return file === pattern || file.startsWith(`${pattern}/`);
+}
+
+/** The runner a script body names, ahead of anything guessed from dependencies. */
+function runnerFromScript(scriptBody) {
+  const body = String(scriptBody ?? '');
+  if (/(?:^|\s)node\s+(?:-{1,2}[\w-]+\s+)*--test\b/.test(body)) return 'node:test';
+  for (const [bin, label] of [
+    ['vitest', 'vitest'],
+    ['jest', 'jest'],
+    ['mocha', 'mocha'],
+    ['ava', 'ava'],
+    ['playwright', 'Playwright'],
+    ['detox', 'detox'],
+  ]) {
+    if (new RegExp(`\\b${bin}\\b`).test(body)) return label;
+  }
+  return null;
+}
+
+/**
+ * Which tracked test files the test script never runs.
+ *
+ * This is the finding a repository cannot notice on its own: the file is tracked, so it
+ * reads as covered by anyone who lists the tree, and the script that would run it does not
+ * name it. In a project with both `test/` and `e2e/`, `pnpm test` passing says nothing at
+ * all about `e2e/` — and the briefing used to say "tests: 2 test files" as though it did.
+ *
+ * Only tracked files are compared, because an untracked test file is not a claim anybody
+ * made, and a script that names no paths produces no claim in either direction.
+ */
+export function findUncoveredTests(testFiles, targets) {
+  return testFiles.filter((file) => !targets.some((target) => targetCovers(target, file)));
+}
+
+/**
+ * Everything the briefing can say about tests: the runner, what the script runs, and the
+ * tracked test files it leaves behind.
+ */
+export function detectTestCoverage(files, pkg, pm = 'npm', declaredRunner = null) {
+  const scripts = pkg?.scripts ?? {};
+  const names = Object.keys(scripts);
+  const name = names.includes('test') ? 'test' : (names.find((n) => /^test[:.]/.test(n)) ?? null);
+  const body = name ? scripts[name] : null;
+  const { targets, openEnded } = parseTestTargets(body);
+  const testFiles = files.filter((file) => TEST_FILE.test(file));
+
+  return {
+    script: name,
+    command: name ? pmRunText(pm, name) : null,
+    runner: runnerFromScript(body) ?? declaredRunner,
+    targets,
+    openEnded,
+    total: testFiles.length,
+    missed: openEnded ? [] : findUncoveredTests(testFiles, targets),
+  };
+}
+
 /** Manifest sitting directly in an area, if any. */
 async function manifestFor(cwd, entry) {
   const base = path.join(cwd, entry.name);
@@ -1152,6 +1272,8 @@ export async function scanRepo(cwd, { exclude = null } = {}) {
   // there, and it is subtracted here so both modes report the same repository.
   const agentsTracked = files.includes(AGENTS_FILE);
 
+  const conventions = await detectConventions(cwd, files, pkg);
+
   return {
     cwd,
     files,
@@ -1167,7 +1289,8 @@ export async function scanRepo(cwd, { exclude = null } = {}) {
     rootFileEntries: entries.filter((entry) => !entry.isDir),
     exclude: exclude ? normalizeExclusions(exclude) : configuredExclusions(await readConfig(cwd)),
     branch: gitInfo.ok ? gitInfo.stdout.trim() : null,
-    conventions: await detectConventions(cwd, files, pkg),
+    conventions,
+    tests: detectTestCoverage(files, pkg, packageManager.name, conventions.runner),
     validation: await detectValidationCommands(cwd, pkg, packageManager.name),
     gate: await detectGate(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),
@@ -1186,6 +1309,62 @@ export const humanize = (key) =>
     .replace(/^\w/, (c) => c.toUpperCase());
 
 export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/**
+ * The findings the briefing and the setup screen both have to say out loud.
+ *
+ * Two rules keep this list honest. A warning names paths that exist — no speculative
+ * "check your .env" — and each one says what to do about it rather than only what it found.
+ * `where` decides who says it: `briefing` findings are facts about the repository and go
+ * into AGENTS.md, where an agent working alone will read them; `setup` findings are worth
+ * a person's attention once and have no business being frozen into a file.
+ */
+export function scanWarnings(facts) {
+  const warnings = [];
+
+  const tests = facts.tests;
+  if (tests && tests.missed.length > 0) {
+    warnings.push({
+      id: 'tests-not-run',
+      where: 'briefing',
+      headline:
+        `\`${tests.command}\` runs ${tests.targets.map((t) => `\`${t}\``).join(', ')}, ` +
+        `and ${plural(tests.missed.length, 'tracked test file')} ${tests.missed.length === 1 ? 'is' : 'are'} outside it`,
+      detail: tests.missed.join(', '),
+      paths: tests.missed,
+    });
+  }
+
+  return warnings;
+}
+
+/** The tests line, naming the runner and what the script actually runs. */
+function renderTests(facts) {
+  const { conventions, tests } = facts;
+  const parts = [];
+
+  if (tests?.runner) parts.push(`runner ${tests.runner}`);
+
+  const count = plural(tests?.total ?? conventions.testFiles, 'test file');
+  if (conventions.colocated) {
+    parts.push(`${count} co-located with the source they test`);
+  } else if (conventions.testRoots.length > 0) {
+    parts.push(`${count} (under ${conventions.testRoots.map((r) => `\`${r}/\``).join(', ')})`);
+  } else {
+    parts.push(count);
+  }
+
+  // What the script runs comes last, because it is the claim that has to be weighed
+  // against the count: a count of two and a target of one directory is the gap the
+  // warning below spells out.
+  if (tests?.command && tests.targets.length > 0) {
+    parts.push(`run by \`${tests.command}\` as ${tests.targets.map((t) => `\`${t}\``).join(', ')}`);
+  } else if (tests?.command && tests?.openEnded) {
+    parts.push(`\`${tests.command}\` names no path, so it discovers its own inputs`);
+  }
+
+  return `${parts.join(', ')}.`;
+}
 
 /**
  * "61 files, 2 of them Kotlin" — the size of an area, and the language that
@@ -1359,16 +1538,8 @@ function renderConventions(facts) {
     lines.push(`${parts.join(', ')}.`);
   }
 
-  if (conventions.runner || conventions.testFiles > 0) {
-    const parts = [];
-    if (conventions.runner) parts.push(`runner ${conventions.runner}`);
-    parts.push(plural(conventions.testFiles, 'test file'));
-    if (conventions.colocated) {
-      parts.push('co-located with the source they test, not in a directory of their own');
-    } else if (conventions.testRoots.length > 0) {
-      parts.push(`under ${conventions.testRoots.map((r) => `\`${r}/\``).join(', ')}`);
-    }
-    lines.push(`Tests: ${parts.join(', ')}.`);
+  if (conventions.runner || conventions.testFiles > 0 || facts.tests?.total > 0) {
+    lines.push(`Tests: ${renderTests(facts)}`);
   }
 
   if (conventions.eslintConfig) lines.push(`Lint: ESLint configured by \`${conventions.eslintConfig}\`.`);
@@ -1595,11 +1766,18 @@ export async function renderBriefing(facts, { version, actor, now }) {
   }
 
   const conventions = renderConventions(facts);
+  const warnings = scanWarnings(facts).filter((warning) => warning.where === 'briefing');
+  const warningText = warnings.length
+    ? `\n\n${warnings.map((w) => `**WARN** ${w.headline}: ${w.detail}. Tracked files read as covered; nothing runs them unless the script names them.`).join('\n\n')}`
+    : '';
+
   if (conventions) {
     const validation = renderValidation(facts);
-    parts.push(`## Code Conventions\n\n${conventions.join('\n')}${validation ? `\n\n${validation}` : ''}`);
+    parts.push(`## Code Conventions\n\n${conventions.join('\n')}${warningText}${validation ? `\n\n${validation}` : ''}`);
   } else if (renderValidation(facts)) {
-    parts.push(`## Validation\n\n${renderValidation(facts)}`);
+    parts.push(`## Validation\n\n${renderValidation(facts)}${warningText}`);
+  } else if (warningText) {
+    parts.push(`## Validation\n\n${warningText.trim()}`);
   }
 
   parts.push(`## Scope

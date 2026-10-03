@@ -46,6 +46,7 @@ import {
   printCheck,
   renderRootFiles,
   describeEntry,
+  scanWarnings,
   NASO_START,
   NASO_END,
 } from './briefing.mjs';
@@ -285,6 +286,16 @@ function displayPlan(state, cwd) {
     console.log('');
     console.log('  Validation commands it will record:');
     for (const command of facts.validation) console.log(`    ${command.command}`);
+  }
+
+  const warnings = scanWarnings(facts);
+  if (warnings.length > 0) {
+    console.log('');
+    console.log('  Warnings — NASO did not change any of these, they are here so you see them:');
+    for (const warning of warnings) {
+      console.log(`    ** ${warning.headline}`);
+      console.log(`      ${warning.detail}`);
+    }
   }
   console.log('');
 
