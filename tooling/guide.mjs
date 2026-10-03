@@ -205,11 +205,11 @@ function boundariesFor(facts, area, files) {
 
   if (area.entryPoint) out.push(`Entry point: \`${area.entryPoint}\`. Start reading here, not at the root index.`);
 
-  const imports = (facts.conventions?.aliases ?? []).filter(
-    ([from]) => from.startsWith(area.name) || from.startsWith(`${area.name}/`),
+  const imports = (facts.conventions?.aliases?.declared ?? []).filter(
+    ({ targets }) => targets.some((target) => target.startsWith(area.name) || target.includes(`/${area.name}/`)),
   );
-  for (const [from, to] of imports.slice(0, 4)) {
-    out.push(`\`${from}\` is an alias for \`${to}\` — resolve it before grepping for a real directory.`);
+  for (const { alias, targets } of imports.slice(0, 4)) {
+    out.push(`\`${alias}\` resolves into this area (${targets.join(', ')}) — grep the real path, not the alias.`);
   }
 
   if (out.length === 0) {

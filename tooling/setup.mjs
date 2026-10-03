@@ -258,7 +258,7 @@ async function inspect(cwd, { track, noHook, exclude }) {
 function displayPlan(state, cwd) {
   const { facts, plans, version, excluded } = state;
   const dirs = facts.areas;
-  const rootFiles = renderRootFiles(facts.entries);
+  const rootFiles = renderRootFiles(facts.entries, facts);
 
   console.log(`# NASO Setup ${version} — ${cwd}`);
   console.log('');
@@ -354,7 +354,7 @@ async function install(cwd, { track, noHook, force, state }) {
       console.log(`- Wrote the NASO block in AGENTS.md from ${created.facts.files.length} files.`);
     }
     for (const entry of dirs) console.log(`    ${describeEntry(entry)}`);
-    const rootFiles = renderRootFiles(created.facts.entries);
+    const rootFiles = renderRootFiles(created.facts.entries, created.facts);
     if (rootFiles) console.log(`    ${rootFiles.split('\n').join('\n    ')}`);
   } else if (created.reason === 'has-block') {
     console.log('- Left the existing NASO block in AGENTS.md exactly as it is.');

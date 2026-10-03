@@ -37,6 +37,7 @@ import {
   scanRepo,
   parseTestTargets,
   findUncoveredTests,
+  parseAliasBlocks,
   extractInvocations,
   stepFamily,
   collapseSteps,
@@ -554,6 +555,142 @@ test('findUncoveredTests compares tracked test files against what the script run
     'e2e/c.test.ts',
     'src/d.test.ts',
   ]);
+});
+
+test('every tracked root file is listed, however many there are', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await put(dir, 'package.json', JSON.stringify({ name: 'wide-root' }));
+    await put(dir, 'src/index.ts', 'export const x = 1;\n');
+    // A repository with a real root: dotfiles, lockfiles, CI config, per-tool configs.
+    const rootFiles = [
+      '.editorconfig',
+      '.env.example',
+      '.gitattributes',
+      '.gitignore',
+      '.nvmrc',
+      '.prettierrc',
+      '.watchmanconfig',
+      'AGENTS.md.stub',
+      'CHANGELOG.md',
+      'LICENSE',
+      'README.md',
+      'babel.config.js',
+      'eslint.config.mjs',
+      'metro.config.js',
+      'package.json',
+      'pnpm-lock.yaml',
+      'tsconfig.json',
+    ];
+    for (const file of rootFiles) await put(dir, file, '# x\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'wide root');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    const line = text.match(/^Root files, none of which is an area of its own: .*$/m)?.[0] ?? '';
+    for (const file of rootFiles.filter((f) => f !== 'AGENTS.md.stub')) {
+      assert.ok(line.includes(`\`${file}\``), `${file} is missing from the root file list: ${line}`);
+    }
+  });
+});
+
+test('an alias declared in babel but not tsconfig is named, with the file that misses it', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({ name: 'aliased', type: 'module' }),
+    );
+    await put(
+      dir,
+      'tsconfig.json',
+      JSON.stringify({ compilerOptions: { paths: { '@/*': ['src/*'] } } }),
+    );
+    await put(
+      dir,
+      'babel.config.js',
+      [
+        'module.exports = {',
+        "  plugins: [['module-resolver', { root: ['src'], alias: { '@legacy/*': 'src/legacy/*' } }]],",
+        '};',
+      ].join('\n'),
+    );
+    await put(dir, 'src/index.ts', 'export const x = 1;\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'aliases');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    assert.match(text, /Import aliases: @\/\* → src\/\* \(tsconfig\.json — babel\.config\.js does not declare it\); @legacy\/\* → src\/legacy\/\* \(babel\.config\.js — tsconfig\.json does not declare it\)\./);
+    // The divergence is stated, not smoothed over.
+    assert.match(text, /@legacy\/\*.*tsconfig\.json does not declare it/s);
+    // And the rule that keeps the next alias from breaking the build.
+    assert.match(
+      text,
+      /Aliases are declared in 2 files \(tsconfig\.json, babel\.config\.js\), so a new one must be added to all of them/,
+    );
+  });
+});
+
+test('the entry point is the one package.json declares, not a file named index', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({ name: 'declared-entry', type: 'module', main: './server.js' }),
+    );
+    // A file called index.js exists; package.json says otherwise. The manifest wins.
+    await put(dir, 'index.js', 'export const wrong = 1;\n');
+    await put(dir, 'server.js', 'export const right = 1;\n');
+    await put(dir, 'src/thing.ts', 'export const t = 1;\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'entry');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    assert.match(text, /The entry point is `server\.js` — package\.json "main"\./);
+    // index.js is still listed as a file — it is tracked — but it is not offered as the
+    // entry point, because nothing in package.json says it is.
+    assert.ok(
+      !/entry point is `index\.js`|index\.js is an entry point/.test(text),
+      'a filename guess must not stand in for a declared entry',
+    );
+  });
+});
+
+test('a folder on the other module system is named instead of averaged away', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await put(dir, 'package.json', JSON.stringify({ name: 'two-systems', type: 'module' }));
+    await put(dir, 'src/index.mjs', 'export const x = 1;\n');
+    // CommonJS beside an ES modules repository, which one global line cannot express.
+    await put(dir, 'plugins/legacy.cjs', 'module.exports = 1;\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'systems');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    assert.match(text, /Modules: ES modules \(package\.json declares "type": "module"\)\./);
+    assert.match(text, /Not one module system throughout: `plugins\/` is CommonJS \(1 \.cjs file\)\./);
+  });
+});
+
+test('parseAliasBlocks reads alias maps, and does not mistake root for one', () => {
+  const babel = "module.exports = { plugins: [['module-resolver', { root: ['src'], alias: { '@/*': 'src/*' } }]] };";
+  // `root: ['src']` changes what a relative import resolves against; it is not an alias.
+  assert.deepEqual([...parseAliasBlocks(babel)], [['@/*', ['src/*']]]);
+
+  const vite = "export default { resolve: { alias: { '@': './src' } } };";
+  assert.deepEqual([...parseAliasBlocks(vite)], [['@', ['./src']]]);
+
+  assert.deepEqual([...parseAliasBlocks('export default {};')], []);
 });
 
 test('a gate that cannot be parsed says so and names the file instead of guessing', async () => {

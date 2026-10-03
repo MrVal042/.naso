@@ -36,7 +36,6 @@ import {
   coversUnit,
   detectPackageManager,
   pmRunText,
-  isRootNoise,
   isNoisyDir,
   escapeRegExp,
   compareVersions,
@@ -47,7 +46,7 @@ import {
   section,
   SUPPORT_EMAIL,
 } from './lib.mjs';
-import { withLock } from './lock.mjs';
+import { withLock, LOCK_FILENAME } from './lock.mjs';
 import { readConfig, configuredExclusions, normalizeExclusions, isExcluded } from './vendor.mjs';
 
 const AGENTS_FILE = 'AGENTS.md';
@@ -272,12 +271,20 @@ export function topLevelEntries(files) {
     if (segments.length === 0) continue;
 
     const [head, ...rest] = segments;
-    if (head === '.git') continue;
-    if (head.startsWith('.') && !MEANINGFUL_DOT_DIRS.has(head)) continue;
+    if (head === '.git' || head === LOCK_FILENAME) continue;
 
     const isDir = rest.length > 0;
+    // A dot-*directory* is almost always tool state (`.git`, `.expo`, `.idea`) and
+    // `.github` is the exception the briefing does describe. A dot-*file* is the opposite:
+    // `.gitignore`, `.nvmrc` and `.env.example` are tracked configuration that changes how
+    // the repository builds, and dropping them made the root file list quietly incomplete
+    // while still looking complete.
+    if (head.startsWith('.') && isDir && !MEANINGFUL_DOT_DIRS.has(head)) continue;
     if (isDir && isNoisyDir(head)) continue;
-    if (!isDir && isRootNoise(head)) continue;
+    // Root files are listed in full, including the ones a briefing used to treat as
+    // noise. `.nvmrc` and `.gitignore` change how the repository builds, and a list that
+    // quietly omits them looks complete — which is how a Node version mismatch survives
+    // review. Only directories are filtered for newsworthiness, so nothing is lost there.
 
     const existing = byName.get(head);
     if (existing) {
@@ -473,12 +480,36 @@ async function detectConventions(cwd, files, pkg) {
         ? 'CommonJS by default (no "type": "module")'
         : null;
 
+  // A repository is rarely one module system. `.mjs` beside `plugins/*.cjs` is two, and
+  // the one-liner above would have to pick one — so each folder is classified on its own
+  // and only the folders that differ from the repository default are named.
+  const repoIsEsm = pkg?.type === 'module';
+  const mixedFolders = [];
+  for (const entry of topLevelEntries(files)) {
+    if (!entry.isDir) continue;
+    const mjs = entry.files.filter((f) => f.endsWith('.mjs')).length;
+    const cjs = entry.files.filter((f) => f.endsWith('.cjs')).length;
+    const js = entry.files.filter((f) => f.endsWith('.js') && !f.includes('/')).length;
+    if (mjs === 0 && cjs === 0 && js === 0) continue;
+
+    const kind = mjs > 0 ? 'ES modules' : cjs > 0 ? 'CommonJS' : repoIsEsm ? 'ES modules' : 'CommonJS';
+    if ((kind === 'ES modules') !== repoIsEsm || (kind === 'CommonJS' && repoIsEsm)) {
+      mixedFolders.push({
+        folder: `${entry.name}/`,
+        kind,
+        evidence: mjs > 0 ? `${plural(mjs, '.mjs file')}` : `${plural(cjs, '.cjs file')}`,
+      });
+    }
+  }
+
   return {
     deps,
     typescript: has('typescript')
       ? { version: deps.typescript, strict: tsconfig?.compilerOptions?.strict === true, hasTsconfig: Boolean(tsconfig) }
       : null,
     moduleSystem,
+    mixedFolders,
+    aliases: await detectAliases(cwd, tsconfig),
     runner,
     testFiles: testFiles.length,
     testRoots: Array.from(testRoots).sort(),
@@ -496,6 +527,98 @@ async function firstExistingFile(cwd, candidates) {
     if (await pathExists(path.join(cwd, name))) return name;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Import aliases, in every file that declares them
+// ---------------------------------------------------------------------------
+
+/** One `alias: { ... }` block. Alias maps are flat in every config that has one. */
+const ALIAS_BLOCK = /alias\s*:\s*\{([^{}]*)\}/g;
+const ALIAS_ENTRY = /(['"`])([^'"`]+)\1\s*:\s*(['"`])([^'"`]*)\3/g;
+
+/** Config files that can declare aliases, in the order an agent would have to keep in step. */
+const ALIAS_CONFIG_FILES = [
+  'babel.config.js',
+  'babel.config.cjs',
+  'babel.config.mjs',
+  '.babelrc',
+  '.babelrc.js',
+  '.babelrc.json',
+  'vite.config.js',
+  'vite.config.ts',
+  'vite.config.mjs',
+  'vite.config.mts',
+  'webpack.config.js',
+  'webpack.config.cjs',
+  'webpack.config.mjs',
+  'webpack.config.ts',
+];
+
+/**
+ * Aliases declared by one config file's text.
+ *
+ * A regex, not a parser, and the reason is the same one that keeps the vendored copy
+ * dependency-free: this needs the keys of a flat object literal, and evaluating a config
+ * to read it would mean running the repository's own code to describe the repository.
+ * `root: [...]` is read too, because babel's module-resolver accepts it as a spelling of
+ * the same thing and an agent that knows one file but not the other gets it wrong.
+ */
+export function parseAliasBlocks(text) {
+  const aliases = new Map();
+  const add = (alias, target) => {
+    if (!alias || !target) return;
+    const seen = aliases.get(alias) ?? [];
+    if (!seen.includes(target)) aliases.set(alias, [...seen, target]);
+  };
+
+  for (const block of String(text).matchAll(ALIAS_BLOCK)) {
+    for (const entry of block[1].matchAll(ALIAS_ENTRY)) add(entry[2], entry[4]);
+  }
+
+  // `root: [...]` is deliberately not folded into the alias list. In babel's
+  // module-resolver it changes what a *relative* import resolves against — a different
+  // mechanism with a different failure mode — and calling it an alias would put a path in
+  // this list that no import actually uses.
+
+  return aliases;
+}
+
+/**
+ * Every alias declaration in the repository, and where each one is declared.
+ *
+ * The gap this closes is the one that costs an afternoon: tsconfig declares `@/`, babel
+ * does not, Metro builds and `tsc` disagrees about the same import, and neither tool says
+ * why. So the sources are collected first and compared afterwards — a single alias list
+ * could not tell "declared once" from "declared everywhere it needs to be".
+ */
+export async function detectAliases(cwd, tsconfig) {
+  const sources = [];
+  const fromTsconfig = new Map(
+    Object.entries(tsconfig?.compilerOptions?.paths ?? {}).map(([alias, targets]) => [
+      alias,
+      Array.isArray(targets) ? targets.map(String) : [String(targets)],
+    ]),
+  );
+  if (fromTsconfig.size > 0) sources.push({ file: 'tsconfig.json', aliases: fromTsconfig });
+
+  for (const file of ALIAS_CONFIG_FILES) {
+    const text = await readFile(path.join(cwd, file), 'utf8').catch(() => null);
+    if (text === null) continue;
+    const aliases = parseAliasBlocks(text);
+    if (aliases.size > 0) sources.push({ file, aliases });
+  }
+
+  const files = sources.map((source) => source.file);
+  const names = [...new Set(sources.flatMap((source) => [...source.aliases.keys()]))].sort();
+  const declared = names.map((alias) => ({
+    alias,
+    targets: [...new Set(sources.flatMap((source) => source.aliases.get(alias) ?? []))],
+    files: sources.filter((source) => source.aliases.has(alias)).map((source) => source.file),
+    absent: sources.filter((source) => !source.aliases.has(alias)).map((source) => source.file),
+  }));
+
+  return { files, declared, divergent: declared.filter((entry) => entry.absent.length > 0) };
 }
 
 // ---------------------------------------------------------------------------
@@ -651,13 +774,25 @@ function entryPointOf(entry) {
 function manifestEntryPoints(pkg) {
   if (!pkg) return [];
   const found = [];
+  // `./server.js` and `server.js` name the same file, and the manifest is the only place
+  // the repository states which one it means, so the leading `./` is normalised once here
+  // rather than re-stripped by every reader.
+  const normalize = (value) => value.replace(/^\.\//, '');
+  // `module: "ES2020"` and `browser: {...}` are fields named like paths that are not
+  // files, so each value is checked before it is normalised into one.
+  const asPath = (value) => /^\.{0,2}\//.test(value) || /\.[cm]?[jt]sx?$/.test(value);
   for (const key of ['main', 'module', 'browser']) {
-    if (typeof pkg[key] === 'string') found.push({ field: key, value: pkg[key] });
+    if (typeof pkg[key] === 'string' && asPath(pkg[key])) {
+      found.push({ field: key, value: normalize(pkg[key]) });
+    }
   }
-  if (typeof pkg.bin === 'string') found.push({ field: 'bin', value: pkg.bin });
-  else if (pkg.bin && typeof pkg.bin === 'object') {
+  if (typeof pkg.bin === 'string' && asPath(pkg.bin)) {
+    found.push({ field: 'bin', value: normalize(pkg.bin) });
+  } else if (pkg.bin && typeof pkg.bin === 'object') {
     for (const value of Object.values(pkg.bin)) {
-      if (typeof value === 'string') found.push({ field: 'bin', value });
+      if (typeof value === 'string' && asPath(value)) {
+        found.push({ field: 'bin', value: normalize(value) });
+      }
     }
   }
   return found;
@@ -1294,7 +1429,7 @@ export async function scanRepo(cwd, { exclude = null } = {}) {
     validation: await detectValidationCommands(cwd, pkg, packageManager.name),
     gate: await detectGate(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),
-    manifestEntryPoints: manifestEntryPoints(pkg).filter((e) => e.value.startsWith('.')),
+    manifestEntryPoints: manifestEntryPoints(pkg),
   };
 }
 
@@ -1409,7 +1544,7 @@ export function describeEntry(entry) {
 }
 
 /** Root files as one wrapped list rather than a dozen one-line entries. */
-export function renderRootFiles(entries) {
+export function renderRootFiles(entries, facts = null) {
   const roots = entries.filter((entry) => !entry.isDir);
   if (roots.length === 0) return null;
 
@@ -1419,9 +1554,21 @@ export function renderRootFiles(entries) {
     .map((entry) => `\`${entry.name}\``)
     .join(', ');
 
+  const manifestEntry = facts.manifestEntryPoints[0] ?? null;
+
+  if (manifestEntry && entries.some((entry) => entry.entryPoint === manifestEntry.value)) {
+    // package.json names the entry point; that is a fact. A file called index.js is a guess.
+    return (
+      `Root files, none of which is an area of its own: ${names}.\n` +
+      `The entry point is \`${manifestEntry.value}\` — package.json "${manifestEntry.field}".`
+    );
+  }
+
   return (
     `Root files, none of which is an area of its own: ${names}.` +
-    (withEntries ? `\nOf those, ${withEntries} ${roots.filter((e) => e.entryPoint).length === 1 ? 'is' : 'are'} an entry point.` : '')
+    (withEntries
+      ? `\npackage.json declares no entry point; ${withEntries} ${roots.filter((e) => e.entryPoint).length === 1 ? 'is' + ' named for one' : 'are named like one'}, which is a filename guess.`
+      : '')
   );
 }
 
@@ -1485,7 +1632,7 @@ function renderLookFirst(facts) {
   };
 
   for (const { field, value } of facts.manifestEntryPoints) {
-    push(value.replace(/^\.\//, ''), `package.json "${field}" — what the project publishes or runs`);
+    push(value, `package.json "${field}" — what the project publishes or runs`);
   }
 
   push('README.md', 'the project in its own words; check it before assuming anything below');
@@ -1547,13 +1694,35 @@ function renderConventions(facts) {
     lines.push(`Format: Prettier configured by \`${conventions.prettierConfig}\`.`);
   }
 
-  const aliases = conventions.tsconfigPaths ? Object.entries(conventions.tsconfigPaths) : [];
+  const aliases = conventions.aliases?.declared ?? [];
   if (aliases.length > 0) {
-    // Rendered without backticks on purpose: an alias target like "." or "src"
+    // Rendered without backticks on the target: an alias target like "." or "src"
     // is a pattern, not a claim that the file "." exists, and the checker would
     // correctly report it as MISSING.
-    const rendered = aliases.map(([alias, targets]) => `${alias} → ${targets.join(', ')}`);
-    lines.push(`Import aliases (tsconfig "paths"): ${rendered.join('; ')}.`);
+    const rendered = aliases.map((entry) => {
+      const where = entry.files.join(', ');
+      const gap =
+        entry.absent.length > 0 ? ` — ${entry.absent.join(', ')} does not declare it` : '';
+      return `${entry.alias} → ${entry.targets.join(', ')} (${where}${gap})`;
+    });
+    lines.push(`Import aliases: ${rendered.join('; ')}.`);
+
+    if (conventions.aliases.files.length > 1) {
+      lines.push(
+        `Aliases are declared in ${plural(conventions.aliases.files.length, 'file')} ` +
+          `(${conventions.aliases.files.join(', ')}), so a new one must be added to all ` +
+          'of them: an alias one toolchain knows and another does not builds in Metro and ' +
+          'fails in tsc, with neither tool naming the cause.',
+      );
+    }
+  }
+
+  if (conventions.mixedFolders.length > 0) {
+    lines.push(
+      `Not one module system throughout: ${conventions.mixedFolders
+        .map((folder) => `\`${folder.folder}\` is ${folder.kind} (${folder.evidence})`)
+        .join('; ')}.`,
+    );
   }
 
   if (lines.length === 0) return null;
@@ -1732,7 +1901,7 @@ export async function renderBriefing(facts, { version, actor, now }) {
 > wholesale; the pre-commit hook appends at most one line per genuinely new area.`);
 
   const dirs = facts.areas;
-  const rootFiles = renderRootFiles(facts.entries);
+  const rootFiles = renderRootFiles(facts.entries, facts);
   const structure = [];
   if (dirs.length > 0) structure.push(dirs.map(describeEntry).join('\n'));
   if (rootFiles) structure.push(rootFiles);
@@ -2215,7 +2384,7 @@ export async function main(argv = process.argv.slice(2)) {
     for (const entry of result.facts.areas) {
       console.log(`  ${describeEntry(entry)}`);
     }
-    const rootFiles = renderRootFiles(result.facts.entries);
+    const rootFiles = renderRootFiles(result.facts.entries, result.facts);
     if (rootFiles) {
       console.log('');
       console.log(`  ${rootFiles.split('\n').join('\n  ')}`);
