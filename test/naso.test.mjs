@@ -16,6 +16,7 @@ import {
   toolVersion,
   pathExists,
   compareVersions,
+  detectPackageManager,
   splitNul,
   parseGitStatusPorcelainZ,
   unquoteGitPath,
@@ -202,6 +203,80 @@ test('readFileIndex reports its source and honours exclusions on the index view'
     const filtered = await readFileIndex(dir, { exclude: ['vendor'] });
     assert.ok(!filtered.files.includes('vendor/x.js'));
     assert.equal(filtered.source, 'git');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the package manager the repository actually uses
+// ---------------------------------------------------------------------------
+
+test('commands are emitted with the detected manager, not npm', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({
+        name: 'egom',
+        packageManager: 'pnpm@9.1.0',
+        scripts: { verify: 'node scripts/verify.mjs', lint: 'eslint .', test: 'node --test' },
+      }),
+    );
+    await put(dir, 'pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
+    await put(dir, 'src/index.ts', 'export const x = 1;\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'pnpm repo');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    assert.match(text, /Package manager: pnpm \(from package\.json "packageManager": pnpm@9\.1\.0\)/);
+    assert.ok(text.includes('pnpm run verify'), 'the gate must be a pnpm command');
+    assert.ok(text.includes('pnpm run test'));
+    // `npm run` only survives as a substring of nothing here: assert on the whole token.
+    assert.ok(!/\bnpm run\b/.test(text), `npm run leaked into a pnpm repository:\n${text}`);
+  });
+});
+
+test('the lockfile decides when the manifest declares nothing', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await put(dir, 'package.json', JSON.stringify({ name: 'locked', scripts: { test: 'node --test' } }));
+    await put(dir, 'yarn.lock', '# yarn lockfile v1\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'yarn');
+
+    const detected = await detectPackageManager(dir, JSON.parse(await read(dir, 'package.json')));
+    assert.deepEqual(detected, { name: 'yarn', source: 'lock', evidence: 'yarn.lock' });
+  });
+});
+
+test('with neither a field nor a lockfile, CI decides before npm is assumed', async () => {
+  await withRepo(async ({ dir, git }) => {
+    const pkg = { name: 'ci-only', scripts: {} };
+    await put(dir, 'package.json', JSON.stringify(pkg));
+    await put(
+      dir,
+      '.github/workflows/ci.yml',
+      ['name: CI', 'on: [push]', 'jobs:', '  build:', '    steps:', '      - uses: actions/checkout@v4', '      - uses: pnpm/action-setup@v4', '      - run: pnpm install --frozen-lockfile', ''].join('\n'),
+    );
+    await git('add', '-A');
+    await git('commit', '-qm', 'ci');
+
+    const detected = await detectPackageManager(dir, pkg);
+    assert.equal(detected.name, 'pnpm');
+    assert.equal(detected.source, 'ci');
+
+    await put(dir, 'src/a.ts', '1;\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'src');
+    await rm(path.join(dir, '.github'), { recursive: true, force: true });
+
+    const bare = await detectPackageManager(dir, pkg);
+    assert.deepEqual(bare, {
+      name: 'npm',
+      source: 'default',
+      evidence: 'no packageManager field, no lockfile',
+    });
   });
 });
 

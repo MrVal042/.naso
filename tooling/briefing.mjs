@@ -34,6 +34,8 @@ import {
   parseArgs,
   run,
   coversUnit,
+  detectPackageManager,
+  pmRunText,
   isRootNoise,
   isNoisyDir,
   escapeRegExp,
@@ -541,12 +543,20 @@ function manifestEntryPoints(pkg) {
   return found;
 }
 
-/** Every validation command that can be read off this repository, best first. */
-async function detectValidationCommands(cwd, pkg) {
+/**
+ * Every validation command that can be read off this repository, best first.
+ *
+ * The manager comes from `detectPackageManager`, never a hardcoded `npm`. A repository that
+ * installed with pnpm and a briefing that says `npm run verify` is not a formatting
+ * difference: it tells the agent to run a command the project does not use, and in a repo
+ * with no package-lock.json that command installs a second dependency tree instead of
+ * checking anything.
+ */
+export async function detectValidationCommands(cwd, pkg, pm = 'npm') {
   const commands = [];
   const scripts = pkg?.scripts ?? {};
 
-  // `npm run <name>` is correct whichever package manager installed the repo,
+  // `pm run <name>` is correct whichever package manager installed the repo,
   // and it is the one form that is always copy-pasteable.
   const ORDER = [
     ['lint', 'Lint'],
@@ -558,7 +568,7 @@ async function detectValidationCommands(cwd, pkg) {
   ];
   for (const [name, label] of ORDER) {
     if (typeof scripts[name] === 'string') {
-      commands.push({ label, command: `npm run ${name}`, script: name });
+      commands.push({ label, command: pmRunText(pm, name), script: name });
     }
   }
 
@@ -645,6 +655,7 @@ export async function scanRepo(cwd, { exclude = null } = {}) {
   const { files, source } = await readFileIndex(cwd, { exclude });
   const pkg = await readJSONFile(path.join(cwd, 'package.json'));
   const entries = topLevelEntries(files);
+  const packageManager = await detectPackageManager(cwd, pkg);
 
   for (const entry of entries) {
     entry.manifest = await manifestFor(cwd, entry);
@@ -672,6 +683,7 @@ export async function scanRepo(cwd, { exclude = null } = {}) {
     trackedCount: agentsTracked ? files.length - 1 : files.length,
     agentsTracked,
     pkg,
+    packageManager,
     projectName: pkg?.name ?? path.basename(cwd),
     projectDescription: typeof pkg?.description === 'string' ? pkg.description : null,
     entries,
@@ -680,7 +692,7 @@ export async function scanRepo(cwd, { exclude = null } = {}) {
     exclude: exclude ? normalizeExclusions(exclude) : configuredExclusions(await readConfig(cwd)),
     branch: gitInfo.ok ? gitInfo.stdout.trim() : null,
     conventions: await detectConventions(cwd, files, pkg),
-    validation: await detectValidationCommands(cwd, pkg),
+    validation: await detectValidationCommands(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),
     manifestEntryPoints: manifestEntryPoints(pkg).filter((e) => e.value.startsWith('.')),
   };
@@ -838,7 +850,7 @@ function renderLookFirst(facts) {
 }
 
 function renderConventions(facts) {
-  const { conventions } = facts;
+  const { conventions, packageManager } = facts;
   const lines = [];
 
   const mix = languageMix(facts.files).slice(0, 4);
@@ -847,6 +859,15 @@ function renderConventions(facts) {
     lines.push(
       `Language mix: ${mix.map((item) => `${item.label} ${item.count}`).join(', ')}` +
         ` (of ${total} files with a known extension).`,
+    );
+  }
+
+  if (packageManager) {
+    // Said once, here, because every command further down depends on it and a reader who
+    // pastes `npm run verify` into a pnpm repository gets a lockfile nobody asked for.
+    lines.push(
+      `Package manager: ${packageManager.name} (from ${packageManager.evidence}). ` +
+        'Every command in this file uses it.',
     );
   }
 

@@ -1,7 +1,7 @@
 // Shared zero-dependency helpers for the NASO tools in this directory.
 // Built entirely on Node.js core modules — no npm packages.
 
-import { access, readFile, constants } from 'node:fs/promises';
+import { access, readFile, readdir, constants } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
@@ -87,22 +87,93 @@ export function run(cmd, args = [], opts = {}) {
 
 const KNOWN_PACKAGE_MANAGERS = ['npm', 'yarn', 'pnpm', 'bun'];
 
-/** Detect the JS package manager from the packageManager field or lockfiles. */
+/** Lockfile name → manager, most specific first. Two lockfiles is a broken repo, not a choice. */
+const LOCKFILE_MANAGERS = [
+  ['pnpm-lock.yaml', 'pnpm'],
+  ['bun.lockb', 'bun'],
+  ['bun.lock', 'bun'],
+  ['yarn.lock', 'yarn'],
+  ['package-lock.json', 'npm'],
+  ['npm-shrinkwrap.json', 'npm'],
+];
+
+/**
+ * Which package manager CI installs with, as a last resort before guessing.
+ *
+ * Only reached when the manifest declares nothing and no lockfile is committed — which
+ * happens in exactly the repositories where getting it wrong is most annoying, because a
+ * team that standardises on one manager usually says so in the same file everyone else
+ * copied from. Order is explicit-then-implicit: `pnpm/action-setup` is a deliberate choice,
+ * `npm ci` is often just the default nobody edited.
+ */
+export async function packageManagerFromCI(cwd) {
+  const dir = path.join(cwd, '.github', 'workflows');
+  const names = await readdir(dir).catch(() => []);
+  const text = (
+    await Promise.all(
+      names
+        .filter((name) => /\.ya?ml$/.test(name))
+        .map((name) => readFile(path.join(dir, name), 'utf8').catch(() => '')),
+    )
+  ).join('\n');
+
+  if (text === '') return null;
+  if (/pnpm\/(?:action-setup|version)|(?:^|\W)pnpm\s+(?:install|run|--filter)\b/i.test(text)) {
+    return { name: 'pnpm', source: 'ci', evidence: 'pnpm in .github/workflows' };
+  }
+  if (/\byarn\s+(?:install|run|add)\b|\byarn\b/.test(text)) {
+    return { name: 'yarn', source: 'ci', evidence: 'yarn in .github/workflows' };
+  }
+  if (/\bbun\s+(?:install|run)\b|\bbunx\b/.test(text)) {
+    return { name: 'bun', source: 'ci', evidence: 'bun in .github/workflows' };
+  }
+  if (/\bnpm\s+(?:ci|install|run)\b/.test(text)) {
+    return { name: 'npm', source: 'ci', evidence: 'npm in .github/workflows' };
+  }
+  return null;
+}
+
+/**
+ * Which package manager this repository uses, and how we know.
+ *
+ * Three sources in descending authority, and `source` travels with the answer because
+ * "packageManager: pnpm@9.1.0" and "a pnpm-lock.yaml nobody has opened since" are not the
+ * same claim and the briefing should not present them as one:
+ *
+ *   field  package.json `packageManager` — corepack pinned it, which is a decision
+ *   lock   a committed lockfile — the manager that actually produced node_modules
+ *   ci     the workflow file — weaker, but better than assuming npm
+ *
+ * The npm fallback is not a guess in the dangerous sense: `npm run <script>` is valid in
+ * every manager, so a wrong default produces a command that works, just with an extra
+ * lockfile nobody asked for. It is still reported as `default` rather than `lock`, so the
+ * briefing can say so.
+ */
 export async function detectPackageManager(cwd, pkg) {
   if (pkg?.packageManager) {
     const name = String(pkg.packageManager).split('@')[0];
-    if (KNOWN_PACKAGE_MANAGERS.includes(name)) return name;
+    if (KNOWN_PACKAGE_MANAGERS.includes(name)) {
+      return { name, source: 'field', evidence: `package.json "packageManager": ${pkg.packageManager}` };
+    }
   }
-  if (await pathExists(path.join(cwd, 'pnpm-lock.yaml'))) return 'pnpm';
-  if (await pathExists(path.join(cwd, 'yarn.lock'))) return 'yarn';
-  if (
-    (await pathExists(path.join(cwd, 'bun.lockb'))) ||
-    (await pathExists(path.join(cwd, 'bun.lock')))
-  ) {
-    return 'bun';
+
+  for (const [file, name] of LOCKFILE_MANAGERS) {
+    if (await pathExists(path.join(cwd, file))) {
+      return { name, source: 'lock', evidence: file };
+    }
   }
-  if (await pathExists(path.join(cwd, 'package-lock.json'))) return 'npm';
-  return pkg ? 'npm' : null;
+
+  const fromCI = await packageManagerFromCI(cwd);
+  if (fromCI) return fromCI;
+
+  return pkg
+    ? { name: 'npm', source: 'default', evidence: 'no packageManager field, no lockfile' }
+    : { name: 'npm', source: 'none', evidence: 'no package.json, no lockfile' };
+}
+
+/** The copy-pasteable form of `pmRunCommand`, for text in the briefing. */
+export function pmRunText(pm, scriptName) {
+  return `${pm} run ${scriptName}`;
 }
 
 /** Build [cmd, args] to run a package.json script via the detected package manager. */
