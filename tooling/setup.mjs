@@ -338,6 +338,12 @@ async function install(cwd, { track, noHook, force, state }) {
   console.log('## Accepted — writing');
   console.log('');
 
+  // The local excludes go in before the briefing is written, not after. The Boundaries
+  // section reports what .git/info/exclude holds, and a briefing generated one step before
+  // those lines existed would describe the mechanism and not its contents — which is the
+  // one thing the reader cannot work out alone, since nobody else has this file either.
+  const excludedLocally = track ? false : await excludeLocally(cwd);
+
   const created = await createBriefing(cwd, { force, exclude: state.excluded, track });
 
   if (created.ok) {
@@ -396,9 +402,8 @@ async function install(cwd, { track, noHook, force, state }) {
   }
 
   if (!track) {
-    const excluded = await excludeLocally(cwd);
     console.log(
-      excluded
+      excludedLocally
         ? `- Kept ${LOCAL_EXCLUDE_PATTERNS.join(' and ')} out of git via .git/info/exclude (this machine only, never committed).`
         : '- Could not update .git/info/exclude (no git repository here); those files are untracked.',
     );

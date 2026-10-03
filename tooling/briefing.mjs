@@ -1729,51 +1729,200 @@ function renderConventions(facts) {
   return lines;
 }
 
-/** .gitignore entries worth telling an agent about, in file order. */
+/** Ignore entries that name something whose contents must never be committed. */
+const CREDENTIAL_PATTERN =
+  /(keystore|jks|\.env|\.pem|\.p12|\.pfx|\.key|\.crt|\.cer|\.netrc|id_rsa|id_ed25519|credential|secret|token)/i;
+
+/** Every ignore pattern a repository declares, split by what the pattern is for. */
+export function parseIgnorePatterns(text) {
+  const all = String(text ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+
+  return {
+    // A negation is a rule about what is tracked, and an agent that reads `!src/app.ts`
+    // as "excluded" gets it backwards.
+    all,
+    negated: all.filter((line) => line.startsWith('!')),
+    credentials: all.filter((line) => !line.startsWith('!') && CREDENTIAL_PATTERN.test(line)),
+    ordinary: all.filter((line) => !line.startsWith('!') && !CREDENTIAL_PATTERN.test(line)),
+  };
+}
+
+/** .gitignore, read whole rather than capped at the first few lines. */
 async function readIgnorePatterns(cwd) {
   const raw = await readFile(path.join(cwd, '.gitignore'), 'utf8').catch(() => null);
+  return raw === null ? null : parseIgnorePatterns(raw);
+}
+
+/**
+ * `.git/info/exclude`, which is the one ignore file that never leaves the machine.
+ *
+ * Worth naming separately from .gitignore because the two are believed in opposite
+ * directions: a teammate cloning the repository gets your .gitignore and none of your
+ * local excludes, so a path that "is excluded" for you is tracked for them.
+ */
+async function readLocalExcludes(cwd) {
+  const gitDir = await run('git', ['rev-parse', '--git-dir'], { cwd });
+  if (!gitDir.ok) return [];
+
+  const dir = gitDir.stdout.trim();
+  const absolute = path.isAbsolute(dir) ? dir : path.resolve(cwd, dir);
+  const raw = await readFile(path.join(absolute, 'info', 'exclude'), 'utf8').catch(() => null);
   if (raw === null) return [];
 
   return raw
     .split('\n')
     .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#') && !line.startsWith('!'))
-    .slice(0, 8);
+    .filter((line) => line && !line.startsWith('#'));
+}
+
+/**
+ * The boundaries this repository actually enforces, and the docs that say what they mean.
+ *
+ * A `verify:boundary:*` script is a boundary somebody wrote a rule for, and the rule is
+ * almost never in the script: it is in the doc the script points at. Both are read, so the
+ * section can say "auth cannot import from the payments folder, per docs/boundaries/auth.md"
+ * instead of naming a script and leaving the reader to go find the rule.
+ */
+export async function detectEnforcedBoundaries(facts) {
+  const scripts = facts.pkg?.scripts ?? {};
+  const names = Object.keys(scripts).filter((name) => /boundary/i.test(name));
+  const boundaries = [];
+
+  for (const name of names) {
+    const body = scripts[name];
+    const file = body?.match(SCRIPT_DELEGATES_TO)?.[1]?.replace(/^\.\//, '') ?? null;
+    const docs = [];
+
+    if (file) {
+      const text = await readFile(path.join(facts.cwd, file), 'utf8').catch(() => null);
+      if (text !== null) {
+        // A doc reference is read as a plain path token, not a backticked one: a script
+        // says where the rule lives in a comment or a string, and requiring backticks
+        // would miss most of them. Only tracked markdown counts — a path that is not in
+        // the index is a stale reference, and sending a reader there wastes their turn.
+        for (const token of text.matchAll(/[\w./@-]*[\w-]+\.md\b/g)) {
+          const doc = token[0].replace(/^\.\//, '');
+          if (!facts.files.includes(doc)) continue;
+          if (!docs.includes(doc)) docs.push(doc);
+        }
+      }
+    }
+
+    boundaries.push({
+      name,
+      command: pmRunText(facts.packageManager?.name ?? 'npm', name),
+      file,
+      fileExists: Boolean(file) && facts.files.includes(file),
+      inGate: Boolean(facts.gate?.rawSteps?.includes(name)),
+      docs,
+    });
+  }
+
+  return boundaries;
 }
 
 /**
  * The lines people cross by accident, stated as facts about this repository.
  *
- * Every item here is something the tooling already enforces; writing it down is
- * what lets an agent reason about the rule instead of rediscovering it by
- * tripping over it.
+ * Ordered by what an agent is most likely to get wrong, not by what the tooling happens to
+ * know: the enforced boundaries first, because they are this repository's own rules and the
+ * only thing here that can fail a commit; then the aliases, because an import that resolves
+ * in one toolchain is the quietest failure there is; then the ignore rules, which are the
+ * broadest and therefore the least surprising.
+ *
+ * Credential-shaped patterns are never abbreviated away. A `.gitignore` with forty entries
+ * is a briefing sentence; one that silently drops `*.keystore` while listing `node_modules/`
+ * is a lie about the repository's worst habit.
  */
 async function renderBoundaries(facts) {
   const lines = [];
   const { conventions } = facts;
 
-  if (conventions.tsconfigPaths) {
-    const count = Object.keys(conventions.tsconfigPaths).length;
+  const boundaries = await detectEnforcedBoundaries(facts);
+  if (boundaries.length > 0) {
     lines.push(
-      `${count} import alias${count === 1 ? '' : 'es'} are declared in tsconfig.json. ` +
-        'An import that uses a bare relative path where an alias exists is the one ' +
-        'mistake TypeScript will not catch for you.',
+      `**Enforced boundaries.** ${plural(boundaries.length, 'script')} check the seams ` +
+        'between areas, and each is named by what it protects:',
     );
+    for (const boundary of boundaries) {
+      const gate = boundary.inGate ? 'runs in the gate' : 'not shown to run in the gate';
+      const target = boundary.file
+        ? boundary.fileExists
+          ? `checks \`${boundary.file}\``
+          : // Not backticked: the briefing is reporting a broken reference, and a backticked
+            // path here would read as a claim that the file exists — which the checker would
+            // then correctly contradict.
+            `names ${boundary.file}, which is not in the index`
+        : 'could not be resolved to a file';
+      const docs = boundary.docs.length > 0 ? `; the rule is in ${boundary.docs.map((d) => `\`${d}\``).join(', ')}` : '';
+      lines.push(`- \`${boundary.name}\` (\`${boundary.command}\`) — ${target}, ${gate}${docs}.`);
+    }
+  }
+
+  const declared = conventions.aliases?.declared ?? [];
+  if (declared.length > 0) {
+    lines.push(
+      `**Import aliases.** ${declared.map((entry) => `${entry.alias} → ${entry.targets.join(', ')}`).join('; ')}. ` +
+        'An import that uses a bare relative path where an alias exists is the one mistake ' +
+        'TypeScript will not catch for you.',
+    );
+    if (conventions.aliases.files.length > 1) {
+      const missing = conventions.aliases.divergent;
+      lines.push(
+        `Declared in ${conventions.aliases.files.join(', ')}. A new alias must go in all of ` +
+          'them, or it resolves in one toolchain and not the other.' +
+          (missing.length > 0
+            ? ` Already divergent: ${missing.map((entry) => `${entry.alias} (missing from ${entry.absent.join(', ')})`).join('; ')}.`
+            : ''),
+      );
+    }
   }
 
   if (Array.isArray(conventions.eslintIgnores) && conventions.eslintIgnores.length > 0) {
     // Not backticked: these are glob patterns, not paths that must exist.
     lines.push(
-      `ESLint ignores ${conventions.eslintIgnores.join(', ')} — lint passes there because ` +
-        'nothing is checked, not because the code is correct.',
+      `**Lint.** ESLint ignores ${conventions.eslintIgnores.join(', ')} — lint passes there ` +
+        'because nothing is checked, not because the code is correct.',
     );
   }
 
   const ignored = await readIgnorePatterns(facts.cwd);
-  if (ignored.length > 0) {
+  if (ignored) {
+    if (ignored.credentials.length > 0) {
+      lines.push(
+        `**Credentials.** .gitignore excludes ${ignored.credentials.join(', ')}. A file matching ` +
+          'one of these is never committed, which means a real key there is invisible to ' +
+          '`git status` — look for it before assuming a build failure is unrelated.',
+      );
+    }
+
+    const shown = ignored.ordinary.slice(0, 10);
+    const elided = ignored.ordinary.length - shown.length;
+    if (shown.length > 0) {
+      lines.push(
+        `**Ignored paths.** Nothing under ${shown.join(', ')} reaches a commit, and nothing ` +
+          `under ${shown.length === 1 ? 'it is' : 'them is'} reviewed.` +
+          (elided > 0 ? ` ${elided} further pattern${elided === 1 ? '' : 's'} in .gitignore ${elided === 1 ? 'is' : 'are'} not listed here.` : ''),
+      );
+    }
+
+    if (ignored.negated.length > 0) {
+      lines.push(
+        `**Re-included.** ${ignored.negated.join(', ')} — a negated pattern means those paths ` +
+          'are tracked after all, whatever sits above them.',
+      );
+    }
+  }
+
+  const local = await readLocalExcludes(facts.cwd);
+  if (local.length > 0) {
     lines.push(
-      `git excludes ${ignored.join(', ')}. Nothing under those paths reaches a commit, and ` +
-        'nothing under them is reviewed.',
+      `**Local excludes.** .git/info/exclude holds ${local.join(', ')} on this machine only. ` +
+        'Nobody else has them: a teammate cloning this repository gets none of these paths ' +
+        'excluded, so do not reason about them as if they were shared policy.',
     );
   }
 

@@ -38,6 +38,7 @@ import {
   parseTestTargets,
   findUncoveredTests,
   parseAliasBlocks,
+  parseIgnorePatterns,
   extractInvocations,
   stepFamily,
   collapseSteps,
@@ -208,6 +209,27 @@ async function seedEgom(dir, git) {
   await put(dir, 'test/money.test.ts', "it('adds', () => {});\n");
   // A test directory the test script never names: node --test test/ will not run these.
   await put(dir, 'e2e/checkout.spec.ts', "describe('checkout', () => {});\n");
+
+  // Boundary verifiers that exist, and the doc each one points at. The rule lives in the
+  // doc; the script is the thing that fails a commit.
+  const boundaries = [
+    ['auth', 'auth'],
+    ['payments', 'payments'],
+    ['db', 'db'],
+    ['api', 'api'],
+  ];
+  for (const [name, doc] of boundaries) {
+    await put(
+      dir,
+      `scripts/verify-boundary-${name}.mjs`,
+      `// The rule: see docs/boundaries/${doc}.md\nimport { fail } from '../lib/fail.mjs';\nexport const check = () => fail('${name}');\n`,
+    );
+    await put(
+      dir,
+      `docs/boundaries/${doc}.md`,
+      `# ${doc}\n\nWhat may import what across this seam, and why.\n`,
+    );
+  }
   await put(dir, 'README.md', '# Egom\n\nRequires Node.js >= 18 to run.\n');
   await put(dir, '.nvmrc', '20.11.0\n');
   await put(dir, '.gitignore', 'node_modules/\nios/build/\n.expo/\n*.keystore\n.env\n');
@@ -733,6 +755,60 @@ test('a tracked AGENTS.md keeps the staging rule, because it is reviewable', asy
     assert.match(text, /stages it with the commit\. This file is tracked/);
     assert.ok(!/never will be/.test(text), 'a tracked file is not local-only');
   });
+});
+
+test('boundaries lead the section: enforced seams, then aliases, then ignores', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await seedEgom(dir, git);
+    await put(
+      dir,
+      'tsconfig.json',
+      JSON.stringify({ compilerOptions: { paths: { '@/*': ['app/*'] } } }),
+    );
+    await git('add', '-A');
+    await git('commit', '-qm', 'aliases');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    const section = text.slice(text.indexOf('## Boundaries'), text.indexOf('## Secrets'));
+
+    // The repository's own enforced boundaries come first, each with the doc that holds
+    // the rule and whether the gate runs it.
+    assert.match(section, /\*\*Enforced boundaries\.\*\* 4 scripts check the seams/);
+    assert.match(
+      section,
+      /- `verify:boundary:auth` \(`pnpm run verify:boundary:auth`\) — checks `scripts\/verify-boundary-auth\.mjs`, runs in the gate; the rule is in `docs\/boundaries\/auth\.md`\./,
+    );
+
+    // Aliases next.
+    assert.match(section, /\*\*Import aliases\.\*\* @\/\* → app\/\*\./);
+
+    // Credentials from .gitignore, listed in full rather than truncated to fit.
+    assert.match(section, /\*\*Credentials\.\*\* \.gitignore excludes [^.]*\*\.keystore/);
+    assert.ok(
+      section.indexOf('**Enforced boundaries.**') < section.indexOf('**Import aliases.**') &&
+        section.indexOf('**Import aliases.**') < section.indexOf('**Credentials.**'),
+      `boundaries must be ordered enforced, aliases, ignores:\n${section}`,
+    );
+
+    // The local exclude file is named as its own, non-shared mechanism.
+    assert.match(
+      section,
+      /\*\*Local excludes\.\*\* \.git\/info\/exclude holds \.naso, AGENTS\.md on this machine only\./,
+    );
+  });
+});
+
+test('parseIgnorePatterns separates credentials from build output and reads negations', () => {
+  const parsed = parseIgnorePatterns(
+    ['node_modules/', 'dist/', '*.keystore', '*.p12', '.env*', '!src/app.ts', '# a comment'].join('\n'),
+  );
+
+  assert.deepEqual(parsed.credentials, ['*.keystore', '*.p12', '.env*']);
+  assert.deepEqual(parsed.ordinary, ['node_modules/', 'dist/']);
+  assert.deepEqual(parsed.negated, ['!src/app.ts']);
 });
 
 test('a gate that cannot be parsed says so and names the file instead of guessing', async () => {
