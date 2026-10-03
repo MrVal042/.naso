@@ -1,0 +1,8 @@
+# Installed to develop and test this package, never committed.
+node_modules/
+
+# `npm pack` output.
+*.tgz
+
+# A vendored NASO install, if this repository is ever set up with itself.
+.naso/

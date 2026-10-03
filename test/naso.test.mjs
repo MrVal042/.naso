@@ -7,7 +7,7 @@ import os from 'node:os';
 import { mkdtemp, rm, mkdir, writeFile, readFile, readdir, chmod } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   coversUnit,
@@ -56,12 +56,40 @@ const AGENTS = 'AGENTS.md';
 // Secret-shaped fixtures are assembled at runtime and never written whole. A literal
 // here is a literal in the repository, and a push to a host with secret scanning on
 // would block NASO's own tests as though they had leaked a real credential.
+/**
+ * Drivers that call the flow with an injected question layer.
+ *
+ * Written as `node -e` so the child has no dependency resolution of its own and
+ * inherits nothing from the test process except the repository directory.
+ */
+const RUN_FLOW = `
+  const { main } = await import(${JSON.stringify(path.join(TOOL_DIR, 'flow.mjs'))});
+  main([process.argv[1]], {
+    interactive: () => true,
+    ask: async () => ({ track: false, noHook: false, force: false }),
+  }).then(() => process.exit(process.exitCode ?? 0), (err) => {
+    console.error(err);
+    process.exit(1);
+  });
+`;
+
+const RUN_FLOW_CANCEL = `
+  const { main } = await import(${JSON.stringify(path.join(TOOL_DIR, 'flow.mjs'))});
+  main([process.argv[1]], {
+    interactive: () => true,
+    ask: async () => null,
+  }).then(() => process.exit(process.exitCode ?? 0), (err) => {
+    console.error(err);
+    process.exit(1);
+  });
+`;
+
 const STRIPE_FIXTURE = ['sk', 'live', 'abcdefghijklmnopqrstuvwxyz0123'].join('_');
 const GITHUB_FIXTURE = ['ghp', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'].join('_');
 
-function exec(cmd, args, cwd) {
+function exec(cmd, args, cwd, env = {}) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (c) => (stdout += c));
@@ -89,8 +117,24 @@ async function withRepo(fn, { seed = true } = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'naso-test-'));
   const git = (...args) => exec('git', args, dir);
   const script = (name, args = []) => naso([name, dir, ...args], dir);
+  const bare = (args = []) => naso([dir, ...args], dir);
   const raw = (name, args = []) =>
     exec(process.execPath, [path.join(TOOL_DIR, name), dir, ...args], dir);
+  const type = (keys) =>
+    new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [BIN, dir, ...(keys ?? [])], {
+        cwd: dir,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => (stdout += d));
+      child.stderr.on('data', (d) => (stderr += d));
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+      child.on('error', reject);
+      setTimeout(() => child.stdin.end(), 50);
+      for (const key of keys ?? []) setTimeout(() => child.stdin.write(key), 120);
+    });
 
   try {
     await git('init', '-q', '-b', 'main');
@@ -101,7 +145,7 @@ async function withRepo(fn, { seed = true } = {}) {
       await git('add', 'seed.txt');
       await git('commit', '-qm', 'init');
     }
-    return await fn({ dir, git, script, raw });
+    return await fn({ dir, git, script, bare, raw, type });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -757,6 +801,164 @@ test('a tracked AGENTS.md keeps the staging rule, because it is reviewable', asy
   });
 });
 
+test('the README documents the bare command and not the retired pair', async () => {
+  await withRepo(async ({ dir }) => {
+    const readme = await read(PACKAGE_ROOT, 'README.md');
+
+    assert.match(readme, /npx naso-dev --yes/, 'the scriptable path must be documented');
+    assert.match(readme, /--why/, 'the long-form rationale must be documented');
+    assert.match(readme, /NO_COLOR/, 'the colour opt-out must be documented');
+    assert.ok(
+      !/npx naso-dev (init|setup)/.test(readme),
+      'the README must not send anybody to a retired command',
+    );
+  });
+});
+
+test('the bare command runs the whole flow: explain, plan, ask, write', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+
+    const res = await bare([]);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const out = res.stdout;
+
+    // Reads first, and says what it read.
+    assert.match(out, /Files\s+5 tracked in the git index/);
+    assert.match(out, /Branch\s+main/);
+
+    // The compressed explanation keeps the guarantee the question depends on.
+    assert.match(out, /nothing at all is written/i);
+
+    // Then the plan for this repository.
+    assert.match(out, /src\/index\.ts/);
+
+    // And the verdict, when there is no TTY to ask: nothing written, --yes named.
+    assert.ok(!(await exists(dir, AGENTS)), 'a bare non-interactive run must not write AGENTS.md');
+    assert.match(out, /--yes/);
+  });
+});
+
+test('bare --yes writes the briefing exactly as the retired setup command would', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+
+    const viaBare = await bare(['--yes']);
+    assert.equal(viaBare.code, 0, viaBare.stdout + viaBare.stderr);
+    const fromBare = await read(dir, AGENTS);
+
+    await rm(path.join(dir, AGENTS), { force: true });
+    await rm(path.join(dir, '.naso'), { recursive: true, force: true });
+
+    const viaSetup = await script('setup', ['--yes']);
+    assert.equal(viaSetup.code, 0, viaSetup.stdout + viaSetup.stderr);
+    const fromSetup = await read(dir, AGENTS);
+
+    // Same bytes, so the two paths cannot drift apart as they are maintained.
+    assert.equal(fromBare, fromSetup);
+  });
+});
+
+test('answering the questions accepts and writes', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+
+    // The prompt layer is injected rather than driven through a pty. A pty in a
+    // test suite is a flaky dependency and a way to hang forever; what is under
+    // test here is what the flow does with an answer, not how the question is
+    // drawn. The pty path itself is exercised by `npx naso-dev` in a terminal.
+    const res = await new Promise((resolve) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', RUN_FLOW, dir], {
+        cwd: dir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      child.stdout.on('data', (d) => (stdout += d));
+      child.on('close', (code) => resolve({ code, stdout }));
+    });
+
+    assert.equal(res.code, 0, res.stdout);
+    assert.ok(await exists(dir, AGENTS), 'answering yes must write the briefing');
+    assert.match(await read(dir, AGENTS), /naso:start/);
+    assert.ok(await exists(dir, '.naso'), 'the toolset must be vendored');
+  });
+});
+
+test('cancelling at a question writes nothing and is not an error', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+
+    const res = await new Promise((resolve) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', RUN_FLOW_CANCEL, dir], {
+        cwd: dir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => (stdout += d));
+      child.stderr.on('data', (d) => (stderr += d));
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+    });
+
+    assert.equal(res.code, 0, 'a cancelled install is a decision, not a failure');
+    assert.equal((await git('status', '--porcelain')).stdout.trim(), '', 'nothing may change');
+    assert.ok(!(await exists(dir, AGENTS)));
+  });
+});
+
+test('the bare command never hangs without a TTY and never writes without a decision', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+
+    const started = Date.now();
+    const res = await bare([]);
+    assert.ok(Date.now() - started < 30_000, 'the bare command must not block on a prompt');
+    assert.equal(res.code, 0);
+    assert.equal((await git('status', '--porcelain')).stdout.trim(), '', 'nothing may change');
+  });
+});
+
+test('NO_COLOR and --no-color both strip every escape code', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+
+    const esc = /\u001B\[[0-9;]*m/;
+    const plain = await exec(process.execPath, [BIN, dir], dir, { NO_COLOR: '1' });
+    assert.equal(plain.code, 0);
+    assert.ok(!esc.test(plain.stdout), 'NO_COLOR must produce no escape codes');
+
+    const flagged = await bare(['--no-color']);
+    assert.ok(!esc.test(flagged.stdout), '--no-color must produce no escape codes');
+  });
+});
+
+test('init and setup still run, warn once, and are hidden from the command list', async () => {
+  await withRepo(async ({ dir, git, script, bare }) => {
+    await seedProject(dir, git);
+
+    const help = await naso(['--help'], dir);
+    assert.doesNotMatch(help.stdout, /naso-dev init/);
+    assert.doesNotMatch(help.stdout, /naso-dev setup/);
+    assert.match(help.stdout, /naso-dev \[target-dir\]/, 'the bare command is the documented entry point');
+    // The commands that are still there must still be listed.
+    assert.match(help.stdout, /naso-dev briefing/);
+    assert.match(help.stdout, /naso-dev doctor/);
+
+    const init = await script('init');
+    assert.equal(init.code, 0, init.stdout + init.stderr);
+    const initOut = init.stdout + init.stderr;
+    assert.match(initOut, /deprecated/);
+    assert.match(initOut, /npx naso-dev\b/, 'it must name the replacement');
+    // One warning, not one per line of its own prose.
+    assert.equal(initOut.match(/deprecated/gi).length, 1);
+
+    const setup = await script('setup', ['--yes']);
+    assert.equal(setup.code, 0, setup.stdout + setup.stderr);
+    assert.match(setup.stdout + setup.stderr, /deprecated/);
+    assert.ok(await exists(dir, AGENTS), 'the retired command must still do its job');
+  });
+});
+
 test('setup flags a README that disagrees with the declared Node version, and a tracked keystore, without reading either', async () => {
   await withRepo(async ({ dir, git, script }) => {
     await seedProject(dir, git);
@@ -1267,9 +1469,54 @@ test('the vendored copy is importable on its own, with no package in sight', asy
   });
 });
 
+test('nothing vendored imports a package, because the hook has no node_modules', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    await vendorTooling(dir);
+
+    const vendored = await filesIn(path.join(dir, '.naso', 'tooling'), ['.mjs']);
+    const names = vendored.map((file) => path.basename(file));
+
+    // The two modules that carry dependencies are the ones that must not be here.
+    assert.ok(!names.includes('ui.mjs'), 'ui.mjs imports picocolors and must not be vendored');
+    assert.ok(!names.includes('flow.mjs'), 'flow.mjs imports @clack/prompts and must not be vendored');
+
+    // The general rule, so the next module somebody adds is caught here rather
+    // than by a pre-commit hook failing on somebody else's machine.
+    const bare = [];
+    for (const file of vendored) {
+      const text = await readFile(file, 'utf8');
+      for (const match of text.matchAll(/(?:^|\n)\s*(?:import|export)[\s\S]*?from\s+'([^']+)'/g)) {
+        const spec = match[1];
+        if (spec.startsWith('.') || spec.startsWith('node:')) continue;
+        bare.push(`${path.basename(file)} → ${spec}`);
+      }
+    }
+    assert.deepEqual(bare, [], `vendored modules must not import packages:\n${bare.join('\n')}`);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // the hook
 // ---------------------------------------------------------------------------
+
+test('a vendored copy reports its own version, not 0.0.0', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    await vendorTooling(dir);
+
+    // The vendored copy reads its VERSION from beside itself. When it did not, the
+    // gate warned on every commit that AGENTS.md came from a newer NASO than the
+    // one running it — permanently, on every repository, with no way to fix it.
+    // Read through the vendored copy itself, not through this package's own copy:
+    // the bug was that the two disagree, so testing the wrong one proves nothing.
+    const vendoredLib = pathToFileURL(path.join(dir, '.naso', 'tooling', 'lib.mjs')).href;
+    const { toolVersion: vendoredToolVersion } = await import(vendoredLib);
+
+    assert.notEqual(await vendoredToolVersion(), '0.0.0', 'the vendored copy must find its own VERSION');
+    assert.equal(await vendoredToolVersion(), await toolVersion());
+  });
+});
 
 test('buildHookScript resolves the vendored script from the repository root', () => {
   const body = buildHookScript();

@@ -483,14 +483,28 @@ export function nasoDir() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 }
 
-/** Current tool version, read from `<naso>/VERSION`. */
+/**
+ * Current tool version.
+ *
+ * Two places, because this file runs from two places. Installed from npm the
+ * VERSION file is a sibling of tooling/, and in a vendored copy it sits beside
+ * this file. Reading only the first made every vendored install report 0.0.0 and
+ * then warn that AGENTS.md had been written by a newer NASO — a false alarm, on
+ * every repository, forever, caused by the copy nobody looked at.
+ */
 export async function toolVersion() {
-  try {
-    const raw = await readFile(path.join(nasoDir(), 'VERSION'), 'utf8');
-    return raw.trim();
-  } catch {
-    return '0.0.0';
+  for (const candidate of [
+    path.join(nasoDir(), 'VERSION'),
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'VERSION'),
+  ]) {
+    try {
+      const raw = await readFile(candidate, 'utf8');
+      if (raw.trim()) return raw.trim();
+    } catch {
+      // Try the next location.
+    }
   }
+  return '0.0.0';
 }
 
 /**
@@ -501,6 +515,24 @@ export async function toolVersion() {
  * forever on input nobody can type, which is a far worse failure than refusing
  * to run and printing the same information as plain text.
  */
+/**
+ * A style set that does nothing.
+ *
+ * Lives here rather than in ui.mjs because this module gets vendored into a
+ * repository and run by a pre-commit hook on a machine with no node_modules.
+ * ui.mjs imports picocolors; a hook that imported it would fail at startup, and
+ * the vendored modules therefore style nothing and accept a style as an argument.
+ */
+export const plainStyle = new Proxy(
+  { enabled: false, identity: (text) => String(text) },
+  {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      return (text) => String(text);
+    },
+  },
+);
+
 export function isInteractive() {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }

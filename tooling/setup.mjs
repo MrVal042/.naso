@@ -21,7 +21,18 @@
 //   npx naso-dev setup [target-dir] [--track] [--no-hook] [--force]
 //                           [--yes] [--dry-run]
 //
-// Zero external dependencies — Node.js core modules only.
+// Retired as a documented entry point: `npx naso-dev` with no command now does
+// the explanation and the plan and the question in one run. The command still
+// works and is still tested, because scripts in the wild call it, but it prints
+// one deprecation line and gets out of the way.
+//
+// This module is the implementation the bare command calls into — inspect(),
+// displayPlan() and install() are the same functions either path runs, which is
+// what keeps the two from producing two different AGENTS.md files.
+//
+// Zero external dependencies — Node.js core modules only. The flow that calls in
+// here brings the colour; none of it lives below this line, so the vendored copy
+// of this file runs with no node_modules anywhere near it.
 
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
@@ -34,6 +45,7 @@ import {
   nasoDir,
   isInteractive,
   promptChoice,
+  plainStyle,
   supportTemplate,
   isMainModule,
   TOOLS,
@@ -142,7 +154,7 @@ function toolingTree() {
  * The scan is the expensive part and it is what both a rejection and an accept
  * are decided on, so it is done up front and reused for the whole flow.
  */
-async function inspect(cwd, { track, noHook, exclude }) {
+export async function inspect(cwd, { track, noHook, exclude }) {
   const config = await readConfig(cwd);
 
   // Saved exclusions survive the run, and a --exclude flag adds to them. The union is
@@ -255,12 +267,12 @@ async function inspect(cwd, { track, noHook, exclude }) {
 }
 
 /** Step 2's screen. Printed identically on every pass, so a second read is comparable. */
-async function displayPlan(state, cwd) {
+export async function displayPlan(state, cwd, style = plainStyle) {
   const { facts, plans, version, excluded } = state;
   const dirs = facts.areas;
   const rootFiles = renderRootFiles(facts.entries, facts);
 
-  console.log(`# NASO Setup ${version} — ${cwd}`);
+  console.log(`${style.bold('The plan')}  ${style.dim(cwd)}`);
   console.log('');
   console.log(
     `Read ${facts.files.length} file${facts.files.length === 1 ? '' : 's'}` +
@@ -269,7 +281,7 @@ async function displayPlan(state, cwd) {
   );
   console.log('');
 
-  console.log('## AGENTS.md — what the briefing will say');
+  console.log(style.heading('AGENTS.md — what the briefing will say'));
   console.log('');
   if (dirs.length === 0) {
     console.log('  No top-level directories. The briefing will describe the root files only.');
@@ -293,13 +305,13 @@ async function displayPlan(state, cwd) {
     console.log('');
     console.log('  Warnings — NASO changed none of these, they are here so you see them:');
     for (const warning of warnings) {
-      console.log(`    ** ${warning.headline}`);
-      console.log(`      ${warning.detail}`);
+      console.log(`    ${style.warn(warning.headline)}`);
+      console.log(`      ${style.dim(warning.detail)}`);
     }
   }
   console.log('');
 
-  console.log('## The toolset');
+  console.log(style.heading('The toolset'));
   console.log('');
   console.log(`These scripts are copied into ${NASO_DIR}/tooling/ in this repository:`);
   console.log('');
@@ -311,16 +323,16 @@ async function displayPlan(state, cwd) {
   console.log('The copy is why the hook survives: no package install, no network, no npm cache.');
   console.log('');
 
-  console.log('## What will change');
+  console.log(style.heading('What will change'));
   console.log('');
   for (const plan of plans) {
-    console.log(`  ${plan.verb}  ${plan.target}`);
+    console.log(`  ${style.bullet(`${style.bold(plan.verb)}  ${plan.target}`)}`);
     console.log(`      ${wrap(plan.detail)}`);
   }
   console.log('');
 
   if (state.artifacts.length > 0) {
-    console.log('## Leftovers to remove');
+    console.log(style.heading('Leftovers to remove'));
     console.log('');
     for (const artifact of state.artifacts) {
       console.log(`  ${artifact.path}`);
@@ -334,7 +346,7 @@ async function displayPlan(state, cwd) {
 }
 
 /** Step 3. */
-async function install(cwd, { track, noHook, force, state }) {
+export async function install(cwd, { track, noHook, force, state }) {
   console.log('## Accepted — writing');
   console.log('');
 
