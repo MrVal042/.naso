@@ -92,6 +92,29 @@ node <path-to-the-naso-dev-package>/bin/naso-dev.mjs
 
 The path is wherever the package landed — a clone, `npm i -g`, or the npx cache. `npx naso-dev ...` and `node .../bin/naso-dev.mjs ...` run exactly the same code.
 
+## Author
+
+Created and maintained by **Valentine Asogwa (MrVal)**.
+
+- GitHub: [@MrVal042](https://github.com/MrVal042)
+- Email: contactmrval@gmail.com
+
+## Contributing
+
+Issues and pull requests are welcome. For anything larger than a small fix, open an issue first so the approach can be agreed before the work is done.
+
+```bash
+git clone https://github.com/MrVal042/.naso.git && cd .naso
+npm ci
+npm test
+```
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Every behavior change needs a test that fails before the fix.
+
+## Contributors
+
+Thanks to everyone who has contributed. See the [contributors graph](https://github.com/MrVal042/.naso/graphs/contributors).
+
 ## Support
 
 Email: contactmrval@gmail.com

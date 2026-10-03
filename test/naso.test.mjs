@@ -815,6 +815,31 @@ test('the README documents the bare command and not the retired pair', async () 
   });
 });
 
+test('the README links only to files that exist, and names a real author', async () => {
+  await withRepo(async ({ dir }) => {
+    const readme = await read(PACKAGE_ROOT, 'README.md');
+
+    // A link to a file that is not in the repository is a 404 for whoever clicks
+    // it, and the one reader who cares is somebody trying to contribute.
+    const links = [...readme.matchAll(/\]\(([^)#][^)]*)\)/g)]
+      .map((match) => match[1])
+      .filter((target) => !/^(https?:|mailto:)/.test(target));
+    for (const target of links) {
+      const relPath = target.split('#')[0];
+      assert.ok(await exists(PACKAGE_ROOT, relPath), `README links to ${target}, which does not exist`);
+    }
+
+    // The placeholders in a template must not survive into the shipped file.
+    assert.doesNotMatch(readme, /your-handle|your-email|<repo-url>|TODO|FIXME|XXX/i);
+    assert.match(readme, /@MrVal042/, 'the author handle must be the real one');
+    assert.match(readme, /contactmrval@gmail\.com/);
+
+    // CONTRIBUTING.md exists, and the README points at it rather than the reverse.
+    const contributing = await read(PACKAGE_ROOT, 'CONTRIBUTING.md');
+    assert.match(contributing, /fails before the fix/i, 'the fail-first rule must be stated');
+  });
+});
+
 test('the bare command runs the whole flow: explain, plan, ask, write', async () => {
   await withRepo(async ({ dir, git, bare }) => {
     await seedProject(dir, git);
