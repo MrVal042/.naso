@@ -80,7 +80,10 @@ All commands accept `--help`. `init` and `setup` are retired but still run; both
 - `--dry-run` — print the plan and stop. Writes nothing.
 - `--force` — on `briefing create`, replace an existing `naso:start` / `naso:end` block. On the setup flow, allow replacing it. It never touches anything outside the markers.
 - `--why` — print the long-form rationale for adopting NASO.
-- `--no-color` — emit no escape codes, whatever the terminal supports. `NO_COLOR` does the same thing, and either way a piped run is plain text by default.
+- `--no-color` — emit no escape codes, whatever the terminal supports. `NO_COLOR` does the same thing.
+- `--color` — colour the output even when it is a pipe.
+
+Colour is on for a terminal and off for a pipe, which is why `npx naso-dev > plan.txt` gives you a readable file. `FORCE_COLOR` is deliberately ignored here: npm sets it for its own output in every script it runs, so honouring it would mean colouring output precisely where nobody is looking at a terminal — in `npm publish` and `npm test` logs. Use `--color` if you want colour in a pipe.
 
 ## Running it without installing
 

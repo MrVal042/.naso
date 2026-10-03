@@ -18,25 +18,35 @@ import pc from 'picocolors';
 /**
  * Whether this process may colour its output.
  *
- * Four inputs, in the order a person would expect them to win:
- *
- *   --no-color / --color   an explicit request on this invocation
+ *   --no-color / --color   an explicit request on this invocation, and the only
+ *                          one that can turn colour ON for a pipe
  *   NO_COLOR               set, any value, by anything from CI to the parent shell
- *   FORCE_COLOR            set, any value, which overrides NO_COLOR — the
- *                          long-standing convention, and the reason a CI log
- *                          does not come out flat when it was not asked to be
- *   isTTY                  the fallback, and the only one that is a guess
+ *   isTTY                  the fallback, and the only other input
  *
  * A pipe is not a terminal, so `npx naso-dev | tee log` gets plain text, and so
  * does anything run by an agent. That is the desired outcome: escape codes in a
  * captured buffer are noise, and a file written to be read later should not carry
  * the terminal it happened to be printed on.
+ *
+ * FORCE_COLOR is deliberately NOT honoured here, which is a departure from the
+ * convention every other tool follows and it is worth saying why. npm sets
+ * FORCE_COLOR in the environment of every script it runs, to colour its own
+ * output, and it does not unset it for the child. So a tool that treats
+ * FORCE_COLOR as a request colours its output when piped from `npm publish`,
+ * `npm test` or `npm run` — that is, precisely when nobody is looking at a
+ * terminal and the escape codes are captured into a file. It surfaced here as a
+ * failing test: the publish gate ran the suite with FORCE_COLOR set by npm, and
+ * the one assertion that reads the flow's own output got escape codes wrapped
+ * around the word it was looking for.
+ *
+ * `--color` is the honest way to ask for colour in a pipe, because it is typed by
+ * the person who wants it. An environment variable that a parent process sets for
+ * its own reasons is not that.
  */
 export function colorEnabled(flags = new Set(), stream = process.stdout) {
   if (flags.has('no-color') || flags.has('no-colour')) return false;
   if (flags.has('color') || flags.has('colour')) return true;
 
-  if (process.env.FORCE_COLOR !== undefined && process.env.FORCE_COLOR !== '0') return true;
   if (process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== '0') return false;
 
   return Boolean(stream?.isTTY);

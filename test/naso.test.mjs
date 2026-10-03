@@ -954,6 +954,19 @@ test('NO_COLOR and --no-color both strip every escape code', async () => {
 
     const flagged = await bare(['--no-color']);
     assert.ok(!esc.test(flagged.stdout), '--no-color must produce no escape codes');
+
+    // npm sets FORCE_COLOR for its own output and leaks it into every script it
+    // runs. Treating that as a request for colour meant the flow emitted escape
+    // codes into a pipe under `npm publish` and `npm test` — exactly where
+    // nobody is at a terminal. This is what that looked like.
+    const forced = await exec(process.execPath, [BIN, dir], dir, { FORCE_COLOR: '1' });
+    assert.equal(forced.code, 0);
+    assert.ok(!esc.test(forced.stdout), 'FORCE_COLOR from a parent process must not colour a pipe');
+    assert.match(forced.stdout, /Files\s+\d+ tracked in the git index/, 'the text must stay readable');
+
+    // --color is the way to ask for colour in a pipe, because it is typed.
+    const asked = await bare(['--color']);
+    assert.ok(esc.test(asked.stdout), '--color must colour even when piped');
   });
 });
 
