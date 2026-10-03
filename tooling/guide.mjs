@@ -369,7 +369,7 @@ async function printArea(cwd, facts, briefing, wanted) {
     console.log(`  Not a top-level area, so NASO has no name or role for it — only the file count.`);
   }
   console.log('');
-  console.log(`  Tracked and untracked-but-not-ignored files under ${prefix}: ${areaFiles.length}`);
+  console.log(`  Tracked files under ${prefix}: ${areaFiles.length}`);
   if (areaFiles.length > 0) {
     const languages = new Map();
     for (const file of areaFiles) {

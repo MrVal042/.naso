@@ -184,27 +184,40 @@ async function walkFiles(root, dir = root, depth = 0, out = []) {
 }
 
 /**
- * Every file this repository knows about: tracked, staged, and untracked-but-
- * not-ignored. Deliberately the *worktree* view rather than `git ls-files`
- * alone, because a file the user has created but not committed is exactly the
- * one a briefing should already describe.
+ * The file index every count in the briefing is derived from, and where it came from.
  *
- * `--exclude-standard` is what keeps node_modules, dist and coverage out, and
- * what keeps a locally-excluded AGENTS.md from being reported as a new area.
+ * `git ls-files` with no `-o`. The index, and nothing else — that is a deliberate retreat
+ * from the earlier worktree view, and the reason is a briefing that described build output:
  *
- * `-z`, always. Git quotes a path with a non-ASCII character as `"\303\251.env"`
- * unless you ask it not to, and a scanner that then reports that string as a
- * filename has told the person reading it nothing they can act on. Splitting on
- * `\0` is the only form where every byte of the name survives.
+ *   ios/build/**, next-env.d.ts and friends are only excluded from a worktree listing
+ *   because some ignore file happens to cover them. A repository with no `.gitignore`,
+ *   or one whose native project directory is not listed, produced counts where a
+ *   generated Objective-C file outweighed the TypeScript it was built from, and the
+ *   briefing reported those numbers as fact.
  *
- * Deleted files are subtracted: `git ls-files` lists what the *index* knows, and
- * a briefing that describes a path somebody just deleted is stale on arrival.
- * Areas the user excluded in setup are subtracted here rather than at print time,
- * so generation, the checker and the pre-commit append cannot disagree.
+ * The index is the one view that cannot drift that way: a file is in it only once a person
+ * decided it belongs in the repository. An untracked-but-not-ignored new source file is
+ * genuinely not described until it is committed, which is a smaller and much more honest
+ * failure than a briefing that counts `build/`.
+ *
+ * `-z`, always. Git quotes a path with a non-ASCII character as `"\303\251.env"` unless you
+ * ask it not to, and a scanner that then reports that string as a filename has told the
+ * person reading it nothing they can act on. Splitting on `\0` is the only form where every
+ * byte of the name survives.
+ *
+ * Deleted files are subtracted: `git ls-files` lists what the *index* knows, and a briefing
+ * that describes a path somebody just deleted is stale on arrival. Areas the user excluded
+ * in setup are subtracted here rather than at print time, so generation, the checker and
+ * the pre-commit append cannot disagree.
+ *
+ * `source` is the other half of the answer and it reaches the generated header: `'git'` means
+ * every number in the file is a git-tracked count, `'fs'` means the directory is not a git
+ * repository and these are filesystem counts instead, which is a weaker claim the reader has
+ * to be told about rather than left to infer.
  */
-export async function listRepoFiles(cwd, { exclude = null } = {}) {
-  const res = await run('git', ['ls-files', '-c', '-o', '--exclude-standard', '-z'], { cwd });
-  if (!res.ok) return walkFiles(cwd);
+export async function readFileIndex(cwd, { exclude = null } = {}) {
+  const res = await run('git', ['ls-files', '-z'], { cwd });
+  if (!res.ok) return { files: await walkFiles(cwd), source: 'fs' };
 
   // An explicit list wins over the saved one, and setup passes the union of both so the
   // preview and the generated file are filtered identically — a --exclude flag that only
@@ -212,7 +225,15 @@ export async function listRepoFiles(cwd, { exclude = null } = {}) {
   const prefixes = exclude ? normalizeExclusions(exclude) : configuredExclusions(await readConfig(cwd));
   const gone = await deletedPathsIn(cwd);
 
-  return splitNul(res.stdout).filter((file) => !gone.has(file) && !isExcluded(file, prefixes));
+  const files = splitNul(res.stdout).filter(
+    (file) => !gone.has(file) && !isExcluded(file, prefixes),
+  );
+  return { files, source: 'git' };
+}
+
+/** The index view as a plain list. Callers that report counts want `readFileIndex`. */
+export async function listRepoFiles(cwd, { exclude = null } = {}) {
+  return (await readFileIndex(cwd, { exclude })).files;
 }
 
 /** Split NUL-delimited output into fields, dropping the empty tail. */
@@ -621,7 +642,7 @@ function detectFeatureMap(files, pkg) {
  * confident fiction this tool exists to replace.
  */
 export async function scanRepo(cwd, { exclude = null } = {}) {
-  const files = await listRepoFiles(cwd, { exclude });
+  const { files, source } = await readFileIndex(cwd, { exclude });
   const pkg = await readJSONFile(path.join(cwd, 'package.json'));
   const entries = topLevelEntries(files);
 
@@ -637,10 +658,19 @@ export async function scanRepo(cwd, { exclude = null } = {}) {
 
   const gitInfo = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
 
+  // AGENTS.md is the file the briefing is written into, so counting it makes the header
+  // wrong on the second run in a way nobody notices: the number goes up by one every time
+  // the briefing is regenerated, for no reason a reader can account for. In local mode it
+  // is excluded via .git/info/exclude and never reaches the index; in --track mode it is
+  // there, and it is subtracted here so both modes report the same repository.
+  const agentsTracked = files.includes(AGENTS_FILE);
+
   return {
     cwd,
     files,
-    trackedCount: files.length,
+    fileSource: source,
+    trackedCount: agentsTracked ? files.length - 1 : files.length,
+    agentsTracked,
     pkg,
     projectName: pkg?.name ?? path.basename(cwd),
     projectDescription: typeof pkg?.description === 'string' ? pkg.description : null,
@@ -921,6 +951,28 @@ async function renderBoundaries(facts) {
  * an agent that trusts the file will waste a turn looking for content that is
  * not coming.
  */
+/**
+ * How the counts in this file were arrived at, stated once, at the top.
+ *
+ * A count without its provenance is the failure this whole tool exists to prevent, so the
+ * header says which list it came from rather than leaving it to be assumed. In a git
+ * repository that is the index, so nothing in an ignored build directory can be in it; on a
+ * directory git does not manage it is a filesystem walk, which is a weaker claim, and the
+ * reader is told so instead of being handed a number that quietly includes node_modules.
+ */
+export function countPhrase(facts) {
+  return facts.fileSource === 'git'
+    ? plural(facts.trackedCount, 'tracked file')
+    : `${plural(facts.trackedCount, 'file')} on disk`;
+}
+
+export function countProvenance(facts) {
+  return facts.fileSource === 'git'
+    ? `${plural(facts.trackedCount, 'tracked file')}, excluding AGENTS.md`
+    : `${plural(facts.trackedCount, 'file')} on disk - this directory is not a git repository, ` +
+        'so these counts come from a filesystem walk and include anything in ignored build output';
+}
+
 export async function renderBriefing(facts, { version, actor, now }) {
   const parts = [];
 
@@ -931,9 +983,8 @@ export async function renderBriefing(facts, { version, actor, now }) {
   );
 
   parts.push(`# ${facts.projectName} — Agent Instructions`);
-  parts.push(`> Generated by NASO ${version} on ${now} from the
-> ${plural(facts.trackedCount, 'file')} this repository tracks. Every path below
-> was read off disk while this file was written, and every count is a count.
+  parts.push(`> Generated by NASO ${version} on ${now} from the ${countProvenance(facts)}.
+> Every path below was read while this file was written, and every count is a count.
 > Where NASO could not derive a fact, the section is absent rather than guessed at.
 >
 > Maintained through normal code review. NASO never regenerates this file
@@ -1410,7 +1461,7 @@ export async function main(argv = process.argv.slice(2)) {
         ? `Appended the NASO block below the ${plural(result.existingLines, 'line')} already in ${AGENTS_FILE}. Nothing existing was changed.`
         : result.replacedBlock
           ? `Replaced the naso:start / naso:end block. The other ${plural(result.existingLines, 'line')} of ${AGENTS_FILE} are byte for byte as you left them.`
-          : `Wrote ${AGENTS_FILE} from ${plural(result.facts.trackedCount, 'file')}.`,
+          : `Wrote ${AGENTS_FILE} from ${countPhrase(result.facts)}.`,
     );
     console.log('');
     for (const entry of result.facts.areas) {

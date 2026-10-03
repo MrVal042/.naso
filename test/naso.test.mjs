@@ -32,6 +32,7 @@ import {
   NASO_START,
   NASO_END,
   listRepoFiles,
+  readFileIndex,
 } from '../tooling/briefing.mjs';
 import { notableAdditions, inScope, resolveScope } from '../tooling/validate.mjs';
 import { buildHookScript, isNasoHook } from '../tooling/install.mjs';
@@ -114,6 +115,95 @@ async function seedProject(dir, git) {
   await git('add', '-A');
   await git('commit', '-qm', 'project');
 }
+
+// ---------------------------------------------------------------------------
+// counts come from the git index, never from the filesystem
+// ---------------------------------------------------------------------------
+
+test('a gitignored build directory is not counted, described or listed', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await put(dir, 'src/app.ts', 'export const a = 1;\n');
+    await put(dir, '.gitignore', 'ios/build/\nnext-env.d.ts\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'app');
+
+    // Ignored build output, on disk and never committed. An Expo/RN repository generates
+    // hundreds of these on a single `expo prebuild`, and the old worktree view counted them.
+    for (let i = 0; i < 25; i++) {
+      await put(dir, `ios/build/Generated${i}.m`, '// generated\n');
+    }
+    await put(dir, 'next-env.d.ts', '/// <reference types="next" />\n');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    // Naming an ignored path as an ignore rule is correct; describing it as an area,
+    // an entry point or part of any count is the bug this test exists for.
+    assert.ok(
+      !/^- `(?:ios|next-env)/m.test(text),
+      `ignored build output must not be an area:\n${text}`,
+    );
+    assert.match(text, /3 tracked files, excluding AGENTS\.md/);
+
+    const check = await script('briefing');
+    assert.equal(check.code, 0, check.stdout + check.stderr);
+  });
+});
+
+test('the tracked total says what it is and excludes AGENTS.md in both tracking modes', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await seedProject(dir, git);
+
+    // Local mode: AGENTS.md lives in .git/info/exclude and never reaches the index.
+    await script('setup', ['--yes']);
+    const local = await read(dir, AGENTS);
+    assert.match(local, /5 tracked files, excluding AGENTS\.md/);
+    const index1 = await git('ls-files');
+    assert.ok(!index1.stdout.includes('AGENTS.md'), 'local mode must not track AGENTS.md');
+
+    // Tracked mode: it is in the index now, and the number must not move.
+    await git('add', '-f', 'AGENTS.md');
+    await git('commit', '-qm', 'track the briefing');
+    await script('setup', ['--yes', '--track', '--force']);
+    const tracked = await read(dir, AGENTS);
+    assert.match(tracked, /5 tracked files, excluding AGENTS\.md/);
+  });
+});
+
+test('outside a git repository the header admits the counts came from a filesystem walk', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'naso-plain-'));
+  try {
+    await put(dir, 'src/index.ts', 'export const x = 1;\n');
+    await put(dir, 'package.json', JSON.stringify({ name: 'plain' }));
+
+    const res = await exec(process.execPath, [BIN, 'setup', dir, '--yes'], dir);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    assert.match(text, /not a git repository/);
+    assert.match(text, /filesystem walk/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('readFileIndex reports its source and honours exclusions on the index view', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    await put(dir, 'vendor/x.js', 'module.exports = 1;\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'vendor');
+
+    const all = await readFileIndex(dir);
+    assert.equal(all.source, 'git');
+    assert.ok(all.files.includes('vendor/x.js'));
+
+    const filtered = await readFileIndex(dir, { exclude: ['vendor'] });
+    assert.ok(!filtered.files.includes('vendor/x.js'));
+    assert.equal(filtered.source, 'git');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // lib
@@ -720,7 +810,7 @@ test('guide <area> answers for one area and hands over a scope line', async () =
     assert.equal(res.code, 0, res.stdout + res.stderr);
     assert.match(res.stdout, /src\//);
     assert.match(res.stdout, /NASO_SCOPE/);
-    assert.match(res.stdout, /Tracked and untracked-but-not-ignored files under src\/: [1-9]/);
+    assert.match(res.stdout, /Tracked files under src\/: [1-9]/);
     assert.match(res.stdout, /What has to pass/);
   });
 });

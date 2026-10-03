@@ -74,7 +74,7 @@ async function describeRepository(cwd) {
   const branchRes = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
   // -z and split on NUL: a repository with a non-ASCII filename is not an exotic one,
   // and `"\303\251.env"` is not a path anybody can paste into a command.
-  const filesRes = await run('git', ['ls-files', '-c', '-o', '--exclude-standard', '-z'], { cwd });
+  const filesRes = await run('git', ['ls-files', '-z'], { cwd });
   const files = filesRes.ok ? splitNul(filesRes.stdout) : [];
 
   const entries = topLevelEntries(files);
@@ -143,7 +143,7 @@ Support: ${SUPPORT_EMAIL}`);
     console.log('briefing would have nothing to check itself against.');
   } else {
     console.log(`Branch:    ${repo.branch ?? 'unknown'}`);
-    console.log(`Files:     ${repo.files} this repository tracks`);
+    console.log(`Files:     ${repo.files} tracked in the git index`);
     console.log(`Areas:     ${repo.areas.length} top-level director${repo.areas.length === 1 ? 'y' : 'ies'}${repo.areas.length ? ` (${repo.areas.slice(0, 10).join(', ')}${repo.areas.length > 10 ? ', ...' : ''})` : ''}`);
     if (repo.language) {
       console.log(`Language:  ${repo.language.label}, ${repo.language.count} of ${repo.files} files`);
