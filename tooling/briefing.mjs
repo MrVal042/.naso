@@ -544,6 +544,482 @@ function manifestEntryPoints(pkg) {
 }
 
 /**
+ * Script names that mean "this is the gate" when there is no verify/check/ci.
+ * Nothing here is invented: a gate is a command this repository actually runs.
+ */
+const GATE_SCRIPT_NAMES = ['verify', 'check', 'ci'];
+
+/**
+ * Scripts whose name says they enforce something, surfaced by name whatever else happens.
+ *
+ * These are the checks a repository points at to say "this is what we care about", and
+ * listing only the ones that happen to be wired into the gate hides the ones somebody
+ * wrote and never connected. The briefing names them so an agent can see both.
+ */
+const ENFORCEMENT_SCRIPT = /(secret|scan|boundary|hardening|dependenc)/i;
+
+/** Subcommands that make a manager invocation housekeeping rather than a check. */
+const PM_CHAIN_NOISE = new Set([
+  'install', 'i', 'add', 'remove', 'rm', 'unlink', 'ci', 'audit', 'fund', 'publish', 'pack',
+  'cache', 'config', 'version', 'help', 'h', 'init', 'why', 'list', 'ls', 'll', 'outdated',
+  'update', 'upgrade', 'link', 'prune', 'store', 'info', 'patch', 'create', 'import', 'login',
+  'logout', 'whoami', 'team', 'root', 'bin', 'rebuild', 'dedupe', 'doctor',
+]);
+
+/** Words that only say how to run something, not what to run. */
+const RUN_CARRIERS = new Set(['run', 'run-script', 'exec', 'x', 'dlx', 'dlx-bin']);
+
+/** Binaries worth naming when they are invoked directly rather than through a script. */
+const DIRECT_BINARY = /^(?:node|npx|expo|tsc|eslint|prettier|jest|vitest|ava|mocha|detox|ts-node|tsx|swc|gradlew)\b/;
+
+/** `run('pnpm', ['run', 'lint'])` — the shape a JavaScript gate script actually uses. */
+const JS_RUN_CALL =
+  /\b(?:run|exec|execFile|spawn|spawnSync|execa|execaSync)\s*\(\s*(['"`])([\w.:-]+)\1\s*,\s*\[([^\]]*)\]/g;
+
+/** `const checks = ['lint', 'test']` — a literal array a gate iterates over. */
+const JS_LITERAL_ARRAY = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\[([^\]]*)\]/g;
+
+/** `for (const step of steps)` — the loop variable of a literal array, under its own name. */
+const JS_FOR_OF = /\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s+of\s+([A-Za-z_$][\w$]*)\s*\)/g;
+
+/**
+ * Literal string arrays declared in a script, keyed by every name they answer to.
+ *
+ * This exists so the most common shape of gate is read rather than skipped:
+ *
+ *   const steps = ['lint', 'test'];
+ *   for (const step of steps) await run('pnpm', ['run', step]);
+ *
+ * The strings are in the file; following the variable is reading, not guessing. A loop over
+ * anything else — an import, a glob, a computed name — resolves to nothing and is skipped,
+ * because there is no honest way to render it as a command to paste.
+ */
+function literalArrays(text) {
+  const source = String(text);
+  const arrays = new Map();
+
+  for (const match of source.matchAll(JS_LITERAL_ARRAY)) {
+    arrays.set(match[1], [...match[2].matchAll(/(['"`])([^'"`]*)\1/g)].map((word) => word[2]));
+  }
+
+  for (const match of source.matchAll(JS_FOR_OF)) {
+    const words = arrays.get(match[2]);
+    if (words) arrays.set(match[1], words);
+  }
+
+  return arrays;
+}
+
+/**
+ * The commands a piece of shell or JavaScript actually invokes, in document order.
+ *
+ * Static and deliberately shallow — this reads text, it does not run anything. It exists
+ * because the alternative was worse: the previous generator listed every script whose name
+ * looked important as though they were peers, so an agent was told to run `lint`, `test`
+ * and `verify` when `verify` already ran the first two. Ordering is preserved, because the
+ * order is the whole point of a gate and a shuffled list reads as another checklist.
+ *
+ * Three shapes, all of which are what real gates are written in:
+ *
+ *   shell   `pnpm run lint && pnpm exec expo check`
+ *   js      `run('pnpm', ['run', 'lint'])`
+ *   bare    `expo check` on a line of its own
+ *
+ * Housekeeping verbs are dropped. `pnpm install` really is in the workflow; it is not part
+ * of what must pass before work is done, and listing it as a check to run by hand is exactly
+ * the second dependency tree this file exists to prevent.
+ */
+export function extractInvocations(text) {
+  const source = String(text);
+  const arrays = literalArrays(source);
+  const hits = [];
+
+for (const match of source.matchAll(JS_RUN_CALL)) {
+    const [, , bin, array] = match;
+    const tokens = [];
+
+    // Walk the argument list in written order so `['exec', 'expo', 'check']` stays three
+    // words and `['run', checks]` becomes one command per element of `checks`.
+    let unresolved = false;
+    for (const token of array.matchAll(/(['"`])([^'"`]*)\1|([A-Za-z_$][\w$]*)/g)) {
+      if (token[3] !== undefined) {
+        const resolved = arrays.get(token[3]);
+        if (!resolved) unresolved = true;
+        else tokens.push({ spread: resolved });
+        continue;
+      }
+      tokens.push({ word: token[2] });
+    }
+
+    // `run('pnpm', ['run', steps[i]])` cannot be rendered as a command anyone could paste.
+    if (unresolved) continue;
+
+    const spread = tokens.findIndex((token) => token.spread);
+    const variants =
+      spread === -1
+        ? [tokens.map((token) => token.word ?? '').join(' ')]
+        : tokens[spread].spread.map((word) =>
+            tokens.map((token, at) => (at === spread ? word : (token.word ?? ''))).join(' '),
+          );
+
+    for (const variant of variants) {
+      if (variant.split(/\s+/).filter((word) => !RUN_CARRIERS.has(word)).length === 0) continue;
+      hits.push({ at: match.index, command: `${bin} ${variant}` });
+    }
+  }
+
+  let cursor = 0;
+  for (const segment of source.split(/&&|\|\||;|\n/)) {
+    const at = source.indexOf(segment, cursor);
+    cursor = at + segment.length;
+
+    const line = segment.replace(/^\s*(?:\$\s*)?/, '').trim();
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+
+    const manager = line.match(/^(npm|pnpm|yarn|bun)\s+(\S)/);
+    if (manager) {
+      const args = line.slice(manager[1].length).trim();
+      const first = args.split(/\s+/)[0];
+      const head = args.replace(/^(?:run|run-script)\s+/, '').split(/\s+/)[0];
+      if (PM_CHAIN_NOISE.has(first) || PM_CHAIN_NOISE.has(head)) continue;
+      hits.push({ at, command: `${manager[1]} ${args}` });
+      continue;
+    }
+
+    if (DIRECT_BINARY.test(line)) hits.push({ at, command: line });
+  }
+
+  const seen = new Set();
+  return hits
+    .sort((a, b) => a.at - b.at)
+    .map((hit) => hit.command.replace(/\s+/g, ' ').trim())
+    .filter((command) => (seen.has(command) ? false : seen.add(command)));
+}
+
+/**
+ * A short, human label for one invocation.
+ *
+ * A script name wins over the command that ran it, because `pnpm run check:secrets` is
+ * better described as "secret check" than repeated verbatim. Anything not backed by a
+ * script is described by what it is — `expo check` is a real gate command with no script
+ * behind it, and calling it "check" would lose the only part that identifies it.
+ */
+export function labelForInvocation(command, scripts = {}) {
+  const cleaned = String(command).replace(/^(?:npm|pnpm|yarn|bun)\s+(?:exec|x|dlx)\s+/, '');
+  const script = cleaned.match(/^(?:npm|pnpm|yarn|bun)\s+run?\s+([A-Za-z][\w:.-]*)/)?.[1];
+  // The name is used whether or not package.json declares it. A workflow or gate script
+  // that names something the manifest has lost is still the truth about what runs, and
+  // echoing the whole command back would make the label useless for coverage matching.
+  if (script) return script;
+  if (/^(?:npx\s+)?tsc\b/.test(cleaned)) return 'typecheck';
+  if (/^expo\s+check/.test(cleaned)) return 'expo check';
+  if (/^expo\s+lint/.test(cleaned)) return 'lint';
+  if (/^eslint\b/.test(cleaned)) return 'lint';
+  if (/^prettier\b/.test(cleaned)) return 'format';
+  if (/^(?:npx\s+)?(?:jest|vitest|ava|mocha)\b/.test(cleaned)) return 'test';
+  return cleaned;
+}
+
+/**
+ * The shared middle of a family of script names: `verify:boundary:auth` → `boundary`.
+ *
+ * Four boundary verifiers written as four lines is noise the reader has to fold in their
+ * head, and "four things called boundary-something" is the actual fact. Generic leading
+ * verbs and the specific trailing qualifier are dropped because neither identifies the
+ * family; what remains does.
+ */
+export function stepFamily(label) {
+  const parts = String(label).split(/[:/]/).filter(Boolean);
+  if (parts.length <= 1) return label;
+
+  const generic = /^(verify|check|run|do|lint|test|ci)$/i;
+  const core = parts.filter((part) => !generic.test(part));
+  if (core.length === 0) return parts[0];
+  return core.length === 1 ? core[0] : core.slice(0, -1).join(' ');
+}
+
+/**
+ * Ordered, de-duplicated step labels, collapsing repeats of one family into `family ×n`.
+ *
+ * A family of one keeps its own name. `check:secrets` shortened to `secrets` would read as
+ * a different command than the one in package.json, and the whole point of the section is
+ * that the labels can be pasted back into a terminal. Only a genuine repeat earns the
+ * `×n`, because that is the case where four lines would be noise.
+ */
+export function collapseSteps(labels) {
+  const groups = new Map();
+
+  for (const label of labels) {
+    const family = stepFamily(label);
+    const existing = groups.get(family);
+    if (existing) existing.count++;
+    else groups.set(family, { family, label, count: 1 });
+  }
+
+  return Array.from(groups.values()).map(
+    (group) => (group.count > 1 ? `${group.family} ×${group.count}` : group.label),
+  );
+}
+
+/**
+ * The jobs in a GitHub Actions workflow, with the commands each one runs.
+ *
+ * Hand-rolled rather than pulling a YAML parser, and the reason is the same one that keeps
+ * the vendored copy dependency-free: this only needs `jobs:`, `name:` and `run:`, and a
+ * parser would be a larger dependency than the thing it parses. It reads `run: inline`,
+ * `run: |` and `run: >` block scalars by indentation, which covers how workflows are
+ * actually written. A workflow it cannot understand yields fewer jobs, never wrong ones —
+ * every invocation it reports is one it saw verbatim in the file.
+ */
+export function parseWorkflowJobs(text) {
+  const jobs = [];
+  let inJobs = false;
+  let job = null;
+  let blockIndent = -1;
+
+  const note = (value) => {
+    if (job) job.commands.push(...extractInvocations(value));
+  };
+
+  for (const raw of String(text).split('\n')) {
+    if (/^jobs:\s*$/.test(raw)) {
+      inJobs = true;
+      continue;
+    }
+    if (!inJobs) continue;
+
+    if (/^\S/.test(raw) && raw.trim() !== '') {
+      inJobs = false;
+      blockIndent = -1;
+      continue;
+    }
+
+    const jobHeader = raw.match(/^ {2}([A-Za-z0-9_.-]+):\s*(?:#.*)?$/);
+    if (jobHeader) {
+      job = { name: jobHeader[1], label: jobHeader[1], commands: [] };
+      jobs.push(job);
+      blockIndent = -1;
+      continue;
+    }
+    if (!job) continue;
+
+    const indent = raw.length - raw.trimStart().length;
+    if (blockIndent >= 0 && indent > blockIndent) {
+      note(raw);
+      continue;
+    }
+    blockIndent = -1;
+
+    const jobName = raw.match(/^ {4}name:\s*(.+?)\s*$/);
+    if (jobName) {
+      job.label = jobName[1].replace(/^["']|["']$/g, '');
+      continue;
+    }
+
+    if (/^\s*-\s*run:\s*[|>]\s*$/.test(raw)) {
+      blockIndent = indent;
+      continue;
+    }
+
+    const inline = raw.match(/^\s*-\s*run:\s*(\S.*?)\s*$/);
+    if (inline) {
+      note(inline[1]);
+      continue;
+    }
+  }
+
+  return jobs.filter((entry) => entry.commands.length > 0);
+}
+
+/** The job most likely to be the gate: named like one, and the richest when none is. */
+export function pickGateJob(jobs) {
+  if (jobs.length === 0) return null;
+
+  const named = jobs.filter((entry) => /verify|check|ci|gate|quality/i.test(`${entry.name} ${entry.label}`));
+  const pool = named.length > 0 ? named : jobs;
+  return pool.reduce((best, entry) => (entry.commands.length > best.commands.length ? entry : best));
+}
+
+/** Every workflow file, as [{ file, text }]. Sorted, so the choice is deterministic. */
+async function readWorkflows(cwd) {
+  const dir = path.join(cwd, '.github', 'workflows');
+  const names = (await readdir(dir).catch(() => [])).filter((name) => /\.ya?ml$/.test(name)).sort();
+  const out = [];
+  for (const name of names) {
+    const text = await readFile(path.join(dir, name), 'utf8').catch(() => null);
+    if (text) out.push({ file: `.github/workflows/${name}`, text });
+  }
+  return out;
+}
+
+/** The one script a workflow job delegates to, or null when it runs several things itself. */
+function soleScriptOf(job, scripts) {
+  if (job.commands.length !== 1) return null;
+  const name = job.commands[0].match(/^(?:pnpm|yarn|bun|npm)\s+run?\s+([A-Za-z][\w:.-]*)/)?.[1];
+  return name && scripts[name] ? name : null;
+}
+
+/** `node scripts/verify.mjs`, `bash scripts/ci.sh` — the file a script body delegates to. */
+const SCRIPT_DELEGATES_TO = /(?:^|\s)(?:node|tsx|babel-node|bash|sh|zsh|python3?)\s+([\w./@-]+\.(?:mjs|cjs|js|ts|sh))\b/;
+
+/**
+ * What a gate script actually runs, read from the file it delegates to.
+ *
+ * Two shapes are understood, because those are the two that exist in practice:
+ *
+ *   `a && b && c`        split on the chain, each side extracted as an invocation
+ *   `node scripts/x.mjs` read that file and extract the invocations inside it
+ *
+ * Everything else returns `parsed: false` with the file to read. That is the whole
+ * contract: a gate NASO cannot decompose is reported as "could not be parsed, see <file>",
+ * and never as a list of plausible-looking checks. A wrong list here is worse than no
+ * list, because it is a list an agent will follow.
+ */
+export async function expandGateScript(cwd, body, scripts = {}) {
+  const trimmed = String(body).trim();
+
+  if (/&&|\|\||;|\n/.test(trimmed) && !SCRIPT_DELEGATES_TO.test(trimmed)) {
+    const commands = extractInvocations(trimmed);
+    if (commands.length > 0) {
+      return {
+        steps: commands.map((command) => labelForInvocation(command, scripts)),
+        commands,
+        parsed: true,
+        file: null,
+      };
+    }
+  }
+
+  const delegate = trimmed.match(SCRIPT_DELEGATES_TO)?.[1];
+  if (delegate) {
+    const file = delegate.replace(/^\.\//, '');
+    const text = await readFile(path.join(cwd, file), 'utf8').catch(() => null);
+    // A script body that names a file which is not there is a broken gate, not an
+    // unreadable one — and naming it in the briefing would make the checker report the
+    // path as MISSING, which is a confusing way to say "this repository has a typo".
+    if (text === null) return { steps: [], commands: [], parsed: false, file: null };
+
+    const commands = extractInvocations(text);
+    if (commands.length === 0) return { steps: [], commands, parsed: false, file };
+    return {
+      steps: commands.map((command) => labelForInvocation(command, scripts)),
+      commands,
+      parsed: true,
+      file,
+    };
+  }
+
+  const commands = extractInvocations(trimmed);
+  if (commands.length > 0) {
+    return {
+      steps: commands.map((command) => labelForInvocation(command, scripts)),
+      commands,
+      parsed: true,
+      file: null,
+    };
+  }
+
+  return { steps: [], commands: [], parsed: false, file: null };
+}
+
+/**
+ * The repository's gate: the one command that must pass, and what it subsumes.
+ *
+ * Authority is ordered by how much the repository itself committed to it:
+ *
+ *   1. .github/workflows — CI is the answer nobody can forget to update, and a workflow
+ *      that names a job `verify` is stating its own contract.
+ *   2. a `verify` / `check` / `ci` script in package.json — the local equivalent.
+ *
+ * When the workflow's gate job delegates to a single script, that script *is* the gate and
+ * the workflow is cited as the authority for it. When the job runs several commands itself
+ * there is no local gate to recommend, and the briefing says so instead of inventing one.
+ *
+ * `unparsed` is the escape hatch, and the rule behind it: a gate NASO could not decompose
+ * is reported as unread, never guessed at.
+ */
+export async function detectGate(cwd, pkg, pm = 'npm') {
+  const scripts = pkg?.scripts ?? {};
+  const empty = {
+    command: null,
+    script: null,
+    authority: null,
+    steps: [],
+    rawSteps: [],
+    commands: [],
+    parsed: true,
+    unparsed: null,
+    stepFile: null,
+    managersUsed: [],
+    managerMismatch: false,
+    enforcement: [],
+    others: [],
+  };
+
+  for (const workflow of await readWorkflows(cwd)) {
+    const job = pickGateJob(parseWorkflowJobs(workflow.text));
+    if (!job) continue;
+
+    const sole = soleScriptOf(job, scripts);
+    const expansion = sole
+      ? await expandGateScript(cwd, scripts[sole], scripts)
+      : {
+          steps: job.commands.map((command) => labelForInvocation(command, scripts)),
+          commands: job.commands,
+          parsed: true,
+          file: null,
+        };
+
+    const used = [...new Set(expansion.commands.map((c) => c.split(/\s+/)[0]))].filter(Boolean);
+
+    return {
+      ...empty,
+      command: sole ? pmRunText(pm, sole) : null,
+      script: sole,
+      authority: `\`${workflow.file}\`, the ${job.label || job.name} job`,
+      steps: collapseSteps(expansion.steps),
+      rawSteps: expansion.steps,
+      commands: expansion.commands,
+      parsed: expansion.parsed,
+      unparsed: expansion.parsed ? null : (expansion.file ?? `${job.label} in ${workflow.file}`),
+      stepFile: expansion.file,
+      managersUsed: used,
+      managerMismatch: used.some((manager) => manager !== pm),
+      enforcement: enforcementScripts(scripts, expansion.steps),
+    };
+  }
+
+  const scriptName = GATE_SCRIPT_NAMES.find((name) => typeof scripts[name] === 'string');
+  if (!scriptName) return empty;
+
+  const expansion = await expandGateScript(cwd, scripts[scriptName], scripts);
+  const used = [...new Set(expansion.commands.map((c) => c.split(/\s+/)[0]))].filter(Boolean);
+
+  return {
+    ...empty,
+    command: pmRunText(pm, scriptName),
+    script: scriptName,
+    authority: `the "${scriptName}" script in package.json`,
+    steps: collapseSteps(expansion.steps),
+    rawSteps: expansion.steps,
+    commands: expansion.commands,
+    parsed: expansion.parsed,
+    unparsed: expansion.parsed ? null : (expansion.file ?? `the "${scriptName}" script`),
+    stepFile: expansion.file,
+    managersUsed: used,
+    managerMismatch: used.some((manager) => manager !== pm),
+    enforcement: enforcementScripts(scripts, expansion.steps),
+  };
+}
+
+/** Named enforcement scripts, each marked with whether the gate demonstrably runs it. */
+function enforcementScripts(scripts, gateSteps) {
+  return Object.keys(scripts)
+    .filter((name) => ENFORCEMENT_SCRIPT.test(name))
+    .map((name) => ({ name, inGate: gateSteps.includes(name) }));
+}
+
+/**
  * Every validation command that can be read off this repository, best first.
  *
  * The manager comes from `detectPackageManager`, never a hardcoded `npm`. A repository that
@@ -693,6 +1169,7 @@ export async function scanRepo(cwd, { exclude = null } = {}) {
     branch: gitInfo.ok ? gitInfo.stdout.trim() : null,
     conventions: await detectConventions(cwd, files, pkg),
     validation: await detectValidationCommands(cwd, pkg, packageManager.name),
+    gate: await detectGate(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),
     manifestEntryPoints: manifestEntryPoints(pkg).filter((e) => e.value.startsWith('.')),
   };
@@ -994,6 +1471,78 @@ export function countProvenance(facts) {
         'so these counts come from a filesystem walk and include anything in ignored build output';
 }
 
+/**
+ * The validation section: one gate and what it subsumes.
+ *
+ * The previous version listed `lint`, `typecheck`, `test` and `verify` as four peers, which
+ * is wrong in a way that costs real time — on a repository where `verify` runs the first
+ * three, an agent following the list runs the whole suite twice and has no idea which
+ * single command the project considers the answer.
+ *
+ * So: the gate is named once, what it subsumes is listed as prose under it, and the
+ * scripts it demonstrably runs are never repeated as peers. Only commands the gate does
+ * *not* cover get their own line, because those are the ones that still have to be run by
+ * hand and the briefing is the only place that can say so.
+ *
+ * When there is no gate at all — no workflow job, no verify/check/ci script — the section
+ * degrades to the plain list. Inventing an authoritative command for a repository that
+ * never named one is the failure this tool exists to prevent.
+ */
+export function renderValidation(facts) {
+  const { gate, validation } = facts;
+
+  if (!gate || !gate.command) {
+    if (validation.length === 0) return null;
+    return (
+      `### Validation commands\n\nThis repository names no single gate. These are the ` +
+      `commands it declares:\n\n\`\`\`bash\n${validation.map((c) => c.command).join('\n')}\n\`\`\``
+    );
+  }
+
+  const lines = [`### Validation commands\n`];
+  lines.push(`One gate: \`${gate.command}\` — the authority is ${gate.authority}.`);
+
+  if (gate.unparsed) {
+    lines.push(
+      `**WARN** The gate could not be parsed; see \`${gate.unparsed}\`. Read it before ` +
+        'trusting what this file says the gate covers — NASO will not guess.',
+    );
+  } else if (gate.steps.length > 0) {
+    const from = gate.stepFile ? `read from \`${gate.stepFile}\`` : 'read from the script body';
+    lines.push(`It runs, in order (${from}): ${gate.steps.join(', ')}.`);
+  }
+
+  if (gate.managerMismatch) {
+    lines.push(
+      `**WARN** The gate invokes ${gate.managersUsed.join(', ')} internally while this ` +
+        'repository installs with a different manager, so it may resolve binaries it did ' +
+        'not install. Run it and read what it prints.',
+    );
+  }
+
+  if (gate.enforcement.length > 0) {
+    lines.push(
+      `Checks this repository names: ${gate.enforcement
+        .map((entry) => `\`${entry.name}\` — ${entry.inGate ? 'in the gate' : 'no sign it is in the gate'}`)
+        .join('; ')}.`,
+    );
+  }
+
+  const covered = new Set(gate.rawSteps ?? []);
+  const others = validation.filter(
+    (command) => command.script !== gate.script && !covered.has(command.script),
+  );
+  if (others.length > 0) {
+    lines.push(
+      `Not run by the gate, so still yours to run: ${others
+        .map((command) => `\`${command.command}\``)
+        .join(', ')}.`,
+    );
+  }
+
+  return lines.join('\n\n');
+}
+
 export async function renderBriefing(facts, { version, actor, now }) {
   const parts = [];
 
@@ -1047,10 +1596,10 @@ export async function renderBriefing(facts, { version, actor, now }) {
 
   const conventions = renderConventions(facts);
   if (conventions) {
-    const validation = facts.validation.length
-      ? `\n\n### Validation commands\n\nThese are the commands that must pass before work is called done.\n\n\`\`\`bash\n${facts.validation.map((c) => c.command).join('\n')}\n\`\`\``
-      : '';
-    parts.push(`## Code Conventions\n\n${conventions.join('\n')}${validation}`);
+    const validation = renderValidation(facts);
+    parts.push(`## Code Conventions\n\n${conventions.join('\n')}${validation ? `\n\n${validation}` : ''}`);
+  } else if (renderValidation(facts)) {
+    parts.push(`## Validation\n\n${renderValidation(facts)}`);
   }
 
   parts.push(`## Scope

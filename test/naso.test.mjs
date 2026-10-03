@@ -34,6 +34,11 @@ import {
   NASO_END,
   listRepoFiles,
   readFileIndex,
+  scanRepo,
+  extractInvocations,
+  stepFamily,
+  collapseSteps,
+  parseWorkflowJobs,
 } from '../tooling/briefing.mjs';
 import { notableAdditions, inScope, resolveScope } from '../tooling/validate.mjs';
 import { buildHookScript, isNasoHook } from '../tooling/install.mjs';
@@ -115,6 +120,99 @@ async function seedProject(dir, git) {
   await put(dir, 'package.json', JSON.stringify({ name: 'demo', scripts: { lint: 'echo lint' } }));
   await git('add', '-A');
   await git('commit', '-qm', 'project');
+}
+
+/**
+ * A repository shaped like the one the generator was last verified against: Expo/RN,
+ * pnpm, node:test, a CI workflow whose verify job delegates to a script, four boundary
+ * verifiers, an alias declared in babel but not in tsconfig, a test directory the test
+ * script never runs, and ignored native build output.
+ *
+ * Every one of those is a place the generator used to say something false.
+ */
+async function seedEgom(dir, git) {
+  await put(
+    dir,
+    'package.json',
+    JSON.stringify({
+      name: 'egom',
+      private: true,
+      packageManager: 'pnpm@9.1.0',
+      scripts: {
+        verify: 'node scripts/verify.mjs',
+        typecheck: 'tsc --noEmit',
+        lint: 'eslint .',
+        test: 'node --test test/',
+        'verify:boundary:auth': 'node scripts/verify-boundary-auth.mjs',
+        'verify:boundary:payments': 'node scripts/verify-boundary-payments.mjs',
+        'verify:boundary:db': 'node scripts/verify-boundary-db.mjs',
+        'verify:boundary:api': 'node scripts/verify-boundary-api.mjs',
+        'check:deps': 'node scripts/check-deps.mjs',
+        'check:secrets': 'node scripts/check-secrets.mjs',
+      },
+      dependencies: { expo: '~51.0.0', react: '18.2.0' },
+      devDependencies: { typescript: '5.3.3', eslint: '8.56.0' },
+    }),
+  );
+
+  await put(
+    dir,
+    '.github/workflows/ci.yml',
+    [
+      'name: CI',
+      'on: [push, pull_request]',
+      'jobs:',
+      '  verify:',
+      '    name: verify',
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+      '      - uses: pnpm/action-setup@v4',
+      '        with:',
+      '          version: 9',
+      '      - uses: actions/setup-node@v4',
+      '        with:',
+      '          node-version: 20',
+      '          cache: pnpm',
+      '      - run: pnpm install --frozen-lockfile',
+      '      - run: pnpm run verify',
+      '',
+    ].join('\n'),
+  );
+
+  await put(
+    dir,
+    'scripts/verify.mjs',
+    [
+      "const steps = ['typecheck', 'lint', 'test'];",
+      'for (const step of steps) {',
+      "  await run('pnpm', ['run', step]);",
+      '}',
+      "await run('pnpm', ['exec', 'expo', 'check']);",
+      "await run('pnpm', ['run', 'check:deps']);",
+      "await run('pnpm', ['run', 'verify:boundary:auth']);",
+      "await run('pnpm', ['run', 'verify:boundary:payments']);",
+      "await run('pnpm', ['run', 'verify:boundary:db']);",
+      "await run('pnpm', ['run', 'verify:boundary:api']);",
+      "await run('pnpm', ['run', 'check:secrets']);",
+      '',
+    ].join('\n'),
+  );
+
+  await put(dir, 'app/_layout.tsx', 'export default function Layout() { return null; }\n');
+  await put(dir, 'app/index.tsx', 'export default function Home() { return null; }\n');
+  await put(dir, 'src/lib/money.ts', 'export const money = 1;\n');
+  await put(dir, 'test/money.test.ts', "it('adds', () => {});\n");
+  // A test directory the test script never names: node --test test/ will not run these.
+  await put(dir, 'e2e/checkout.spec.ts', "describe('checkout', () => {});\n");
+  await put(dir, 'README.md', '# Egom\n\nRequires Node.js >= 18 to run.\n');
+  await put(dir, '.nvmrc', '20.11.0\n');
+  await put(dir, '.gitignore', 'node_modules/\nios/build/\n.expo/\n*.keystore\n.env\n');
+  await git('add', '-A');
+  await git('commit', '-qm', 'egom');
+
+  // Ignored native build output, exactly as `expo prebuild` leaves it.
+  for (let i = 0; i < 12; i++) await put(dir, `ios/build/Gen${i}.m`, '// generated\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +375,144 @@ test('with neither a field nor a lockfile, CI decides before npm is assumed', as
       source: 'default',
       evidence: 'no packageManager field, no lockfile',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the gate: one command, and what it subsumes
+// ---------------------------------------------------------------------------
+
+test('extractInvocations keeps order, drops installs and dedupes', () => {
+  const commands = extractInvocations(
+    [
+      'pnpm install --frozen-lockfile',
+      'pnpm run typecheck',
+      'pnpm run lint && pnpm run test',
+      'pnpm exec expo check',
+      'pnpm run test',
+    ].join('\n'),
+  );
+  assert.deepEqual(commands, [
+    'pnpm run typecheck',
+    'pnpm run lint',
+    'pnpm run test',
+    'pnpm exec expo check',
+  ]);
+});
+
+test('a dynamic run call is skipped rather than rendered as an unrunnable command', () => {
+  assert.deepEqual(
+    extractInvocations("for (const s of steps) { await run('pnpm', ['run', s]); }"),
+    [],
+  );
+  assert.deepEqual(
+    extractInvocations("await run('pnpm', ['run', 'check:secrets']);"),
+    ['pnpm run check:secrets'],
+  );
+});
+
+test('stepFamily and collapseSteps fold four boundary verifiers into one fact', () => {
+  assert.equal(stepFamily('verify:boundary:auth'), 'boundary');
+  assert.equal(stepFamily('check:deps'), 'deps');
+  assert.equal(stepFamily('typecheck'), 'typecheck');
+
+  assert.deepEqual(
+    collapseSteps(['typecheck', 'lint', 'test', 'verify:boundary:auth', 'verify:boundary:payments', 'verify:boundary:db', 'verify:boundary:api']),
+    ['typecheck', 'lint', 'test', 'boundary ×4'],
+  );
+});
+
+test('parseWorkflowJobs reads inline and block run steps and ignores install', () => {
+  const jobs = parseWorkflowJobs(
+    [
+      'name: CI',
+      'on: [push]',
+      'jobs:',
+      '  verify:',
+      '    name: verify',
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+      '      - uses: pnpm/action-setup@v4',
+      '      - run: pnpm install --frozen-lockfile',
+      '      - run: pnpm run verify',
+      '  release:',
+      '    name: release',
+      '    steps:',
+      '      - run: |',
+      '        pnpm run build',
+      '        pnpm publish --access public',
+      '',
+    ].join('\n'),
+  );
+  assert.deepEqual(jobs.map((job) => job.name), ['verify', 'release']);
+  assert.deepEqual(jobs[0].commands, ['pnpm run verify']);
+  assert.deepEqual(jobs[1].commands, ['pnpm run build']);
+});
+
+test('the gate is one command plus what it subsumes, not a list of peers', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await seedEgom(dir, git);
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+
+    assert.match(text, /One gate: `pnpm run verify` — the authority is `\.github\/workflows\/ci\.yml`, the verify job/);
+    // The subsumed list, collapsed rather than repeated as four peer commands.
+    assert.match(text, /It runs, in order \(read from `scripts\/verify\.mjs`\):[^.]*typecheck[^.]*lint[^.]*test[^.]*expo check[^.]*boundary ×4[^.]*check:secrets/s);
+    // Subsumed commands must not reappear as peers.
+    const peers = text.match(/Not run by the gate, so still yours to run: ([^\n]+)/)?.[1] ?? '';
+    assert.ok(!peers.includes('lint'), `a subsumed command was listed again as a peer: ${peers}`);
+    assert.ok(!peers.includes('test'), `a subsumed command was listed again as a peer: ${peers}`);
+
+    // Enforcement scripts are named, each with whether the gate demonstrably runs it.
+    assert.match(text, /Checks this repository names: `verify:boundary:auth` — in the gate;/);
+    assert.match(text, /`check:secrets` — in the gate/);
+
+    const check = await script('briefing');
+    assert.equal(check.code, 0, check.stdout + check.stderr);
+  });
+});
+
+test('a gate that cannot be parsed says so and names the file instead of guessing', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({ name: 'opaque', scripts: { verify: 'node scripts/gate.mjs' } }),
+    );
+    await put(dir, 'src/index.ts', 'export const x = 1;\n');
+    // No invocable command anywhere in the file — the delegation is dynamic.
+    await put(dir, 'scripts/gate.mjs', 'const steps = process.env.STEPS.split(",");\nfor (const s of steps) await import(s);\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'opaque gate');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const text = await read(dir, AGENTS);
+    assert.match(text, /\*\*WARN\*\* The gate could not be parsed; see `scripts\/gate\.mjs`/);
+    assert.ok(!/It runs, in order/.test(text), 'an unread gate must not claim a step list');
+  });
+});
+
+test('a gate that invokes a different package manager is flagged', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({ name: 'mixed', packageManager: 'pnpm@9.1.0', scripts: { verify: 'npm run test' } }),
+    );
+    await put(dir, 'scripts/verify.mjs', "await run('npm', ['run', 'test']);\n");
+    await put(dir, 'src/index.ts', 'export const x = 1;\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'mixed');
+
+    const facts = await scanRepo(dir);
+    assert.equal(facts.gate.managerMismatch, true);
+    assert.deepEqual(facts.gate.managersUsed, ['npm']);
   });
 });
 
