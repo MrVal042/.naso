@@ -757,6 +757,101 @@ test('a tracked AGENTS.md keeps the staging rule, because it is reviewable', asy
   });
 });
 
+test('setup flags a README that disagrees with the declared Node version, and a tracked keystore, without reading either', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await seedProject(dir, git);
+
+    // The four places the same fact is written, three of them disagreeing with the first.
+    await put(dir, 'README.md', '# Demo\n\nRequires Node.js >= 18 to run the tests.\n');
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({
+        name: 'demo',
+        engines: { node: '>=20' },
+        scripts: { lint: 'echo lint' },
+      }),
+    );
+    await put(dir, '.nvmrc', '20.11.0\n');
+    await put(
+      dir,
+      '.github/workflows/ci.yml',
+      'name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 20\n',
+    );
+
+    // Committed before the ignore rule existed, which is how this actually happens:
+    // the pattern is added later and the tracked file is never noticed.
+    const secret = 'not-a-real-key\n';
+    await put(dir, 'android/app/upload-keystore.jks', secret);
+    await git('add', '-A');
+    await git('commit', '-qm', 'keystore');
+    await put(dir, '.gitignore', 'node_modules/\n*.jks\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'ignore rules');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const out = res.stdout;
+
+    assert.match(out, /README\.md and the declared Node version disagree/);
+    assert.match(out, /README claims Node 18; package\.json engines\.node says >=20; \.nvmrc says 20\.11\.0; \.github\/workflows\/ci\.yml node-version says 20/);
+
+    assert.match(out, /1 credential-shaped file is tracked in git/);
+    assert.match(out, /android\/app\/upload-keystore\.jks — path only, contents not read\./);
+    assert.match(out, /will not appear in git status/);
+
+    // The point of "path only": the bytes never leave the repository.
+    assert.ok(!out.includes('not-a-real-key'), 'setup must not print the file contents');
+
+    // Nothing was fixed, nothing was staged, nothing was written.
+    const status = (await git('status', '--porcelain')).stdout.trim();
+    assert.equal(status, '', `setup must not modify the repository:\n${status}`);
+    const readme = await read(dir, 'README.md');
+    assert.match(readme, /Requires Node\.js >= 18/, 'README must be left as the repository wrote it');
+  });
+});
+
+test('a README that agrees with every declaration is not flagged', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await seedProject(dir, git);
+    await put(dir, 'README.md', '# Demo\n\nRequires Node.js >= 20.\n');
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({ name: 'demo', engines: { node: '>=20' }, scripts: { lint: 'echo lint' } }),
+    );
+    await git('add', '-A');
+    await git('commit', '-qm', 'agreed');
+
+    const res = await script('setup', ['--yes']);
+    assert.doesNotMatch(res.stdout, /Node version disagree/);
+    assert.doesNotMatch(res.stdout, /credential-shaped file/);
+  });
+});
+
+test('these warnings stay out of AGENTS.md, which documents the repository as it is', async () => {
+  await withRepo(async ({ dir, git, script }) => {
+    await seedProject(dir, git);
+    await put(dir, 'README.md', '# Demo\n\nRequires Node.js >= 18.\n');
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({ name: 'demo', engines: { node: '>=20' }, scripts: { lint: 'echo lint' } }),
+    );
+    await put(dir, 'android/app/release.jks', 'x\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'drift');
+
+    const res = await script('setup', ['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /Node version disagree/);
+
+    const text = await read(dir, AGENTS);
+    assert.ok(!text.includes('Node version disagree'), 'setup-only warning must not be written to AGENTS.md');
+    assert.ok(!text.includes('credential-shaped'), 'setup-only warning must not be written to AGENTS.md');
+  });
+});
+
 test('boundaries lead the section: enforced seams, then aliases, then ignores', async () => {
   await withRepo(async ({ dir, git, script }) => {
     await seedEgom(dir, git);

@@ -255,7 +255,7 @@ async function inspect(cwd, { track, noHook, exclude }) {
 }
 
 /** Step 2's screen. Printed identically on every pass, so a second read is comparable. */
-function displayPlan(state, cwd) {
+async function displayPlan(state, cwd) {
   const { facts, plans, version, excluded } = state;
   const dirs = facts.areas;
   const rootFiles = renderRootFiles(facts.entries, facts);
@@ -288,10 +288,10 @@ function displayPlan(state, cwd) {
     for (const command of facts.validation) console.log(`    ${command.command}`);
   }
 
-  const warnings = scanWarnings(facts);
+  const warnings = await scanWarnings(facts);
   if (warnings.length > 0) {
     console.log('');
-    console.log('  Warnings — NASO did not change any of these, they are here so you see them:');
+    console.log('  Warnings — NASO changed none of these, they are here so you see them:');
     for (const warning of warnings) {
       console.log(`    ** ${warning.headline}`);
       console.log(`      ${warning.detail}`);
@@ -571,7 +571,7 @@ Support: ${SUPPORT_EMAIL}`);
     // Print the plan, then stop. Anything else means blocking forever on a
     // prompt nobody can answer, which is how a CI job hangs until it is killed.
     const state = await inspect(cwd, options);
-    displayPlan(state, cwd);
+    await displayPlan(state, cwd);
     console.log('## Next');
     console.log('');
     console.log('  This terminal cannot answer a question, so setup stopped before writing');
@@ -588,7 +588,7 @@ Support: ${SUPPORT_EMAIL}`);
 
   for (;;) {
     const state = await inspect(cwd, options);
-    displayPlan(state, cwd);
+    await displayPlan(state, cwd);
 
     if (options.dryRun) {
       console.log('--dry-run: nothing was written.');

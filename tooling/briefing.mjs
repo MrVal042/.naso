@@ -1425,6 +1425,7 @@ export async function scanRepo(cwd, { exclude = null, track = null } = {}) {
     exclude: exclude ? normalizeExclusions(exclude) : configuredExclusions(await readConfig(cwd)),
     branch: gitInfo.ok ? gitInfo.stdout.trim() : null,
     conventions,
+    ignoredPatterns: await readIgnorePatterns(cwd),
     tests: detectTestCoverage(files, pkg, packageManager.name, conventions.runner),
     validation: await detectValidationCommands(cwd, pkg, packageManager.name),
     gate: await detectGate(cwd, pkg, packageManager.name),
@@ -1454,7 +1455,7 @@ export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
  * into AGENTS.md, where an agent working alone will read them; `setup` findings are worth
  * a person's attention once and have no business being frozen into a file.
  */
-export function scanWarnings(facts) {
+export async function scanWarnings(facts) {
   const warnings = [];
 
   const tests = facts.tests;
@@ -1470,7 +1471,106 @@ export function scanWarnings(facts) {
     });
   }
 
+  warnings.push(...(await detectVersionContradictions(facts)));
+  warnings.push(...trackedSecretWarnings(facts));
+
   return warnings;
+}
+
+/** Every Node version this repository declares, and where it was declared. */
+async function declaredNodeVersions(facts) {
+  const declared = [];
+  const majorsOf = (text) =>
+    [...String(text).matchAll(/\d+/g)].map((match) => Number(match[0])).filter((n) => n >= 10 && n < 100);
+
+  const engines = facts.pkg?.engines?.node ?? facts.pkg?.volta?.node;
+  if (typeof engines === 'string') declared.push({ source: 'package.json engines.node', value: engines, majors: majorsOf(engines) });
+
+  const nvmrc = await readFile(path.join(facts.cwd, '.nvmrc'), 'utf8').catch(() => null);
+  if (nvmrc !== null && nvmrc.trim()) declared.push({ source: '.nvmrc', value: nvmrc.trim(), majors: majorsOf(nvmrc) });
+
+  for (const file of ['.github/workflows/ci.yml', '.github/workflows/ci.yaml']) {
+    const text = await readFile(path.join(facts.cwd, file), 'utf8').catch(() => null);
+    if (text === null) continue;
+    for (const match of text.matchAll(/node[-_]version\s*:\s*(.+)/g)) {
+      declared.push({ source: `${file} node-version`, value: match[1].trim(), majors: majorsOf(match[1]) });
+    }
+  }
+
+  return declared.filter((entry) => entry.majors.length > 0);
+}
+
+/**
+ * README against package.json, .nvmrc and CI.
+ *
+ * These are four places the same fact is written, and nothing keeps them in step: a
+ * contributor reads "requires Node >= 18" in the README, the CI matrix runs 20, and the
+ * bug they file afterwards is "works on my machine" with a cause nobody wrote down. The
+ * check is a set intersection on major versions, which is loose on purpose — it fires on
+ * 18-versus-20 and stays quiet about the patch level.
+ */
+async function detectVersionContradictions(facts) {
+  const readme = facts.files.find((file) => /^readme(\.md|\.rst|\.txt)?$/i.test(file));
+  if (!readme) return [];
+
+  const text = await readFile(path.join(facts.cwd, readme), 'utf8').catch(() => null);
+  if (text === null) return [];
+
+  const claimed = new Set();
+  for (const match of text.matchAll(/node(?:\.?js)?\s*(?:version\s*)?(?:[>=^~]+\s*)?(\d+)(?:\.(\d+))?/gi)) {
+    const major = Number(match[1]);
+    if (major >= 10 && major < 100) claimed.add(major);
+  }
+  if (claimed.size === 0) return [];
+
+  const declared = await declaredNodeVersions(facts);
+  if (declared.length === 0) return [];
+
+  const contradicting = declared.filter((entry) => !entry.majors.some((major) => claimed.has(major)));
+  if (contradicting.length === 0) return [];
+
+  return [
+    {
+      id: 'node-version-contradiction',
+      where: 'setup',
+      headline: `${readme} and the declared Node version disagree`,
+      detail:
+        `README claims Node ${[...claimed].sort((a, b) => a - b).join(', ')}; ` +
+        `${contradicting.map((entry) => `${entry.source} says ${entry.value}`).join('; ')}`,
+      paths: [readme, ...contradicting.map((entry) => entry.source)],
+    },
+  ];
+}
+
+/**
+ * Credential-shaped files that are in the index.
+ *
+ * Path only, and that is the whole discipline: a warning that quoted the file would put
+ * the secret in the terminal scrollback, in a support request, and in whatever the reader
+ * pastes it into. A file matching an ignore pattern and tracked anyway was normally added
+ * before the pattern existed or with `git add -f`, and it will not show up in a later
+ * `git status` — which is why it is worth saying out loud at all.
+ */
+function trackedSecretWarnings(facts) {
+  const secrets = facts.files.filter((file) => CREDENTIAL_PATTERN.test(file));
+  if (secrets.length === 0) return [];
+
+  const ignored = facts.ignoredPatterns?.credentials ?? [];
+  const alsoIgnored = ignored.length > 0;
+
+  return [
+    {
+      id: 'tracked-secret',
+      where: 'setup',
+      headline: `${plural(secrets.length, 'credential-shaped file')} ${secrets.length === 1 ? 'is' : 'are'} tracked in git`,
+      detail:
+        `${secrets.join(', ')} — path only, contents not read.` +
+        (alsoIgnored
+          ? ` ${ignored.join(', ')} ${ignored.length === 1 ? 'is' : 'are'} in .gitignore, so ${secrets.length === 1 ? 'this file is' : 'these files are'} tracked from before the rule or added with -f, and will not appear in git status.`
+          : ' Nothing in .gitignore covers them, so a new one will be added by accident.'),
+      paths: secrets,
+    },
+  ];
 }
 
 /** The tests line, naming the runner and what the script actually runs. */
@@ -2112,7 +2212,7 @@ export async function renderBriefing(facts, { version, actor, now }) {
   }
 
   const conventions = renderConventions(facts);
-  const warnings = scanWarnings(facts).filter((warning) => warning.where === 'briefing');
+  const warnings = (await scanWarnings(facts)).filter((warning) => warning.where === 'briefing');
   const warningText = warnings.length
     ? `\n\n${warnings.map((w) => `**WARN** ${w.headline}: ${w.detail}. Tracked files read as covered; nothing runs them unless the script names them.`).join('\n\n')}`
     : '';
