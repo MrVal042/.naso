@@ -466,31 +466,22 @@ test('readFileIndex reports its source and honours exclusions on the index view'
 // the package manager the repository actually uses
 // ---------------------------------------------------------------------------
 
-test('commands are emitted with the detected manager, not npm', async () => {
-  await withRepo(async ({ dir, git, script }) => {
-    await put(
-      dir,
-      'package.json',
-      JSON.stringify({
-        name: 'egom',
-        packageManager: 'pnpm@9.1.0',
-        scripts: { verify: 'node scripts/verify.mjs', lint: 'eslint .', test: 'node --test' },
-      }),
-    );
-    await put(dir, 'pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
-    await put(dir, 'src/index.ts', 'export const x = 1;\n');
-    await git('add', '-A');
-    await git('commit', '-qm', 'pnpm repo');
-
-    const res = await script('setup', ['--yes']);
+test('every command the briefing tells an agent to run uses pnpm and names a real script', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedEgom(dir, git);
+    const res = await bare(['--yes']);
     assert.equal(res.code, 0, res.stdout + res.stderr);
 
     const text = await read(dir, AGENTS);
+    const scripts = JSON.parse(await read(dir, 'package.json')).scripts;
+    const commands = [...text.matchAll(/`((?:npm|pnpm|yarn|bun) run [\w:.-]+)`/g)].map((m) => m[1]);
+    assert.ok(commands.length >= 5, `expected the gate and the checks, got: ${commands.join(', ')}`);
+    for (const command of new Set(commands)) {
+      const [manager, , name] = command.split(' ');
+      assert.equal(manager, 'pnpm', `${command} must use the repository's manager`);
+      assert.ok(name in scripts, `${command} names a script package.json does not declare`);
+    }
     assert.match(text, /Package manager: pnpm \(from package\.json "packageManager": pnpm@9\.1\.0\)/);
-    assert.ok(text.includes('pnpm run verify'), 'the gate must be a pnpm command');
-    assert.ok(text.includes('pnpm run test'));
-    // `npm run` only survives as a substring of nothing here: assert on the whole token.
-    assert.ok(!/\bnpm run\b/.test(text), `npm run leaked into a pnpm repository:\n${text}`);
   });
 });
 
@@ -1879,13 +1870,14 @@ test('setup excluding an area keeps it out of the briefing and remembers why', a
   });
 });
 
-test('setup rejecting the plan writes nothing at all', async () => {
+test('the retired setup command, with no terminal, writes nothing, exits 2 and says what replaced it', async () => {
   await withRepo(async ({ dir, git, script }) => {
     await seedProject(dir, git);
-    const res = await script('setup', ['--no']);
-    assert.equal(await exists(dir, AGENTS), false, 'a rejection must not write AGENTS.md');
-    assert.equal(await exists(dir, '.naso'), false, 'a rejection must not vendor the toolset');
-    assert.match(res.stdout, /[Nn]othing/);
+    const before = await treeHash(dir);
+    const res = await script('setup');
+    assert.equal(res.code, 2, res.stdout + res.stderr);
+    assert.match(res.stderr, /deprecated — `npx naso-dev` now does this/);
+    assert.equal(await treeHash(dir), before, 'nothing may change, .git included');
   });
 });
 
