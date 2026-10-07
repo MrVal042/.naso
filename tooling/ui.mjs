@@ -16,45 +16,32 @@
 import pc from 'picocolors';
 
 /**
- * Whether this process may colour its output.
+ * Whether this process may colour its output. First match wins:
  *
- *   --no-color / --color   an explicit request on this invocation, and the only
- *                          one that can turn colour ON for a pipe
- *   NO_COLOR               set, any value, by anything from CI to the parent shell
- *   isTTY                  the fallback, and the only other input
+ *   --no-color / --no-colour        typed on this invocation: never colour
+ *   NO_COLOR                        set to anything but "" or "0": no colour
+ *   FORCE_COLOR / --color           colour, even into a pipe; FORCE_COLOR=0 or
+ *                                   "false" asks for none
+ *   isTTY                           otherwise, colour only a terminal
  *
- * A pipe is not a terminal, so `npx naso-dev | tee log` gets plain text, and so
- * does anything run by an agent. That is the desired outcome: escape codes in a
- * captured buffer are noise, and a file written to be read later should not carry
- * the terminal it happened to be printed on.
- *
- * FORCE_COLOR is deliberately NOT honoured here, which is a departure from the
- * convention every other tool follows and it is worth saying why. npm sets
- * FORCE_COLOR in the environment of every script it runs, to colour its own
- * output, and it does not unset it for the child. So a tool that treats
- * FORCE_COLOR as a request colours its output when piped from `npm publish`,
- * `npm test` or `npm run` — that is, precisely when nobody is looking at a
- * terminal and the escape codes are captured into a file. It surfaced here as a
- * failing test: the publish gate ran the suite with FORCE_COLOR set by npm, and
- * the one assertion that reads the flow's own output got escape codes wrapped
- * around the word it was looking for.
- *
- * `--color` is the honest way to ask for colour in a pipe, because it is typed by
- * the person who wants it. An environment variable that a parent process sets for
- * its own reasons is not that.
+ * FORCE_COLOR is honoured like every other tool honours it. npm sets it in the
+ * environment of the scripts it runs, so a run under `npm test` or `npm run` may
+ * be coloured into a pipe; NO_COLOR or --no-color is the way to say no, and both
+ * outrank it.
  */
-export function colorEnabled(flags = new Set(), stream = process.stdout) {
+export function colorEnabled(flags = new Set(), stream = process.stdout, env = process.env) {
   if (flags.has('no-color') || flags.has('no-colour')) return false;
+  if (env.NO_COLOR !== undefined && env.NO_COLOR !== '' && env.NO_COLOR !== '0') return false;
   if (flags.has('color') || flags.has('colour')) return true;
-
-  if (process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== '0') return false;
-
+  if (env.FORCE_COLOR !== undefined) return !['0', 'false'].includes(String(env.FORCE_COLOR).toLowerCase());
   return Boolean(stream?.isTTY);
 }
 
 /** The style set: identity functions when colour is off, picocolors when it is on. */
 export function createStyle(enabled = colorEnabled()) {
-  const c = enabled ? pc : new Proxy({}, { get: () => (text) => String(text) });
+  // createColors(true), not the default export: picocolors makes its own decision from
+  // the environment, and this module has already made it.
+  const c = enabled ? pc.createColors(true) : new Proxy({}, { get: () => (text) => String(text) });
   const identity = (text) => String(text);
 
   return {

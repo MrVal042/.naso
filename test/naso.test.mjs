@@ -123,7 +123,10 @@ const GITHUB_FIXTURE = ['ghp', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'].join('_')
 
 function exec(cmd, args, cwd, env = {}) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
+    // npm exports FORCE_COLOR to the scripts it runs. Children get it only when a test
+    // asks for it, so `npm test` and `node --test` see the same output.
+    const { FORCE_COLOR, ...inherited } = process.env;
+    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...inherited, ...env } });
     let stdout = '';
     let stderr = '';
     // A child blocked on a prompt nobody can answer is a failure, not a hung suite.
@@ -994,30 +997,27 @@ test('cancelling at the first question leaves the whole tree, .git included, byt
   });
 });
 
-test('NO_COLOR and --no-color both strip every escape code', async () => {
-  await withRepo(async ({ dir, git, bare }) => {
+test('colour precedence: --no-color, then NO_COLOR, then FORCE_COLOR or --color, then the terminal', async () => {
+  await withRepo(async ({ dir, git }) => {
     await seedProject(dir, git);
-
     const esc = /\u001B\[[0-9;]*m/;
-    const plain = await exec(process.execPath, [BIN, dir, '--dry-run'], dir, { NO_COLOR: '1' });
-    assert.equal(plain.code, 0);
-    assert.ok(!esc.test(plain.stdout), 'NO_COLOR must produce no escape codes');
+    const run = (args, env = {}) => exec(process.execPath, [BIN, dir, '--dry-run', ...args], dir, env);
 
-    const flagged = await bare(['--dry-run', '--no-color']);
-    assert.ok(!esc.test(flagged.stdout), '--no-color must produce no escape codes');
-
-    // npm sets FORCE_COLOR for its own output and leaks it into every script it
-    // runs. Treating that as a request for colour meant the flow emitted escape
-    // codes into a pipe under `npm publish` and `npm test` — exactly where
-    // nobody is at a terminal. This is what that looked like.
-    const forced = await exec(process.execPath, [BIN, dir, '--dry-run'], dir, { FORCE_COLOR: '1' });
-    assert.equal(forced.code, 0);
-    assert.ok(!esc.test(forced.stdout), 'FORCE_COLOR from a parent process must not colour a pipe');
-    assert.match(forced.stdout, /Files\s+\d+ tracked in the git index/, 'the text must stay readable');
-
-    // --color is the way to ask for colour in a pipe, because it is typed.
-    const asked = await bare(['--dry-run', '--color']);
-    assert.ok(esc.test(asked.stdout), '--color must colour even when piped');
+    const cases = [
+      [[], {}, false, 'a pipe with nothing set is plain'],
+      [[], { FORCE_COLOR: '1' }, true, 'FORCE_COLOR colours a pipe'],
+      [[], { FORCE_COLOR: '0' }, false, 'FORCE_COLOR=0 asks for none'],
+      [['--color'], {}, true, '--color colours a pipe'],
+      [[], { NO_COLOR: '1', FORCE_COLOR: '1' }, false, 'NO_COLOR beats FORCE_COLOR'],
+      [['--color'], { NO_COLOR: '1' }, false, 'NO_COLOR beats --color'],
+      [['--no-color'], { FORCE_COLOR: '1' }, false, '--no-color beats FORCE_COLOR'],
+    ];
+    for (const [args, env, coloured, why] of cases) {
+      const res = await run(args, env);
+      assert.equal(res.code, 0, res.stdout + res.stderr);
+      assert.equal(esc.test(res.stdout), coloured, why);
+      assert.match(res.stdout.replace(/\u001B\[[0-9;]*m/g, ''), /Files\s+\d+ tracked in the git index/, `${why}: text intact`);
+    }
   });
 });
 
