@@ -18,7 +18,6 @@
 
 import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { actorIdentity } from './lib.mjs';
 
 /** Abandon a lock older than 15 minutes. */
 const STALE_MS = 15 * 60 * 1000;
@@ -83,7 +82,7 @@ export async function acquire(repoRoot, { reason = 'update AGENTS.md' } = {}) {
 
   const buildPayload = (recoveredFrom) =>
     [
-      `holder: ${actorIdentity()}`,
+      `holder: process ${process.pid}`,
       `pid: ${process.pid}`,
       `reason: ${reason}`,
       `started: ${new Date().toISOString()}`,

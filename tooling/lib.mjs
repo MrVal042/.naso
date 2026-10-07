@@ -6,7 +6,6 @@ import { realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 /** Does a path exist on disk? */
@@ -598,12 +597,6 @@ export function isInteractive() {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
-/** Best-effort human identity for the machine running a script. */
-export function actorIdentity() {
-  const user = os.userInfo?.().username ?? os.userInfo?.().username ?? 'unknown';
-  return `${user}@${os.hostname()}`;
-}
-
 /**
  * Compare two dotted version strings.
  * Returns -1 / 0 / 1 so callers can use it directly.
@@ -933,7 +926,7 @@ export async function promptChoice(question, choices) {
  * maintainer needs. Every field here is something only the reporter's machine
  * can produce, so the reply can start with the facts instead of a questionnaire.
  */
-export async function supportTemplate({ command, targetDir, version, actor, now }) {
+export async function supportTemplate({ command, targetDir, version, now }) {
   const git = await gitVersionOrUnknown();
 
   return `Subject: NASO ${version} — setup did not behave as documented
@@ -944,7 +937,6 @@ Hi, I ran NASO setup and it did not do what the README says. Details below.
 NASO version:   ${version}
 Command:        ${command}
 Repository:     ${targetDir}
-Machine:        ${actor}
 Date:           ${now}
 Platform:       ${process.platform} ${process.arch}
 Node:           ${process.version}

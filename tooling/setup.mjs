@@ -42,7 +42,6 @@ import {
   listOption,
   run,
   toolVersion,
-  actorIdentity,
   nasoDir,
   isInteractive,
   promptChoice,
@@ -395,7 +394,6 @@ export async function install(cwd, { track, noHook, force, state }) {
 
   await writeConfig(cwd, {
     version: state.version,
-    actor: actorIdentity(),
     now: new Date().toISOString().slice(0, 10),
     track,
     hook: !noHook,
@@ -477,7 +475,6 @@ async function afterSecondRejection(cwd, state) {
         command: 'naso setup',
         targetDir: cwd,
         version: state.version,
-        actor: actorIdentity(),
         now: new Date().toISOString().slice(0, 10),
       }),
     );

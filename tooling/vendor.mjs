@@ -153,7 +153,7 @@ export async function vendoredVersion(repoRoot) {
  * Separate from `vendorTooling` on purpose: `refresh` calls the first and must not call
  * the second.
  */
-export async function writeConfig(repoRoot, { version, actor, now, track, hook, exclude = [] }) {
+export async function writeConfig(repoRoot, { version, now, track, hook, exclude = [] }) {
   const file = configPath(repoRoot);
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(
@@ -161,7 +161,6 @@ export async function writeConfig(repoRoot, { version, actor, now, track, hook, 
     `${JSON.stringify(
       {
         version,
-        generatedBy: actor,
         generatedAt: now,
         tooling: `${NASO_DIR}/tooling`,
         hook,
@@ -174,6 +173,21 @@ export async function writeConfig(repoRoot, { version, actor, now, track, hook, 
     'utf8',
   );
   return file;
+}
+
+/**
+ * Remove `generatedBy` from a config.json written before 1.1.1, and nothing else.
+ *
+ * 1.0.0 and 1.1.0 recorded `user@hostname` there, and in --track mode that file is
+ * committed. Every other key is a decision a person made and is written back as it was,
+ * in the same order. Returns true when the file changed.
+ */
+export async function dropLegacyIdentity(repoRoot) {
+  const config = await readJSONFile(configPath(repoRoot));
+  if (!config || typeof config !== 'object' || !('generatedBy' in config)) return false;
+  const { generatedBy, ...rest } = config;
+  await writeFile(configPath(repoRoot), `${JSON.stringify(rest, null, 2)}\n`, 'utf8');
+  return true;
 }
 
 /** Root of the repository as git itself defines it, for path resolution from a subdir. */

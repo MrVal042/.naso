@@ -13,9 +13,10 @@
 //   an agent added a section to, is theirs; a version bump is not a licence to throw that
 //   away. If the content needs regenerating, that is `briefing create --force`.
 //
-//   It never rewrites `.naso/config.json`. That file records decisions a human made about
-//   this repository — which areas stay out of the briefing, local or tracked mode. An
-//   upgrade is not a reason to re-ask those questions.
+//   It never rewrites the settings in `.naso/config.json`. That file records decisions a
+//   human made about this repository — which areas stay out of the briefing, local or
+//   tracked mode. An upgrade is not a reason to re-ask those questions. The one key it
+//   removes is `generatedBy`, the user and machine name versions before 1.1.1 recorded.
 //
 // The stamp only ever moves forward. A briefing written by a newer NASO than the tool
 // running the refresh is reported and left alone: downgrading the stamp would destroy the
@@ -37,7 +38,7 @@ import {
 } from './lib.mjs';
 import { refreshBriefingStamp, AGENTS_FILE } from './briefing.mjs';
 import { installPreCommitHook, readHook, isNasoHook } from './install.mjs';
-import { NASO_DIR, isVendored, vendorTooling, vendoredVersion, readConfig } from './vendor.mjs';
+import { NASO_DIR, isVendored, vendorTooling, vendoredVersion, readConfig, dropLegacyIdentity } from './vendor.mjs';
 
 export async function main(argv = process.argv.slice(2)) {
   const { flags, positional } = parseArgs(argv);
@@ -130,11 +131,17 @@ Support: ${SUPPORT_EMAIL}`);
     }
   }
 
-  // Reported, never rewritten.
+  // Reported, never rewritten — with one exception. Before 1.1.1 setup recorded the
+  // user and machine name as `generatedBy`; that key is removed and nothing else moves.
+  const droppedIdentity = await dropLegacyIdentity(cwd);
   const config = await readConfig(cwd);
   const excluded = Array.isArray(config.exclude) ? config.exclude : [];
   console.log('');
-  console.log(`   ${NASO_DIR}/config.json: left exactly as it was`);
+  console.log(
+    droppedIdentity
+      ? `   ${NASO_DIR}/config.json: removed the user and machine name older versions recorded; nothing else changed`
+      : `   ${NASO_DIR}/config.json: left exactly as it was`,
+  );
   console.log(
     excluded.length > 0
       ? `   ${excluded.length} area(s) excluded from the briefing: ${excluded.join(', ')}`

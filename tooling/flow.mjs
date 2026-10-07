@@ -29,7 +29,7 @@
 // vendorSources().
 
 import path from 'node:path';
-import { pathExists, parseArgs, listOption, run, toolVersion, actorIdentity, nasoDir, isInteractive } from './lib.mjs';
+import { pathExists, parseArgs, listOption, run, toolVersion, nasoDir, isInteractive } from './lib.mjs';
 import { topLevelEntries, areasOf, dominantLanguage, splitNul } from './briefing.mjs';
 import { readHook, isNasoHook } from './install.mjs';
 import { NASO_DIR, isVendored, vendoredVersion } from './vendor.mjs';
@@ -269,7 +269,7 @@ Other commands:
   console.log('');
   console.log(`${style.bold(`NASO ${version}`)}  ${style.dim(cwd)}`);
   console.log(
-    `${style.dim(`${process.version} · ${gitVersion.ok ? gitVersion.stdout.trim() : 'git not found'} · ${actorIdentity()}`)}`,
+    `${style.dim(`${process.version} · ${gitVersion.ok ? gitVersion.stdout.trim() : 'git not found'}`)}`,
   );
   console.log('');
 

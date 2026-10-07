@@ -2179,3 +2179,67 @@ test('--exclude given twice keeps both areas out and saves both', async () => {
     assert.ok(!text.includes('`a/`') && !text.includes('`b/`'), 'neither excluded area may be described');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1.1.1: nothing NASO prints or writes names the person or the machine
+// ---------------------------------------------------------------------------
+
+/** Every file under `root`, except git's object store (compressed history, not ours). */
+async function allFiles(root, rel = '') {
+  const out = [];
+  for (const entry of await readdir(path.join(root, rel), { withFileTypes: true })) {
+    const child = path.join(rel, entry.name);
+    if (child === path.join('.git', 'objects')) continue;
+    if (entry.isDirectory()) out.push(...(await allFiles(root, child)));
+    else if (entry.isFile()) out.push(child);
+  }
+  return out;
+}
+
+test('no user@host string appears in any output or any written file', async () => {
+  const actor = `${os.userInfo().username}@${os.hostname()}`;
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+
+    const outputs = [];
+    const keep = (res) => outputs.push(res.stdout, res.stderr);
+    keep(await bare(['--yes']));
+    keep(await script('briefing', ['create', '--force']));
+    keep(await script('refresh'));
+    keep(await script('doctor'));
+    keep(await script('guide', ['--list']));
+    keep(await script('init'));
+    keep(await script('validate'));
+    await put(dir, 'src/more.ts', 'export const z = 3;\n');
+    await git('add', 'src/more.ts');
+    keep(await git('commit', '-qm', 'through the hook'));
+
+    for (const [i, text] of outputs.entries()) {
+      assert.ok(!text.includes(actor), `output #${i} names ${actor}:\n${text}`);
+    }
+    for (const file of await allFiles(dir)) {
+      const text = await readFile(path.join(dir, file), 'utf8').catch(() => '');
+      assert.ok(!text.includes(actor), `${file} names ${actor}`);
+    }
+    const config = JSON.parse(await read(dir, '.naso/config.json'));
+    assert.ok(!('generatedBy' in config), 'config.json must not carry generatedBy');
+    assert.ok(!/generated-by:/.test(await read(dir, AGENTS)), 'the AGENTS.md header must not carry generated-by');
+  });
+});
+
+test('refresh drops generatedBy from an older config.json and keeps every other setting', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    await bare(['--yes', '--exclude', 'src']);
+    const config = JSON.parse(await read(dir, '.naso/config.json'));
+    const legacy = { ...config, generatedBy: 'someone@somewhere' };
+    await put(dir, '.naso/config.json', `${JSON.stringify(legacy, null, 2)}\n`);
+
+    const res = await script('refresh');
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const after = JSON.parse(await read(dir, '.naso/config.json'));
+    assert.ok(!('generatedBy' in after), 'refresh must drop generatedBy');
+    const { generatedBy, ...rest } = legacy;
+    assert.deepEqual(after, rest, 'every other setting must survive untouched');
+  });
+});

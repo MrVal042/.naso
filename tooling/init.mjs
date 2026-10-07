@@ -24,7 +24,6 @@ import {
   parseArgs,
   run,
   toolVersion,
-  actorIdentity,
   nasoDir,
   isMainModule,
   TOOLS,
@@ -120,7 +119,6 @@ Support: ${SUPPORT_EMAIL}`);
   }
 
   const version = await toolVersion();
-  const actor = actorIdentity();
   const gitVersion = await run('git', ['--version']);
 
   console.log(`# NASO Init ${version} — ${cwd}`);
@@ -128,7 +126,6 @@ Support: ${SUPPORT_EMAIL}`);
   console.log(`Tool directory:  ${nasoDir()}`);
   console.log(`Node:            ${process.version}`);
   console.log(`Git:             ${gitVersion.ok ? gitVersion.stdout.trim() : 'not found on PATH'}`);
-  console.log(`Run by:          ${actor}`);
   console.log('');
 
   // --- Already installed? Say so before explaining the setup from scratch. ---

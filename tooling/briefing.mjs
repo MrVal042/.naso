@@ -41,7 +41,6 @@ import {
   compareVersions,
   isMainModule,
   toolVersion,
-  actorIdentity,
   banner,
   section,
   SUPPORT_EMAIL,
@@ -66,7 +65,6 @@ export const NASO_END = '<!-- naso:end -->';
 
 const TEMPLATE_HEADER = `<!-- naso-briefing -->
 <!-- version: __VERSION__ -->
-<!-- generated-by: __ACTOR__ -->
 <!-- generated-at: __DATE__ -->`;
 
 const AUTO_START = '<!-- naso:auto:start -->';
@@ -2177,13 +2175,11 @@ export function renderValidation(facts) {
   return lines.join('\n\n');
 }
 
-export async function renderBriefing(facts, { version, actor, now }) {
+export async function renderBriefing(facts, { version, now }) {
   const parts = [];
 
   parts.push(
-    `${NASO_START}\n${TEMPLATE_HEADER.replace('__VERSION__', version)
-      .replace('__ACTOR__', actor)
-      .replace('__DATE__', now)}`,
+    `${NASO_START}\n${TEMPLATE_HEADER.replace('__VERSION__', version).replace('__DATE__', now)}`,
   );
 
   parts.push(`# ${facts.projectName} — Agent Instructions`);
@@ -2497,7 +2493,6 @@ export async function createBriefing(cwd, { force = false, exclude = null, track
   const saved = track === null ? (await readConfig(cwd))?.track : track;
 
   const version = await toolVersion();
-  const actor = actorIdentity();
   const now = new Date().toISOString().slice(0, 10);
 
   const outcome = await withLock(
@@ -2507,7 +2502,7 @@ export async function createBriefing(cwd, { force = false, exclude = null, track
       const existingLines = before === null ? 0 : before.split('\n').length;
 
       const facts = await scanRepo(cwd, { exclude, track: saved });
-      const block = await renderBriefing(facts, { version, actor, now });
+      const block = await renderBriefing(facts, { version, now });
 
       if (before === null) {
         await writeFile(agentsPath, block, 'utf8');
