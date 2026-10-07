@@ -42,6 +42,24 @@ import { confirm, select, isCancel, note, outro } from '@clack/prompts';
 const AGENTS_FILE = 'AGENTS.md';
 
 /**
+ * The column every labelled value on the opening screen starts in.
+ *
+ * One width for the explanation and the repository facts alike, taken from the longest
+ * label, so the two blocks read as one table instead of two differently indented lists.
+ */
+const LABELS = ['What this does', 'Before you accept', 'Branch', 'Files', 'Areas', 'Language'];
+const LABEL_WIDTH = Math.max(...LABELS.map((label) => label.length)) + 2;
+
+/** A label padded to LABEL_WIDTH, then the first line; later lines indented to match. */
+function labelled(paint, label, lines) {
+  const [first, ...rest] = lines;
+  return [
+    `${paint(label)}${' '.repeat(LABEL_WIDTH - label.length)}${first}`,
+    ...rest.map((line) => `${' '.repeat(LABEL_WIDTH)}${line}`),
+  ];
+}
+
+/**
  * The whole pitch, in five lines.
  *
  * The long version this replaces was forty lines of rationale printed before
@@ -51,13 +69,17 @@ const AGENTS_FILE = 'AGENTS.md';
  */
 function explain(style, { why }) {
   const lines = [
-    `${style.bold('What this does')}  reads this repository, writes an AGENTS.md briefing`,
-    '                    that says what every area is for and what must pass before',
-    `                    work counts as done, then copies a small toolset into ${style.path(NASO_DIR)}/`,
-    '                    and installs a pre-commit gate to keep the briefing true.',
+    ...labelled(style.bold, 'What this does', [
+      'reads this repository, writes an AGENTS.md briefing',
+      'that says what every area is for and what must pass before',
+      `work counts as done, then copies a small toolset into ${style.path(NASO_DIR)}/`,
+      'and installs a pre-commit gate to keep the briefing true.',
+    ]),
     '',
-    `${style.bold('Before you accept')}  nothing at all is written. Answering no leaves this`,
-    '                    repository exactly as it is, and that is a valid outcome.',
+    ...labelled(style.bold, 'Before you accept', [
+      'nothing at all is written. Answering no leaves this',
+      'repository exactly as it is, and that is a valid outcome.',
+    ]),
   ];
 
   if (why) {
@@ -394,19 +416,22 @@ Other commands:
   console.log(style.heading('This repository'));
   console.log('');
   if (!repo.isRepo) {
-    console.log(
-      'Not a git repository. NASO still works on one, but the pre-commit gate and the',
-      'scope check both need git, and the briefing would have nothing to check itself',
-      'against.',
-    );
+    console.log('Not a git repository. NASO still works on one, but the pre-commit gate and the');
+    console.log('scope check both need git, and the briefing would have nothing to check itself');
+    console.log('against.');
   } else {
-    console.log(
-      `${style.dim('Branch')}    ${repo.branch ?? 'unknown'}\n` +
-        `${style.dim('Files')}     ${repo.files} tracked in the git index\n` +
-        `${style.dim('Areas')}     ${repo.areas.length} top-level ${repo.areas.length === 1 ? 'directory' : 'directories'}` +
-        `${repo.areas.length ? ` (${repo.areas.slice(0, 8).join(', ')}${repo.areas.length > 8 ? ', …' : ''})` : ''}` +
-        (repo.language ? `\n${style.dim('Language')}  ${repo.language.label}, ${repo.language.count} of ${repo.files} files` : ''),
-    );
+    const facts = [
+      ...labelled(style.dim, 'Branch', [repo.branch ?? 'unknown']),
+      ...labelled(style.dim, 'Files', [`${repo.files} tracked in the git index`]),
+      ...labelled(style.dim, 'Areas', [
+        `${repo.areas.length} top-level ${repo.areas.length === 1 ? 'directory' : 'directories'}` +
+          `${repo.areas.length ? ` (${repo.areas.slice(0, 8).join(', ')}${repo.areas.length > 8 ? ', …' : ''})` : ''}`,
+      ]),
+      ...(repo.language
+        ? labelled(style.dim, 'Language', [`${repo.language.label}, ${repo.language.count} of ${repo.files} files`])
+        : []),
+    ];
+    for (const line of facts) console.log(line);
   }
   console.log('');
 

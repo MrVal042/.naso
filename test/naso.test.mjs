@@ -2766,3 +2766,33 @@ test('answering yes to the block question regenerates it; no leaves AGENTS.md by
     assert.match(await read(dir, AGENTS), /`docs\/`/, '"yes" regenerates the block from the repository as it is');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1.1.1: one label column for the whole screen
+// ---------------------------------------------------------------------------
+
+test('every label and continuation line on the opening screen shares one value column', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    const res = await bare(['--dry-run', '--no-color']);
+    const head = res.stdout.slice(0, res.stdout.indexOf('The plan'));
+    const lines = head.split('\n');
+    const LABEL = /^(What this does|Before you accept|Branch|Files|Areas|Language)( +)\S/;
+
+    const columns = [];
+    let inLabelled = false;
+    for (const line of lines) {
+      const m = line.match(LABEL);
+      if (m) {
+        columns.push(m[1].length + m[2].length);
+        inLabelled = true;
+      } else if (inLabelled && /^ +\S/.test(line)) {
+        columns.push(line.length - line.trimStart().length);
+      } else {
+        inLabelled = false;
+      }
+    }
+    assert.ok(columns.length >= 8, `expected labelled lines, got:\n${head}`);
+    assert.equal(new Set(columns).size, 1, `values start at columns ${[...new Set(columns)].join(', ')}:\n${head}`);
+  });
+});
