@@ -77,7 +77,11 @@ export async function acquire(repoRoot, { reason = 'update AGENTS.md' } = {}) {
   const release = async () => {
     if (released) return;
     released = true;
-    await rm(lockFile, { force: true }).catch(() => {});
+    // A lock left behind blocks every later write for STALE_MS, so a failure to remove
+    // it is said out loud rather than swallowed.
+    await rm(lockFile, { force: true }).catch((err) => {
+      console.error(`naso-dev: could not remove ${lockFile} (${err?.code ?? err}); remove it by hand.`);
+    });
   };
 
   const buildPayload = (recoveredFrom) =>
@@ -114,7 +118,9 @@ export async function acquire(repoRoot, { reason = 'update AGENTS.md' } = {}) {
     };
   }
 
-  await rm(lockFile, { force: true }).catch(() => {});
+  await rm(lockFile, { force: true }).catch((err) => {
+    console.error(`naso-dev: could not break the stale lock ${lockFile} (${err?.code ?? err}); remove it by hand.`);
+  });
   try {
     const handle = await open(lockFile, 'wx');
     try {

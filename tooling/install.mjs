@@ -412,17 +412,24 @@ export async function findArtifacts(targetDir) {
 export async function removeArtifacts(artifacts, { onlyOwned = true } = {}) {
   const removed = [];
   const kept = [];
+  const failed = [];
 
   for (const artifact of artifacts) {
     if (onlyOwned && artifact.owned !== 'yes') {
       kept.push(artifact);
       continue;
     }
-    await rm(artifact.path, { force: true }).catch(() => {});
-    removed.push(artifact);
+    // A delete that failed is reported as failed. Listing it as removed told the user a
+    // stale lock was gone while it went on blocking every write to AGENTS.md.
+    try {
+      await rm(artifact.path, { force: true });
+      removed.push(artifact);
+    } catch (err) {
+      failed.push({ ...artifact, error: err?.code ?? String(err) });
+    }
   }
 
-  return { removed, kept };
+  return { removed, kept, failed };
 }
 
 /** Absolute path to a tool script, for display and for hook bodies. */

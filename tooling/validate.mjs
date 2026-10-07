@@ -639,7 +639,7 @@ async function runStaged(cwd, pkg, pm, { append, prefixes, strictScope }) {
   // Secrets and scope first: they are the findings a person must act on before
   // anything else, and running them first means a leaked key is reported before
   // a slow lint has a chance to bury it.
-  const secretsOk = await runSecrets(cwd, true, prefixes, strictScope);
+  await runSecrets(cwd, true, prefixes, strictScope);
 
   const stagedFiles = await getStagedFiles(cwd);
 
@@ -683,14 +683,11 @@ async function runStaged(cwd, pkg, pm, { append, prefixes, strictScope }) {
     record('AGENTS.md update', 'skip', '--no-append');
   }
 
-  void secretsOk;
   printSummary();
 }
 
-async function runFull(cwd, pkg, pm) {
+async function runFull(cwd, pkg, pm, { prefixes, strictScope }) {
   const scripts = pkg.scripts ?? {};
-  const prefixes = resolveScope(null, process.env.NASO_SCOPE);
-  const strictScope = process.env.NASO_SCOPE_STRICT === '1';
 
   await runSecrets(cwd, false, prefixes, strictScope);
 
@@ -820,7 +817,9 @@ export async function main(argv = process.argv.slice(2)) {
       strictScope,
     });
   } else {
-    await runFull(cwd, pkg, pm);
+    // The scope main() resolved from --scope / --strict and the environment — the full
+    // run used to re-read only the environment and silently drop the flags.
+    await runFull(cwd, pkg, pm, { prefixes, strictScope });
   }
 }
 

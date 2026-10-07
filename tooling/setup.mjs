@@ -578,9 +578,12 @@ export async function install(cwd, { track, noHook, force, state }) {
   const artifacts = await findArtifacts(cwd);
   const removable = artifacts.filter((artifact) => artifact.path !== path.join(cwd, 'AGENTS.md'));
   if (removable.length > 0) {
-    const { removed } = await removeArtifacts(removable);
+    const { removed, failed } = await removeArtifacts(removable);
     for (const artifact of removed) console.log(`- Removed leftover ${artifact.label}.`);
-    if (removed.length > 0) console.log('');
+    for (const artifact of failed) {
+      console.log(`- Could not remove leftover ${artifact.label} (${artifact.error}); delete ${artifact.path} by hand.`);
+    }
+    if (removed.length + failed.length > 0) console.log('');
   }
 
   console.log('## Verify');

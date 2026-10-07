@@ -45,7 +45,8 @@ import {
   parseWorkflowJobs,
 } from '../tooling/briefing.mjs';
 import { notableAdditions, inScope, resolveScope } from '../tooling/validate.mjs';
-import { buildHookScript, isNasoHook } from '../tooling/install.mjs';
+import { buildHookScript, isNasoHook, removeArtifacts } from '../tooling/install.mjs';
+import { acquire } from '../tooling/lock.mjs';
 import { normalizeExclusions, vendorTooling, isVendored, vendoredVersion } from '../tooling/vendor.mjs';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -2794,5 +2795,94 @@ test('every label and continuation line on the opening screen shares one value c
     }
     assert.ok(columns.length >= 8, `expected labelled lines, got:\n${head}`);
     assert.equal(new Set(columns).size, 1, `values start at columns ${[...new Set(columns)].join(', ')}:\n${head}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1.1.1: hygiene — no unreachable branches, no swallowed failures
+// ---------------------------------------------------------------------------
+
+test('refresh says so when AGENTS.md was stamped by a newer NASO, and leaves the stamp', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    await bare(['--yes']);
+    const text = (await read(dir, AGENTS)).replace(/<!-- version: .+ -->/, '<!-- version: 9.9.9 -->');
+    await put(dir, AGENTS, text);
+    const res = await script('refresh');
+    assert.match(res.stdout, /stamped 9\.9\.9, newer than this tool/);
+    assert.ok(!/already stamped/.test(res.stdout));
+    assert.match(await read(dir, AGENTS), /<!-- version: 9\.9\.9 -->/);
+  });
+});
+
+test('validate full run honours --scope and --strict, not only the environment', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await put(dir, 'package.json', JSON.stringify({ name: 'scoped' }));
+    await put(dir, 'src/a.ts', 'export const a = 1;\n');
+    await put(dir, 'docs/b.md', '# b\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'base');
+    await put(dir, 'docs/b.md', '# b, changed\n');
+
+    const validate = (args) => exec(process.execPath, [path.join(TOOL_DIR, 'validate.mjs'), dir, ...args], dir, { NASO_SCOPE: '', NASO_SCOPE_STRICT: '' });
+    const loose = await validate([]);
+    assert.equal(loose.code, 0, loose.stdout);
+    const strict = await validate(['--scope', 'src', '--strict']);
+    assert.equal(strict.code, 1, strict.stdout);
+    assert.match(strict.stdout, /Out-of-scope paths changed[\s\S]*docs\/b\.md/);
+  });
+});
+
+test('removeArtifacts reports a file it could not delete instead of claiming it did', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'naso-rm-'));
+  const locked = path.join(dir, 'locked');
+  await mkdir(locked);
+  await writeFile(path.join(locked, '.naso.lock'), 'x');
+  await chmod(locked, 0o555);
+  try {
+    const result = await removeArtifacts([{ path: path.join(locked, '.naso.lock'), label: '.naso.lock', owned: 'yes' }]);
+    assert.deepEqual(result.removed, []);
+    assert.equal(result.failed.length, 1);
+    assert.match(result.failed[0].error, /EACCES|EPERM/);
+  } finally {
+    await chmod(locked, 0o755);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a lock that cannot be released is reported, not silently left behind', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'naso-lock-'));
+  const lock = await acquire(dir);
+  assert.ok(lock.acquired);
+  await chmod(dir, 0o555);
+  const said = [];
+  const original = console.error;
+  console.error = (...args) => said.push(args.join(' '));
+  try {
+    await lock.release();
+  } finally {
+    console.error = original;
+    await chmod(dir, 0o755);
+    await rm(dir, { recursive: true, force: true });
+  }
+  assert.ok(said.some((line) => /\.naso\.lock/.test(line) && /remove it by hand/.test(line)), said.join('\n'));
+});
+
+test('deps.interactive is called, so an injected "no terminal" really means no terminal', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    const before = await treeHash(dir);
+    const driver = `
+      const { main } = await import(${JSON.stringify(path.join(TOOL_DIR, 'flow.mjs'))});
+      const refuse = async () => { throw new Error('asked a question with no terminal'); };
+      main([process.argv[1]], {
+        interactive: () => false,
+        ask: refuse,
+        prompts: { questions: refuse, decide: refuse, pickArea: refuse, afterRejections: refuse, done() {} },
+      }).then(() => process.exit(process.exitCode ?? 0), (err) => { console.error(String(err)); process.exit(1); });
+    `;
+    const res = await exec(process.execPath, ['--input-type=module', '-e', driver, dir], dir);
+    assert.equal(res.code, 2, res.stdout + res.stderr);
+    assert.equal(await treeHash(dir), before);
   });
 });

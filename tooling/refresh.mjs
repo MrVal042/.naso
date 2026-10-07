@@ -106,12 +106,14 @@ Support: ${SUPPORT_EMAIL}`);
         console.log(`--  Could not read ${AGENTS_FILE}: ${stamped.reason}`);
         problems++;
       }
-    } else if (!stamped.changed) {
-      console.log(`--  ${AGENTS_FILE} is already stamped ${version}.`);
     } else if (compareVersions(stamped.previous, version) > 0) {
+      // Checked before `changed`: a newer stamp is also unchanged, and reporting it as
+      // "already stamped" hid the one case where the tool, not the briefing, is behind.
       console.log(`--  ${AGENTS_FILE} is stamped ${stamped.previous}, newer than this tool (${version}).`);
       console.log('    Left it alone: the tool is what needs updating here, not the briefing.');
       console.log('    Run `npm install -g naso-dev` or `npm update naso-dev` to catch up.');
+    } else if (!stamped.changed) {
+      console.log(`--  ${AGENTS_FILE} is already stamped ${version}.`);
     } else {
       console.log(`OK  Moved the ${AGENTS_FILE} stamp ${stamped.previous} -> ${version}. No prose touched.`);
     }
