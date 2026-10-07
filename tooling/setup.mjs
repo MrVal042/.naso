@@ -67,8 +67,8 @@ import {
   excludeLocally,
   findArtifacts,
   removeArtifacts,
-  readHook,
-  isNasoHook,
+  describeHook,
+  CHAINED_HOOK_NAME,
   LOCAL_EXCLUDE_PATTERNS,
 } from './install.mjs';
 import {
@@ -148,13 +148,105 @@ function toolingTree() {
   return entries.map((entry) => ({ ...entry, path: path.join(dir, entry.file) }));
 }
 
+/** What `--hook-action` accepts. */
+export const HOOK_ACTIONS = ['install', 'chain', 'skip', 'abort'];
+
+/**
+ * What happens to the pre-commit hook, decided from what is there and what was asked.
+ *
+ * Pure, so the plan and the write cannot disagree. The defaults never touch a hook NASO
+ * did not write and never write into a hooks directory git tracks: both need an explicit
+ * choice — an answer to the question, or `--hook-action` — and in their absence the hook
+ * is skipped and the plan says why.
+ *
+ *   install / reinstall   the slot is empty, or already NASO's
+ *   chain                 move the foreign hook aside, byte for byte; NASO's calls it first
+ *   skip                  write no hook
+ *   abort                 write nothing at all
+ */
+export function decideHook(hook, { noHook = false, hookAction = null } = {}) {
+  if (noHook) return { action: 'skip', reason: 'no-hook' };
+  if (hook.state === 'not-repo') return { action: 'skip', reason: 'not-a-repo' };
+  const conflicted = hook.state === 'foreign' || hook.trackedDir;
+  if (hookAction === 'abort' && conflicted) return { action: 'abort', reason: 'chosen' };
+  if (hookAction === 'skip') return { action: 'skip', reason: 'chosen' };
+
+  if (hook.state === 'foreign') {
+    return hookAction === 'chain'
+      ? { action: 'chain', allowTracked: hook.trackedDir }
+      : { action: 'skip', reason: 'foreign' };
+  }
+  const fresh = hook.state === 'naso' ? 'reinstall' : 'install';
+  if (hook.trackedDir) {
+    return hookAction === 'install' || hookAction === 'chain'
+      ? { action: fresh, allowTracked: true }
+      : { action: 'skip', reason: 'tracked-dir' };
+  }
+  return { action: fresh, allowTracked: false };
+}
+
+/** The plan's line for the hook. Every branch names the path, so nothing is implied. */
+function hookPlanEntry(hook, decision) {
+  if (decision.reason === 'no-hook') {
+    return { target: hook.path ?? '.git/hooks/pre-commit', verb: 'Skip', detail: '--no-hook was passed. Nothing will block a commit in this repository.' };
+  }
+  if (decision.reason === 'not-a-repo') {
+    return { target: 'pre-commit hook', verb: 'Skip', detail: 'Not a git repository, so there is no hook to install.' };
+  }
+  const gate = `Runs ${NASO_DIR}/tooling/validate.mjs from this repository: the secret, scope, format and lint checks on staged files, plus the briefing upkeep.`;
+  if (hook.state === 'foreign') {
+    const target = `Hook: existing hook at ${hook.path}`;
+    if (decision.action === 'chain') {
+      return {
+        target,
+        verb: 'Chain',
+        detail:
+          `It is moved, unchanged, to ${CHAINED_HOOK_NAME} beside it, and NASO's hook calls it first: ` +
+          `if it fails, the commit stops as it does today. ${gate}` +
+          (hook.trackedDir ? ` core.hooksPath (${hook.hooksPath}) is tracked, so both files show up in git status.` : ''),
+      };
+    }
+    if (decision.action === 'abort') return { target, verb: 'Abort', detail: 'Nothing will be written.' };
+    return {
+      target,
+      verb: 'Skip',
+      detail:
+        'NASO did not write it, so it is left exactly as it is — it may run a lint config, a secret ' +
+        'scanner or a signing step. Choose chain (or pass --hook-action chain) to run both.',
+    };
+  }
+  if (hook.trackedDir) {
+    const target = `Hook: ${hook.path}`;
+    if (decision.action === 'skip') {
+      return {
+        target,
+        verb: 'Skip',
+        detail:
+          `core.hooksPath is ${hook.hooksPath}, a directory git tracks, so a hook written there would be ` +
+          'part of the next commit. NASO does not write there unless you choose it (--hook-action install).',
+      };
+    }
+    if (decision.action === 'abort') return { target, verb: 'Abort', detail: 'Nothing will be written.' };
+    return {
+      target,
+      verb: decision.action === 'reinstall' ? 'Reinstall' : 'Install',
+      detail: `${gate} You chose to write into ${hook.hooksPath}, which git tracks: the hook will show up in git status.`,
+    };
+  }
+  return {
+    target: hook.path,
+    verb: decision.action === 'reinstall' ? 'Reinstall' : 'Install',
+    detail: decision.action === 'reinstall' ? `NASO's own hook, rewritten in place. ${gate}` : gate,
+  };
+}
+
 /**
  * Everything step 2 knows, computed once.
  *
  * The scan is the expensive part and it is what both a rejection and an accept
  * are decided on, so it is done up front and reused for the whole flow.
  */
-export async function inspect(cwd, { track, noHook, exclude }) {
+export async function inspect(cwd, { track, noHook, exclude, force = false, hookAction = null }) {
   const config = await readConfig(cwd);
 
   // Saved exclusions survive the run, and a --exclude flag adds to them. The union is
@@ -168,7 +260,8 @@ export async function inspect(cwd, { track, noHook, exclude }) {
 
   const facts = await scanRepo(cwd, { exclude: excluded });
   const artifacts = await findArtifacts(cwd);
-  const hook = await readHook(cwd);
+  const hook = await describeHook(cwd);
+  const hookDecision = decideHook(hook, { noHook, hookAction });
   const version = await toolVersion();
 
   const plans = [];
@@ -183,6 +276,14 @@ export async function inspect(cwd, { track, noHook, exclude }) {
       target: 'AGENTS.md',
       verb: 'Write',
       detail: 'Generated from the scan below, wrapped in the naso:start / naso:end markers.',
+    });
+  } else if (hasBlock && force) {
+    plans.push({
+      target: 'AGENTS.md',
+      verb: 'Replace',
+      detail:
+        'The NASO block between <!-- naso:start --> and <!-- naso:end --> is regenerated from the ' +
+        'scan. Every line outside those markers stays byte for byte as it is.',
     });
   } else if (hasBlock) {
     plans.push({
@@ -220,29 +321,7 @@ export async function inspect(cwd, { track, noHook, exclude }) {
       'briefing. Re-running setup rewrites it; `refresh` never does.',
   });
 
-  if (noHook) {
-    plans.push({
-      target: '.git/hooks/pre-commit',
-      verb: 'Skip',
-      detail: '--no-hook was passed. Nothing will block a commit in this repository.',
-    });
-  } else if (hook && !isNasoHook(hook)) {
-    plans.push({
-      target: '.git/hooks/pre-commit',
-      verb: 'Skip',
-      detail:
-        'A hook is already installed at this path and NASO did not write it. It is left exactly ' +
-        'as it is — it may be running a lint config, a secret scanner, or a signing step.',
-    });
-  } else {
-    plans.push({
-      target: '.git/hooks/pre-commit',
-      verb: 'Install',
-      detail:
-        `Runs ${NASO_DIR}/tooling/validate.mjs from this repository: the secret, scope, format and ` +
-        'lint checks on staged files, plus the briefing upkeep.',
-    });
-  }
+  plans.push(hookPlanEntry(hook, hookDecision));
 
   plans.push(
     track
@@ -263,7 +342,7 @@ export async function inspect(cwd, { track, noHook, exclude }) {
         },
   );
 
-  return { facts, artifacts, hook, version, plans, excluded, hasAgents, hasBlock };
+  return { facts, artifacts, hook, hookDecision, version, plans, excluded, hasAgents, hasBlock };
 }
 
 /** Step 2's screen. Printed identically on every pass, so a second read is comparable. */
@@ -350,6 +429,8 @@ export async function install(cwd, { track, noHook, force, state }) {
   console.log('## Accepted — writing');
   console.log('');
 
+  const decision = state.hookDecision ?? decideHook(await describeHook(cwd), { noHook });
+
   // The local excludes go in before the briefing is written, not after. The Boundaries
   // section reports what .git/info/exclude holds, and a briefing generated one step before
   // those lines existed would describe the mechanism and not its contents — which is the
@@ -396,19 +477,29 @@ export async function install(cwd, { track, noHook, force, state }) {
     version: state.version,
     now: new Date().toISOString().slice(0, 10),
     track,
-    hook: !noHook,
+    hook: decision.action !== 'skip',
     exclude: state.excluded,
   });
   console.log(`- Wrote ${NASO_DIR}/config.json with the settings this run used.`);
   console.log('');
 
-  if (!noHook) {
+  if (decision.action === 'install' || decision.action === 'reinstall' || decision.action === 'chain') {
     await installPreCommitHook(cwd, {
+      action: decision.action === 'chain' ? 'chain' : 'install',
+      allowTracked: Boolean(decision.allowTracked),
       report: (line) => console.log(`  ${line}`),
     });
     console.log('');
   } else {
-    console.log('- Skipped the pre-commit hook (--no-hook).');
+    const why = {
+      'no-hook': '--no-hook',
+      'not-a-repo': 'not a git repository',
+      foreign: `${state.hook?.path} is not NASO's and was left as it is`,
+      'tracked-dir': `core.hooksPath ${state.hook?.hooksPath} is tracked by git`,
+      chosen: 'you chose to skip it',
+    }[decision.reason] ?? decision.reason;
+    console.log(`- Skipped the pre-commit hook (${why}).`);
+    console.log(`  To run the gate by hand: node ${NASO_DIR}/tooling/validate.mjs --staged`);
     console.log('');
   }
 

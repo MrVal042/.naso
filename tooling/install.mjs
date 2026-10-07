@@ -8,7 +8,7 @@
 //
 // No exports are user-facing. This module is an implementation detail of setup.
 
-import { mkdir, writeFile, readFile, appendFile, rm, stat, chmod } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, appendFile, rm, stat, chmod, rename, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import {
   pathExists,
@@ -20,6 +20,15 @@ import {
 import { NASO_DIR, vendoredToolingDir, vendoredScriptPath } from './vendor.mjs';
 
 const HOOK_MARKER = '# managed-by: naso-dev';
+
+/**
+ * Where a foreign pre-commit hook goes when the user chooses to chain it.
+ *
+ * Moved, never rewritten: the bytes and the mode are exactly what they were, and NASO's
+ * hook calls this file first. If something already sits at this name, chaining refuses
+ * rather than overwrite it.
+ */
+export const CHAINED_HOOK_NAME = 'pre-commit.pre-naso';
 const EXCLUDE_MARKER = '# added by naso-dev setup';
 
 /**
@@ -95,6 +104,17 @@ ${HOOK_MARKER}
 # network, no global install and no package cache. Edit or delete this file
 # freely; it is not reinstalled behind your back.
 
+# A hook that was here before NASO, moved aside when you chose to chain it, runs
+# first and unchanged. Its failure stops the commit exactly as it did before.
+PRE_NASO_HOOK="$(dirname "$0")/${CHAINED_HOOK_NAME}"
+if [ -f "$PRE_NASO_HOOK" ]; then
+  if [ -x "$PRE_NASO_HOOK" ]; then
+    "$PRE_NASO_HOOK" "$@" || exit $?
+  else
+    sh "$PRE_NASO_HOOK" "$@" || exit $?
+  fi
+fi
+
 # Resolve node: hooks inherit a minimal PATH on some systems, so fall back to
 # the common install locations rather than failing with "command not found".
 if command -v node >/dev/null 2>&1; then
@@ -141,45 +161,114 @@ export async function resolveHooksDir(targetDir) {
 }
 
 /**
- * Write the pre-commit hook, unless something that is not ours is already there.
+ * Everything the plan needs to know about the pre-commit hook before deciding.
  *
- * Refusing to overwrite a foreign hook is the only safe default: it may be
- * running a lint-staged config, a secret scanner, or a signing step, and
- * replacing it with ours would silently disable all three.
+ *   state        'none' | 'naso' | 'foreign' | 'not-repo'
+ *   trackedDir   core.hooksPath points inside the worktree at a directory git tracks
+ *                (husky's `.husky/`), so a hook written there is a change to the
+ *                repository, not to this machine
+ *
+ * Read only. Nothing here writes.
  */
-export async function installPreCommitHook(targetDir, { report = () => {} } = {}) {
+export async function describeHook(targetDir) {
   const hooksDir = await resolveHooksDir(targetDir);
-
   if (!hooksDir) {
+    return { state: 'not-repo', hooksDir: null, path: null, trackedDir: false, hooksPath: null };
+  }
+
+  const hookPath = path.join(hooksDir, 'pre-commit');
+  const body = await readFile(hookPath, 'utf8').catch(() => null);
+  const state = body === null ? 'none' : body.includes(HOOK_MARKER) ? 'naso' : 'foreign';
+
+  const configured = await run('git', ['config', '--get', 'core.hooksPath'], { cwd: targetDir });
+  const hooksPath = configured.ok && configured.stdout.trim() ? configured.stdout.trim() : null;
+
+  let trackedDir = false;
+  if (hooksPath) {
+    const top = await run('git', ['rev-parse', '--show-toplevel'], { cwd: targetDir });
+    const root = top.ok ? top.stdout.trim() : null;
+    // Real paths on both sides: git reports the resolved top level, and on macOS a temp
+    // directory under /var is really /private/var, which made a tracked .husky/ look like
+    // it lived outside the repository.
+    const real = async (p) => realpath(p).catch(() => path.resolve(p));
+    const rel = root ? path.relative(await real(root), await real(hooksDir)) : null;
+    if (rel !== null && rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+      const listed = await run('git', ['ls-files', '-z', '--', toPosixPath(rel)], { cwd: root });
+      trackedDir = listed.ok && listed.stdout.length > 0;
+    }
+  }
+
+  return { state, hooksDir, path: hookPath, trackedDir, hooksPath };
+}
+
+/**
+ * Write the pre-commit hook. Never over a hook NASO did not write.
+ *
+ *   action 'install'  write it when the slot is empty or already NASO's
+ *   action 'chain'    move a foreign hook to CHAINED_HOOK_NAME, byte for byte, and
+ *                     write NASO's hook, which calls it first
+ *
+ * A foreign hook is never replaced: it may be running lint-staged, a secret scanner or
+ * a signing step, and replacing it would silently disable all three. A hooks directory
+ * git tracks is refused unless `allowTracked` says the user chose it, because a hook
+ * written there is a file in the next commit.
+ */
+export async function installPreCommitHook(
+  targetDir,
+  { report = () => {}, action = 'install', allowTracked = false } = {},
+) {
+  const hook = await describeHook(targetDir);
+
+  if (hook.state === 'not-repo') {
     report('- Skipped the pre-commit hook: not a git repository.', 'warn');
     report('  To install it later, copy this into .git/hooks/pre-commit:', 'info');
     report(`    ${HOOK_MANUAL_LINE}`, 'info');
     return { ok: false, reason: 'not-a-repo' };
   }
 
-  const hookPath = path.join(hooksDir, 'pre-commit');
-
-  if (await pathExists(hookPath)) {
-    const existing = await readFile(hookPath, 'utf8').catch(() => '');
-    if (!existing.includes(HOOK_MARKER)) {
-      report(`- Skipped the pre-commit hook: ${hookPath} exists and was not written by NASO.`, 'warn');
-      report('  To run the NASO checks, add this to it yourself:', 'info');
-      report(`    ${HOOK_MANUAL_LINE}`, 'info');
-      return { ok: false, reason: 'foreign-hook' };
-    }
+  if (hook.trackedDir && !allowTracked) {
+    report(
+      `- Skipped the pre-commit hook: core.hooksPath is ${hook.hooksPath}, which git tracks. ` +
+        'A hook written there would be part of the next commit.',
+      'warn',
+    );
+    report(`  To run the NASO checks, add this to ${hook.path} yourself:`, 'info');
+    report(`    ${HOOK_MANUAL_LINE}`, 'info');
+    return { ok: false, reason: 'tracked-hooks-path', hookPath: hook.path };
   }
 
-  await mkdir(hooksDir, { recursive: true });
+  if (hook.state === 'foreign') {
+    if (action !== 'chain') {
+      report(`- Skipped the pre-commit hook: ${hook.path} exists and was not written by NASO.`, 'warn');
+      report('  To run the NASO checks, add this to it yourself:', 'info');
+      report(`    ${HOOK_MANUAL_LINE}`, 'info');
+      return { ok: false, reason: 'foreign-hook', hookPath: hook.path };
+    }
+    const chained = path.join(hook.hooksDir, CHAINED_HOOK_NAME);
+    if (await pathExists(chained)) {
+      report(`- Skipped the pre-commit hook: ${chained} already exists, and NASO will not overwrite it.`, 'warn');
+      return { ok: false, reason: 'chain-target-exists', hookPath: hook.path };
+    }
+    // A rename keeps the bytes and the mode; nothing of the old hook is rewritten.
+    await rename(hook.path, chained);
+    report(`- Moved the existing hook to ${chained}, unchanged. NASO's hook runs it first.`, 'pass');
+  }
+
+  await mkdir(hook.hooksDir, { recursive: true });
   // No BOM and LF endings: Git for Windows runs this through `sh`, and a BOM
   // would make the shebang unrecognisable while CRLF would break it outright.
-  await writeFile(hookPath, buildHookScript(), 'utf8');
-  // A no-op on Windows filesystems, harmless there; on POSIX this is what makes
-  // the hook executable.
-  await chmod(hookPath, 0o755).catch(() => {});
+  await writeFile(hook.path, buildHookScript(), 'utf8');
+  // On POSIX this is what makes the hook executable. A filesystem that refuses it is
+  // reported, because a hook git cannot execute is a gate that silently never runs.
+  try {
+    await chmod(hook.path, 0o755);
+  } catch (err) {
+    report(`  ! Could not mark ${hook.path} executable (${err?.code ?? err}); git may skip it.`, 'warn');
+  }
 
-  report(`- Installed the pre-commit hook: ${hookPath}`, 'pass');
+  report(`- Installed the pre-commit hook: ${hook.path}`, 'pass');
   report(`  It runs ${NASO_DIR}/tooling/validate.mjs from this repository.`, 'info');
-  return { ok: true, hookPath };
+  return { ok: true, hookPath: hook.path, chained: hook.state === 'foreign' };
 }
 
 /** Read the current hook body, or null when there is none. */

@@ -122,7 +122,9 @@ Support: ${SUPPORT_EMAIL}`);
   if (hook && !isNasoHook(hook)) {
     console.log(`--  ${hook.path} is a hook NASO did not write. Left it as it is.`);
   } else {
-    const installed = await installPreCommitHook(cwd, { report: () => {} });
+    // A NASO hook already living in a tracked core.hooksPath was put there by a person's
+    // explicit choice at setup; rewriting our own file there is not a new decision.
+    const installed = await installPreCommitHook(cwd, { report: () => {}, allowTracked: isNasoHook(hook) });
     if (installed.ok) {
       console.log(`OK  Reinstalled the pre-commit hook: ${installed.hookPath}`);
     } else {

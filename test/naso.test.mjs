@@ -2311,3 +2311,131 @@ test('validate spawns pnpm, never npm or npx, in a pnpm repository (full and sta
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1.1.1: hooks NASO did not write, and what counts as "already set up"
+// ---------------------------------------------------------------------------
+
+/** A digest of every byte under `dir`, .git included, keyed by path. */
+async function treeHash(dir) {
+  const { createHash } = await import('node:crypto');
+  const hash = createHash('sha256');
+  const walk = async (rel) => {
+    const entries = (await readdir(path.join(dir, rel), { withFileTypes: true })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    for (const entry of entries) {
+      const child = path.join(rel, entry.name);
+      if (entry.isDirectory()) await walk(child);
+      else if (entry.isFile()) {
+        hash.update(`${child}\0`);
+        hash.update(await readFile(path.join(dir, child)));
+      }
+    }
+  };
+  await walk('');
+  return hash.digest('hex');
+}
+
+const FOREIGN_HOOK = '#!/bin/sh\necho ran > "$(git rev-parse --show-toplevel)/.foreign-hook-ran"\nexit 0\n';
+
+test('a foreign hook is named in the plan, kept byte for byte, and setup still writes the briefing', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, '.git/hooks/pre-commit', FOREIGN_HOOK);
+    await chmod(path.join(dir, '.git/hooks/pre-commit'), 0o755);
+
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /Hook: existing hook at \S*\.git\/hooks\/pre-commit/);
+    assert.ok(await exists(dir, AGENTS), 'a foreign hook must not stop the briefing being written');
+    assert.equal(await read(dir, '.git/hooks/pre-commit'), FOREIGN_HOOK, 'the foreign hook must be untouched');
+  });
+});
+
+test('chain moves the foreign hook aside unchanged and runs it before the gate', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, '.git/hooks/pre-commit', FOREIGN_HOOK);
+    await chmod(path.join(dir, '.git/hooks/pre-commit'), 0o755);
+
+    const res = await bare(['--yes', '--hook-action', 'chain']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.equal(await read(dir, '.git/hooks/pre-commit.pre-naso'), FOREIGN_HOOK);
+    assert.ok(isNasoHook({ body: await read(dir, '.git/hooks/pre-commit') }));
+
+    await put(dir, 'src/next.ts', 'export const n = 1;\n');
+    await git('add', 'src/next.ts');
+    const commit = await git('commit', '-qm', 'through both hooks');
+    assert.equal(commit.code, 0, commit.stdout + commit.stderr);
+    assert.ok(await exists(dir, '.foreign-hook-ran'), 'the chained hook must run on commit');
+  });
+});
+
+test('abort at a foreign hook leaves the whole tree, .git included, byte-identical', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, '.git/hooks/pre-commit', FOREIGN_HOOK);
+    const before = await treeHash(dir);
+    const res = await bare(['--yes', '--hook-action', 'abort']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.equal(await treeHash(dir), before);
+  });
+});
+
+test('a tracked core.hooksPath is not written to unless the user chooses it', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, '.husky/commit-msg', '#!/bin/sh\nexit 0\n');
+    await git('add', '.husky');
+    await git('commit', '-qm', 'husky');
+    await git('config', 'core.hooksPath', '.husky');
+
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.ok(await exists(dir, AGENTS));
+    assert.ok(!(await exists(dir, '.husky/pre-commit')), 'nothing may be written into a tracked hooks directory');
+    assert.equal((await git('status', '--porcelain', '--', '.husky')).stdout, '');
+    assert.match(res.stdout, /core\.hooksPath is \.husky, a directory git tracks/);
+
+    const chosen = await bare(['--yes', '--force', '--hook-action', 'install']);
+    assert.equal(chosen.code, 0, chosen.stdout + chosen.stderr);
+    assert.ok(isNasoHook({ body: await read(dir, '.husky/pre-commit') }), 'an explicit choice writes it');
+  });
+});
+
+test('a hand-written AGENTS.md is not "already set up": the NASO block is appended', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, AGENTS, '# Ours\n\nHand-written.\n');
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const text = await read(dir, AGENTS);
+    assert.ok(text.startsWith('# Ours\n\nHand-written.\n'));
+    assert.ok(text.includes(NASO_START), 'the block must be appended');
+  });
+});
+
+test('a NASO-owned re-run is reported without --force and regenerates only the block with it', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    await put(dir, AGENTS, `# Mine\n\nKeep me.\n\n${await read(dir, AGENTS)}`);
+    await put(dir, 'docs/guide.md', '# Guide\n');
+    await git('add', 'docs/guide.md');
+    await git('commit', '-qm', 'docs', '--no-verify');
+    const before = await read(dir, AGENTS);
+
+    const again = await bare(['--yes']);
+    assert.equal(again.code, 0);
+    assert.match(again.stdout, /Already set up/);
+    assert.equal(await read(dir, AGENTS), before, 'without --force nothing changes');
+
+    const forced = await bare(['--yes', '--force']);
+    assert.equal(forced.code, 0, forced.stdout + forced.stderr);
+    const after = await read(dir, AGENTS);
+    assert.ok(after.startsWith('# Mine\n\nKeep me.\n\n'), 'prose outside the markers survives');
+    assert.match(after, /`docs\/`/, 'the regenerated block describes the new area');
+    assert.ok(isNasoHook({ body: await read(dir, '.git/hooks/pre-commit') }), 'NASO\'s hook is reinstalled');
+  });
+});

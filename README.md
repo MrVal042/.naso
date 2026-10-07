@@ -75,10 +75,11 @@ All commands accept `--help`. `init` and `setup` are retired but still run; both
 
 - `--track` — commit `.naso/` and `AGENTS.md` instead of excluding them locally.
 - `--no-hook` — do not install the pre-commit hook.
+- `--hook-action <install|chain|skip|abort>` — what to do when `.git/hooks/pre-commit` already exists and NASO did not write it, or when `core.hooksPath` points at a directory git tracks (husky's `.husky/`). `chain` moves the existing hook, unchanged, to `pre-commit.pre-naso` and NASO's hook runs it first. The default is `skip`: NASO never overwrites a hook it did not write, and never writes into a tracked hooks directory unless you choose to. In a terminal this is asked as a question instead.
 - `--exclude <prefix>` — keep an area out of the briefing. Repeatable. Saved to `.naso/config.json`.
 - `--yes` — accept without prompting (CI and scripts).
 - `--dry-run` — print the plan and stop. Writes nothing.
-- `--force` — on `briefing create`, replace an existing `naso:start` / `naso:end` block. On the setup flow, allow replacing it. It never touches anything outside the markers.
+- `--force` — replace an existing `naso:start` / `naso:end` block. On a repository NASO already set up, `npx naso-dev --force` re-runs setup and regenerates the block; without it the run only reports what is installed. It never touches anything outside the markers.
 - `--why` — print the long-form rationale for adopting NASO.
 - `--no-color` — emit no escape codes, whatever the terminal supports. `NO_COLOR` does the same thing.
 - `--color` — colour the output even when it is a pipe.
