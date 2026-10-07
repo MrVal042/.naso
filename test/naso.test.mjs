@@ -776,9 +776,9 @@ test('an alias declared in babel but not tsconfig is named, with the file that m
     assert.equal(res.code, 0, res.stdout + res.stderr);
 
     const text = await read(dir, AGENTS);
-    assert.match(text, /Import aliases: @\/\* → src\/\* \(tsconfig\.json — babel\.config\.js does not declare it\); @legacy\/\* → src\/legacy\/\* \(babel\.config\.js — tsconfig\.json does not declare it\)\./);
+    assert.match(text, /Import aliases: @ → src \(tsconfig\.json as @\/\* — babel\.config\.js does not declare it\); @legacy → src\/legacy \(babel\.config\.js as @legacy\/\* — tsconfig\.json does not declare it\)\./);
     // The divergence is stated, not smoothed over.
-    assert.match(text, /@legacy\/\*.*tsconfig\.json does not declare it/s);
+    assert.match(text, /@legacy .*tsconfig\.json does not declare it/s);
     // And the rule that keeps the next alias from breaking the build.
     assert.match(
       text,
@@ -1172,7 +1172,7 @@ test('boundaries lead the section: enforced seams, then aliases, then ignores', 
     );
 
     // Aliases next.
-    assert.match(section, /\*\*Import aliases\.\*\* @\/\* → app\/\*\./);
+    assert.match(section, /\*\*Import aliases\.\*\* @ → app\./);
 
     // Credentials from .gitignore, listed in full rather than truncated to fit.
     assert.match(section, /\*\*Credentials\.\*\* \.gitignore excludes [^.]*\*\.keystore/);
@@ -2667,5 +2667,47 @@ test('Boundaries names every verify:* script the parsed gate runs, marked only w
     assert.match(boundaries, /- `verify:licenses` \(`pnpm run verify:licenses`\) — checks `scripts\/check-licenses\.mjs`, runs in the gate/);
     assert.match(boundaries, /- `verify:orphan` .*not run by the gate/);
     assert.ok(!/`verify:orphan`[^\n]*runs in the gate/.test(boundaries), 'an unwired script must not be marked as run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1.1.1: one alias in two spellings, .js by its own package.json, honest test layout
+// ---------------------------------------------------------------------------
+
+test('@a in babel and @a/* in tsconfig are one alias; only @b is divergent', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedGroundTruth(dir, git);
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const text = await read(dir, AGENTS);
+    assert.match(text, /Already divergent: @b \(missing from tsconfig\.json\)\./);
+    assert.ok(!/@a[^\n]*missing from/.test(text), `@a is declared in both files:\n${sectionOf(text, 'Boundaries')}`);
+    assert.match(text, /@a → src\/a \(tsconfig\.json as @a\/\*, babel\.config\.js\)/);
+  });
+});
+
+test('a folder whose own package.json makes its .js CommonJS is named', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await put(dir, 'package.json', JSON.stringify({ name: 'esm-root', type: 'module' }));
+    await put(dir, 'src/index.js', 'export const x = 1;\n');
+    await put(dir, 'legacy/package.json', JSON.stringify({ name: 'legacy' }));
+    await put(dir, 'legacy/a.js', 'module.exports = 1;\n');
+    await put(dir, 'legacy/b.js', 'module.exports = 2;\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'two systems by package.json');
+    await bare(['--yes']);
+    const text = await read(dir, AGENTS);
+    assert.match(text, /`legacy\/` is CommonJS \(2 \.js files; legacy\/package\.json declares no "type"\)/);
+    assert.ok(!/`src\/` is/.test(text), 'a folder on the repository default is not named');
+  });
+});
+
+test('tests under test/ are not called co-located; a split layout is reported as a split', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedGroundTruth(dir, git);
+    await bare(['--yes']);
+    const tests = (await read(dir, AGENTS)).split('\n').find((line) => line.startsWith('Tests:'));
+    assert.ok(!/2 test files co-located/.test(tests), tests);
+    assert.match(tests, /2 test files \(1 co-located with source, 1 under `test\/`\)/);
   });
 });

@@ -413,6 +413,7 @@ const TEST_FILE = /(\.|_)(test|spec)\.[cm]?[jt]sx?$|\.test\.[cm]?[jt]sx?$|\/__te
 
 /** Tooling facts pulled out of package.json / tsconfig / eslint config. */
 async function detectConventions(cwd, files, pkg) {
+  const tracked = new Set(files);
   const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) };
   const has = (name) => Boolean(deps[name]);
 
@@ -447,14 +448,21 @@ async function detectConventions(cwd, files, pkg) {
   // Co-located means the test sits in a directory that also holds source. A test
   // directory of its own is a different convention, and the two lead an agent to
   // very different places when it goes looking for "where do I add a test".
-  const testDirs = new Set(testFiles.map((f) => path.posix.dirname(f)));
+  // A file under a test directory (`test/`, `__tests__/`, `e2e/`…) is in a test tree,
+  // whatever else sits beside it. Only a test file in a non-test directory that also holds
+  // source is co-located. A repository with both is reported as both, with counts —
+  // calling `test/a.test.mjs` co-located sent agents to add tests next to source.
+  const TEST_DIR_SEGMENT = /^(?:test|tests|__tests__|spec|specs|e2e)$/i;
+  const inTestTree = (file) => path.posix.dirname(file).split('/').some((seg) => TEST_DIR_SEGMENT.test(seg));
   const sourceDirs = new Set(
     files.filter((f) => !TEST_FILE.test(f)).map((f) => path.posix.dirname(f)),
   );
-  const sharedDirs = [...testDirs].filter(
-    (dir) => dir !== '.' && sourceDirs.has(dir),
-  ).length;
-  const colocated = testDirs.size > 0 && sharedDirs >= testDirs.size / 2;
+  const colocatedFiles = testFiles.filter(
+    (f) => !inTestTree(f) && path.posix.dirname(f) !== '.' && sourceDirs.has(path.posix.dirname(f)),
+  );
+  const separateFiles = testFiles.filter((f) => !colocatedFiles.includes(f));
+  const separateRoots = [...new Set(separateFiles.map((f) => f.split('/')[0]))].sort();
+  const colocated = colocatedFiles.length > 0 && separateFiles.length === 0;
 
   const runner = has('vitest')
     ? 'vitest'
@@ -482,20 +490,33 @@ async function detectConventions(cwd, files, pkg) {
   // the one-liner above would have to pick one — so each folder is classified on its own
   // and only the folders that differ from the repository default are named.
   const repoIsEsm = pkg?.type === 'module';
+  const repoKind = repoIsEsm ? 'ES modules' : 'CommonJS';
   const mixedFolders = [];
   for (const entry of topLevelEntries(files)) {
     if (!entry.isDir) continue;
     const mjs = entry.files.filter((f) => f.endsWith('.mjs')).length;
     const cjs = entry.files.filter((f) => f.endsWith('.cjs')).length;
-    const js = entry.files.filter((f) => f.endsWith('.js') && !f.includes('/')).length;
+    const js = entry.files.filter((f) => f.endsWith('.js')).length;
     if (mjs === 0 && cjs === 0 && js === 0) continue;
 
-    const kind = mjs > 0 ? 'ES modules' : cjs > 0 ? 'CommonJS' : repoIsEsm ? 'ES modules' : 'CommonJS';
-    if ((kind === 'ES modules') !== repoIsEsm || (kind === 'CommonJS' && repoIsEsm)) {
+    // A `.js` file is whatever the nearest package.json says. A folder with its own
+    // manifest decides for itself — and one with no "type" is CommonJS even inside an
+    // ESM repository, which is exactly the case that breaks an `import` written there.
+    const ownManifest = `${entry.name}/package.json`;
+    const own = tracked.has(ownManifest) ? await readMaybeJson(path.join(cwd, ownManifest)) : null;
+    const jsKind = own ? (own.type === 'module' ? 'ES modules' : 'CommonJS') : repoKind;
+
+    const kind = mjs > 0 ? 'ES modules' : cjs > 0 ? 'CommonJS' : jsKind;
+    if (kind !== repoKind) {
       mixedFolders.push({
         folder: `${entry.name}/`,
         kind,
-        evidence: mjs > 0 ? `${plural(mjs, '.mjs file')}` : `${plural(cjs, '.cjs file')}`,
+        evidence:
+          mjs > 0
+            ? plural(mjs, '.mjs file')
+            : cjs > 0
+              ? plural(cjs, '.cjs file')
+              : `${plural(js, '.js file')}; ${ownManifest} ${own?.type ? `declares "type": "${own.type}"` : 'declares no "type"'}`,
       });
     }
   }
@@ -512,6 +533,9 @@ async function detectConventions(cwd, files, pkg) {
     testFiles: testFiles.length,
     testRoots: Array.from(testRoots).sort(),
     colocated,
+    colocatedCount: colocatedFiles.length,
+    separateCount: separateFiles.length,
+    separateRoots,
     eslintConfig,
     prettierConfig,
     tsconfigPaths: tsconfig?.compilerOptions?.paths ?? null,
@@ -583,6 +607,32 @@ export function parseAliasBlocks(text) {
 }
 
 /**
+ * One alias, however a config spells it.
+ *
+ * tsconfig writes `@a/*` → `src/a/*` and babel writes `@a` → `./src/a`, and both mean
+ * "imports starting @a/ resolve under src/a". Comparing the raw keys reported the same
+ * alias as missing from both files — a divergence that does not exist, in the section an
+ * agent reads to decide where to add the next one.
+ */
+export const canonicalAlias = (alias) => String(alias).replace(/\/\*$/, '').replace(/\/+$/, '') || String(alias);
+const canonicalTarget = (target) =>
+  String(target).replace(/^\.\//, '').replace(/\/\*$/, '').replace(/\/+$/, '') || '.';
+
+function canonicalAliases(raw) {
+  const out = new Map();
+  for (const [alias, targets] of raw) {
+    const key = canonicalAlias(alias);
+    const entry = out.get(key) ?? { spelling: alias, targets: [] };
+    for (const target of targets) {
+      const normal = canonicalTarget(target);
+      if (!entry.targets.includes(normal)) entry.targets.push(normal);
+    }
+    out.set(key, entry);
+  }
+  return out;
+}
+
+/**
  * Every alias declaration in the repository, and where each one is declared.
  *
  * The gap this closes is the one that costs an afternoon: tsconfig declares `@/`, babel
@@ -598,21 +648,25 @@ export async function detectAliases(cwd, tsconfig) {
       Array.isArray(targets) ? targets.map(String) : [String(targets)],
     ]),
   );
-  if (fromTsconfig.size > 0) sources.push({ file: 'tsconfig.json', aliases: fromTsconfig });
+  if (fromTsconfig.size > 0) sources.push({ file: 'tsconfig.json', aliases: canonicalAliases(fromTsconfig) });
 
   for (const file of ALIAS_CONFIG_FILES) {
     const text = await readFile(path.join(cwd, file), 'utf8').catch(() => null);
     if (text === null) continue;
     const aliases = parseAliasBlocks(text);
-    if (aliases.size > 0) sources.push({ file, aliases });
+    if (aliases.size > 0) sources.push({ file, aliases: canonicalAliases(aliases) });
   }
 
   const files = sources.map((source) => source.file);
   const names = [...new Set(sources.flatMap((source) => [...source.aliases.keys()]))].sort();
   const declared = names.map((alias) => ({
     alias,
-    targets: [...new Set(sources.flatMap((source) => source.aliases.get(alias) ?? []))],
+    targets: [...new Set(sources.flatMap((source) => source.aliases.get(alias)?.targets ?? []))],
     files: sources.filter((source) => source.aliases.has(alias)).map((source) => source.file),
+    // How each file spells it, so `@a/*` in tsconfig is still shown as written.
+    spellings: Object.fromEntries(
+      sources.filter((source) => source.aliases.has(alias)).map((source) => [source.file, source.aliases.get(alias).spelling]),
+    ),
     absent: sources.filter((source) => !source.aliases.has(alias)).map((source) => source.file),
   }));
 
@@ -1591,8 +1645,11 @@ function renderTests(facts) {
   if (tests?.runner) parts.push(`runner ${tests.runner}`);
 
   const count = plural(tests?.total ?? conventions.testFiles, 'test file');
+  const roots = (conventions.separateRoots ?? []).map((r) => `\`${r}/\``).join(', ');
   if (conventions.colocated) {
     parts.push(`${count} co-located with the source they test`);
+  } else if (conventions.colocatedCount > 0 && conventions.separateCount > 0) {
+    parts.push(`${count} (${conventions.colocatedCount} co-located with source, ${conventions.separateCount} under ${roots})`);
   } else if (conventions.testRoots.length > 0) {
     parts.push(`${count} (under ${conventions.testRoots.map((r) => `\`${r}/\``).join(', ')})`);
   } else {
@@ -1810,7 +1867,9 @@ function renderConventions(facts) {
     // is a pattern, not a claim that the file "." exists, and the checker would
     // correctly report it as MISSING.
     const rendered = aliases.map((entry) => {
-      const where = entry.files.join(', ');
+      const where = entry.files
+        .map((file) => (entry.spellings?.[file] && entry.spellings[file] !== entry.alias ? `${file} as ${entry.spellings[file]}` : file))
+        .join(', ');
       const gap =
         entry.absent.length > 0 ? ` — ${entry.absent.join(', ')} does not declare it` : '';
       return `${entry.alias} → ${entry.targets.join(', ')} (${where}${gap})`;
