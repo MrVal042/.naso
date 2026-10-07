@@ -29,7 +29,7 @@
 // vendorSources().
 
 import path from 'node:path';
-import { pathExists, parseArgs, run, toolVersion, actorIdentity, nasoDir, isInteractive } from './lib.mjs';
+import { pathExists, parseArgs, listOption, run, toolVersion, actorIdentity, nasoDir, isInteractive } from './lib.mjs';
 import { topLevelEntries, areasOf, dominantLanguage, splitNul } from './briefing.mjs';
 import { readHook, isNasoHook } from './install.mjs';
 import { NASO_DIR, isVendored, vendoredVersion } from './vendor.mjs';
@@ -211,7 +211,7 @@ async function ask(style, options) {
  */
 export async function main(argv = process.argv.slice(2), deps = {}) {
   const askQuestions = deps.ask ?? ask;
-  const { flags, values, positional } = parseArgs(argv);
+  const { flags, lists, positional } = parseArgs(argv);
   const style = createStyle(colorEnabled(flags));
 
   if (flags.has('help') || flags.has('h')) {
@@ -250,12 +250,9 @@ Other commands:
     track: flags.has('track'),
     noHook: flags.has('no-hook'),
     force: flags.has('force'),
-    yes: flags.has('yes') || flags.has('y'),
+    yes: flags.has('yes'),
     dryRun: flags.has('dry-run'),
-    exclude: (values.get('exclude') ?? '')
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean),
+    exclude: listOption(lists, 'exclude'),
   };
 
   if (!(await pathExists(cwd))) {

@@ -318,19 +318,64 @@ export async function getStagedFiles(cwd) {
 }
 
 /**
+ * Flags that are switches, never followed by a value.
+ *
+ * Declared rather than guessed. Without this list `--yes ./repo` read `./repo` as the
+ * value of `--yes`, so the flag was never set and the directory was never the target —
+ * and that was the exact command the flow printed for people to paste.
+ */
+const BOOLEAN_FLAGS = new Set([
+  'yes',
+  'dry-run',
+  'track',
+  'no-hook',
+  'force',
+  'why',
+  'no-color',
+  'no-colour',
+  'color',
+  'colour',
+  'help',
+  'version',
+  'staged',
+  'strict',
+  'no-append',
+  'list',
+  'tour',
+]);
+
+/** Single-letter spellings, mapped to the long flag they stand for. */
+const SHORT_FLAGS = new Map([
+  ['y', 'yes'],
+  ['h', 'help'],
+  ['v', 'version'],
+]);
+
+/**
  * Minimal argv parser shared by every script's CLI.
  *
- * Supports `--flag` and `--key=value` and `--key value`. The returned `flags`
- * Set holds bare flags; `values` holds the last `--key=value` or `--key value`
- * seen for each key, so `--scope src,docs` works without a bespoke parser.
+ * Supports `--flag`, `-y`, `--key=value` and `--key value`. The returned `flags` Set
+ * holds switches; `values` holds the last value seen for each key, so `--scope src,docs`
+ * works without a bespoke parser; `lists` holds every value seen for each key, in order,
+ * for options that repeat (`--exclude a --exclude b`).
  */
 export function parseArgs(argv) {
   const flags = new Set();
   const values = new Map();
+  const lists = new Map();
   const positional = [];
+
+  const setValue = (key, value) => {
+    values.set(key, value);
+    lists.set(key, [...(lists.get(key) ?? []), value]);
+  };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    if (/^-[A-Za-z]$/.test(arg)) {
+      flags.add(SHORT_FLAGS.get(arg.slice(1)) ?? arg.slice(1));
+      continue;
+    }
     if (!arg.startsWith('--')) {
       positional.push(arg);
       continue;
@@ -338,20 +383,36 @@ export function parseArgs(argv) {
     const body = arg.slice(2);
     const eq = body.indexOf('=');
     if (eq !== -1) {
-      values.set(body.slice(0, eq), body.slice(eq + 1));
+      setValue(body.slice(0, eq), body.slice(eq + 1));
       continue;
     }
-    // Only treat the next token as this flag's value if it isn't another flag.
+    if (BOOLEAN_FLAGS.has(body)) {
+      flags.add(body);
+      continue;
+    }
+    // Only treat the next token as this option's value if it isn't another flag.
     const next = argv[i + 1];
-    if (next !== undefined && !next.startsWith('--')) {
-      values.set(body, next);
+    if (next !== undefined && !next.startsWith('-')) {
+      setValue(body, next);
       i++;
     } else {
       flags.add(body);
     }
   }
 
-  return { flags, values, positional };
+  return { flags, values, lists, positional };
+}
+
+/** Every value given for a repeatable, comma-separable option, trimmed and de-duplicated. */
+export function listOption(lists, key) {
+  return [
+    ...new Set(
+      (lists.get(key) ?? [])
+        .flatMap((value) => String(value).split(','))
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 // ---------------------------------------------------------------------------

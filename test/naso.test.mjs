@@ -2100,3 +2100,82 @@ test('refresh never edits the briefing prose', async () => {
     assert.ok(after.includes('I reworded this heading myself'), 'refresh overwrote hand-written prose');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1.1.1: flags never swallow the directory that follows them
+// ---------------------------------------------------------------------------
+
+test('parseArgs: a boolean flag never consumes the next token, -y is --yes, --exclude repeats', () => {
+  assert.deepEqual(
+    (({ flags, positional }) => ({ yes: flags.has('yes'), positional }))(parseArgs(['--yes', 'some/dir'])),
+    { yes: true, positional: ['some/dir'] },
+  );
+  const dry = parseArgs(['--dry-run', 'some/dir']);
+  assert.ok(dry.flags.has('dry-run'));
+  assert.deepEqual(dry.positional, ['some/dir']);
+  for (const flag of ['track', 'no-hook', 'force', 'why', 'no-color']) {
+    const parsed = parseArgs([`--${flag}`, 'dir']);
+    assert.ok(parsed.flags.has(flag), `--${flag} must be a flag`);
+    assert.deepEqual(parsed.positional, ['dir'], `--${flag} must not eat the directory`);
+  }
+  assert.ok(parseArgs(['-y']).flags.has('yes'));
+  assert.deepEqual(parseArgs(['-y']).positional, []);
+  const multi = parseArgs(['--exclude', 'a', '--exclude', 'b', '--exclude=c,d']);
+  assert.deepEqual(multi.lists.get('exclude'), ['a', 'b', 'c,d']);
+});
+
+test('`naso-dev --yes <dir>` from another directory sets up <dir>', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    const elsewhere = await mkdtemp(path.join(os.tmpdir(), 'naso-cwd-'));
+    try {
+      const res = await exec(process.execPath, [BIN, '--yes', dir], elsewhere);
+      assert.equal(res.code, 0, res.stdout + res.stderr);
+      assert.ok(await exists(dir, AGENTS), '--yes <dir> must write AGENTS.md in <dir>');
+      assert.ok(!(await pathExists(path.join(elsewhere, AGENTS))), 'and nothing in the cwd');
+    } finally {
+      await rm(elsewhere, { recursive: true, force: true });
+    }
+  });
+});
+
+test('`naso-dev --dry-run <dir>` plans <dir>, writes nothing, exits 0', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    const elsewhere = await mkdtemp(path.join(os.tmpdir(), 'naso-cwd-'));
+    try {
+      const res = await exec(process.execPath, [BIN, '--dry-run', dir], elsewhere);
+      assert.equal(res.code, 0, res.stdout + res.stderr);
+      assert.match(res.stdout, /src\/index\.ts|`src\/`/, 'the plan must describe <dir>, not the cwd');
+      assert.ok(!(await exists(dir, AGENTS)));
+      assert.ok(!(await exists(dir, '.naso')));
+    } finally {
+      await rm(elsewhere, { recursive: true, force: true });
+    }
+  });
+});
+
+test('`naso-dev -y` sets up the current directory', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    const res = await exec(process.execPath, [BIN, '-y'], dir);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.ok(await exists(dir, AGENTS));
+  });
+});
+
+test('--exclude given twice keeps both areas out and saves both', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, 'a/one.ts', 'export {};\n');
+    await put(dir, 'b/two.ts', 'export {};\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'areas');
+    const res = await bare(['--yes', '--exclude', 'a', '--exclude', 'b']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const config = JSON.parse(await read(dir, '.naso/config.json'));
+    assert.deepEqual(config.exclude, ['a', 'b']);
+    const text = await read(dir, AGENTS);
+    assert.ok(!text.includes('`a/`') && !text.includes('`b/`'), 'neither excluded area may be described');
+  });
+});

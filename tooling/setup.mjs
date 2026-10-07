@@ -39,6 +39,7 @@ import { readFile } from 'node:fs/promises';
 import {
   pathExists,
   parseArgs,
+  listOption,
   run,
   toolVersion,
   actorIdentity,
@@ -513,7 +514,7 @@ async function afterSecondRejection(cwd, state) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  const { flags, values, positional } = parseArgs(argv);
+  const { flags, lists, positional } = parseArgs(argv);
 
   if (flags.has('help') || flags.has('h')) {
     console.log(`NASO setup
@@ -544,12 +545,9 @@ Support: ${SUPPORT_EMAIL}`);
     track: flags.has('track'),
     noHook: flags.has('no-hook'),
     force: flags.has('force'),
-    yes: flags.has('yes') || flags.has('y'),
+    yes: flags.has('yes'),
     dryRun: flags.has('dry-run'),
-    exclude: (values.get('exclude') ?? '')
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean),
+    exclude: listOption(lists, 'exclude'),
   };
 
   if (!(await pathExists(cwd))) {
