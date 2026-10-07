@@ -808,7 +808,10 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
-  const pm = await detectPackageManager(cwd, pkg);
+  // The manager's *name*. detectPackageManager returns { name, source, evidence }, and
+  // pmRunCommand / pmExecCommand switch on a string — handing them the object fell
+  // through to npm and npx in every repository, pnpm, yarn and bun alike.
+  const pm = (await detectPackageManager(cwd, pkg)).name;
 
   if (staged) {
     await runStaged(cwd, pkg, pm, {

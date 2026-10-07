@@ -2243,3 +2243,71 @@ test('refresh drops generatedBy from an older config.json and keeps every other 
     assert.deepEqual(after, rest, 'every other setting must survive untouched');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1.1.1: the gate runs the package manager the repository uses
+// ---------------------------------------------------------------------------
+
+test('validate spawns pnpm, never npm or npx, in a pnpm repository (full and staged)', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await put(
+      dir,
+      'package.json',
+      JSON.stringify({
+        name: 'pnpm-repo',
+        packageManager: 'pnpm@9.1.0',
+        scripts: { lint: 'eslint .', typecheck: 'tsc --noEmit', test: 'node --test' },
+      }),
+    );
+    await put(dir, '.prettierrc', '{}\n');
+    await put(dir, '.gitignore', 'node_modules/\n');
+    await put(dir, 'src/index.ts', 'export const x = 1;\n');
+    for (const bin of ['prettier', 'eslint', 'tsc']) {
+      await put(dir, `node_modules/.bin/${bin}`, '#!/bin/sh\nexit 0\n');
+      await chmod(path.join(dir, `node_modules/.bin/${bin}`), 0o755);
+    }
+    await git('add', '-A');
+    await git('commit', '-qm', 'pnpm repo');
+
+    // Stand-ins for every manager, so what validate *spawns* is recorded rather than
+    // what it prints.
+    const fakeBin = await mkdtemp(path.join(os.tmpdir(), 'naso-fakebin-'));
+    const log = path.join(fakeBin, 'calls.log');
+    try {
+      for (const name of ['pnpm', 'npm', 'npx', 'yarn', 'bun', 'bunx']) {
+        await writeFile(path.join(fakeBin, name), `#!/bin/sh\necho "${name} $*" >> "${log}"\nexit 0\n`);
+        await chmod(path.join(fakeBin, name), 0o755);
+      }
+      const env = { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` };
+
+      const full = await exec(process.execPath, [path.join(TOOL_DIR, 'validate.mjs'), dir], dir, env);
+      assert.equal(full.code, 0, full.stdout + full.stderr);
+
+      await put(dir, 'src/more.ts', 'export const y = 2;\n');
+      await git('add', 'src/more.ts');
+      const staged = await exec(
+        process.execPath,
+        [path.join(TOOL_DIR, 'validate.mjs'), dir, '--staged', '--no-append'],
+        dir,
+        env,
+      );
+      assert.equal(staged.code, 0, staged.stdout + staged.stderr);
+
+      const calls = (await readFile(log, 'utf8')).trim().split('\n');
+      const managers = [...new Set(calls.map((line) => line.split(' ')[0]))];
+      assert.deepEqual(managers, ['pnpm'], `only pnpm may be spawned:\n${calls.join('\n')}`);
+      for (const expected of [
+        'pnpm run lint',
+        'pnpm run typecheck',
+        'pnpm run test',
+        'pnpm exec prettier --check .',
+        'pnpm exec prettier --check --ignore-unknown src/more.ts',
+        'pnpm exec eslint src/more.ts',
+      ]) {
+        assert.ok(calls.includes(expected), `expected \`${expected}\` in:\n${calls.join('\n')}`);
+      }
+    } finally {
+      await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+});
