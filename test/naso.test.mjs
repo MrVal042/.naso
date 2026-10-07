@@ -2711,3 +2711,58 @@ test('tests under test/ are not called co-located; a split layout is reported as
     assert.match(tests, /2 test files \(1 co-located with source, 1 under `test\/`\)/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1.1.1: the replace-the-block question is asked when there is a block, and obeyed
+// ---------------------------------------------------------------------------
+
+/** Answer the real clack questions through streams: one key sequence per prompt. */
+async function answerRealQuestions(context, keys) {
+  const { PassThrough } = await import('node:stream');
+  const { clackPrompts } = await import(pathToFileURL(path.join(TOOL_DIR, 'flow.mjs')).href);
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let frames = '';
+  output.on('data', (chunk) => (frames += chunk));
+  const options = { track: false, noHook: false, force: false, hookAction: null };
+  const answer = clackPrompts({ input, output }).questions(plainStyleForTest, options, context);
+  for (const key of keys) {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    input.write(key);
+  }
+  return { answer: await answer, frames: frames.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '') };
+}
+
+test('the real questions ask to replace the NASO block only when there is one', async () => {
+  const none = { state: 'none', trackedDir: false, path: '/x/.git/hooks/pre-commit' };
+  // track: Enter (No) · hook: Enter (Yes) · replace: y
+  const withBlock = await answerRealQuestions({ hook: none, hasBlock: true }, ['\r', '\r', 'y']);
+  assert.match(withBlock.frames, /AGENTS\.md already has a NASO block\. Replace it/);
+  assert.equal(withBlock.answer.force, true);
+
+  const without = await answerRealQuestions({ hook: none, hasBlock: false }, ['\r', '\r']);
+  assert.ok(!/Replace it/.test(without.frames), 'no block, no question');
+  assert.equal(without.answer.force, false);
+});
+
+test('answering yes to the block question regenerates it; no leaves AGENTS.md byte-identical', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    await put(dir, 'docs/guide.md', '# Guide\n');
+    await git('add', 'docs/guide.md');
+    await git('commit', '-qm', 'docs', '--no-verify');
+    const before = await read(dir, AGENTS);
+
+    const kept = await driveFlow(dir, { questions: { force: false }, decisions: ['accept'] });
+    // Keeping a block that predates docs/ is allowed, and the verification says it is stale.
+    assert.equal(kept.code, 1, kept.stdout + kept.stderr);
+    assert.match(kept.stdout, /UNCOVERED \(1\)[\s\S]*- docs\//);
+    assert.equal(kept.events[0].hasBlock, true, 'a set-up repository reaches the questions in a terminal');
+    assert.equal(await read(dir, AGENTS), before, '"no" must leave the briefing exactly as it was');
+
+    const replaced = await driveFlow(dir, { questions: { force: true }, decisions: ['accept'] });
+    assert.equal(replaced.code, 0, replaced.stdout + replaced.stderr);
+    assert.match(await read(dir, AGENTS), /`docs\/`/, '"yes" regenerates the block from the repository as it is');
+  });
+});
