@@ -809,7 +809,7 @@ const GATE_SCRIPT_NAMES = ['verify', 'check', 'ci'];
  * listing only the ones that happen to be wired into the gate hides the ones somebody
  * wrote and never connected. The briefing names them so an agent can see both.
  */
-const ENFORCEMENT_SCRIPT = /(secret|scan|boundary|hardening|dependenc)/i;
+const ENFORCEMENT_SCRIPT = /(secret|scan|boundar|hardening|dependenc)/i;
 
 /** Subcommands that make a manager invocation housekeeping rather than a check. */
 const PM_CHAIN_NOISE = new Set([
@@ -1889,7 +1889,17 @@ async function readLocalExcludes(cwd) {
  */
 export async function detectEnforcedBoundaries(facts) {
   const scripts = facts.pkg?.scripts ?? {};
-  const names = Object.keys(scripts).filter((name) => /boundary/i.test(name));
+  // Every `verify:*` script, and anything named for a boundary, whatever its prefix — then
+  // every `verify:*` step the gate runs that the manifest does not declare. Matching on the
+  // word "boundary" alone missed `verify:boundaries` and every check named for what it
+  // checks instead (`verify:licenses`), which is most of them.
+  const gateSteps = facts.gate?.rawSteps ?? [];
+  const names = [
+    ...new Set([
+      ...Object.keys(scripts).filter((name) => /^verify:/.test(name) || /boundar/i.test(name)),
+      ...gateSteps.filter((step) => /^verify:/.test(step)),
+    ]),
+  ];
   const boundaries = [];
 
   for (const name of names) {
@@ -1917,7 +1927,9 @@ export async function detectEnforcedBoundaries(facts) {
       command: pmRunText(facts.packageManager?.name ?? 'npm', name),
       file,
       fileExists: Boolean(file) && facts.files.includes(file),
-      inGate: Boolean(facts.gate?.rawSteps?.includes(name)),
+      // Only a gate NASO actually read can vouch for membership.
+      inGate: Boolean(facts.gate?.parsed && gateSteps.includes(name)),
+      hasGate: Boolean(facts.gate?.command),
       docs,
     });
   }
@@ -1952,8 +1964,8 @@ async function renderBoundaries(facts) {
     const gateUnknown = Boolean(facts.gate) && facts.gate.parsed === false;
 
     lines.push(
-      `**Enforced boundaries.** ${plural(boundaries.length, 'script')} check the seams ` +
-        'between areas, and each is named by what it protects:',
+      `**Enforced checks.** ${plural(boundaries.length, 'verify or boundary script')} this repository ` +
+        'declares or its gate runs, each with whether the gate runs it:',
     );
     if (gateUnknown) {
       lines.push(
@@ -1966,7 +1978,9 @@ async function renderBoundaries(facts) {
         ? 'gate membership unknown'
         : boundary.inGate
           ? 'runs in the gate'
-          : 'not shown to run in the gate';
+          : boundary.hasGate
+            ? 'not run by the gate'
+            : 'no gate in this repository runs it';
       const target = boundary.file
         ? boundary.fileExists
           ? `checks \`${boundary.file}\``

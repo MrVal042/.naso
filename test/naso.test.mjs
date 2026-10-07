@@ -1138,7 +1138,10 @@ test('boundaries lead the section: enforced seams, then aliases, then ignores', 
 
     // The repository's own enforced boundaries come first, each with the doc that holds
     // the rule and whether the gate runs it.
-    assert.match(section, /\*\*Enforced boundaries\.\*\* 4 scripts check the seams/);
+    // Every boundary verifier the gate runs is named and marked as run — not a count.
+    for (const name of ['auth', 'payments', 'db', 'api']) {
+      assert.match(section, new RegExp(`- \`verify:boundary:${name}\`[^\\n]*, runs in the gate`), `verify:boundary:${name}`);
+    }
     assert.match(
       section,
       /- `verify:boundary:auth` \(`pnpm run verify:boundary:auth`\) — checks `scripts\/verify-boundary-auth\.mjs`, runs in the gate; the rule is in `docs\/boundaries\/auth\.md`\./,
@@ -1150,7 +1153,7 @@ test('boundaries lead the section: enforced seams, then aliases, then ignores', 
     // Credentials from .gitignore, listed in full rather than truncated to fit.
     assert.match(section, /\*\*Credentials\.\*\* \.gitignore excludes [^.]*\*\.keystore/);
     assert.ok(
-      section.indexOf('**Enforced boundaries.**') < section.indexOf('**Import aliases.**') &&
+      section.indexOf('**Enforced checks.**') < section.indexOf('**Import aliases.**') &&
         section.indexOf('**Import aliases.**') < section.indexOf('**Credentials.**'),
       `boundaries must be ordered enforced, aliases, ignores:\n${section}`,
     );
@@ -2561,4 +2564,84 @@ test('the real accept prompt shows its question and marks the selection', async 
   assert.match(plain, /● Accept/, 'the default selection is marked');
   assert.match(plain, /● Reject/, 'moving the selection marks the new choice');
   assert.match(plain, /○ Exclude an area/);
+});
+
+// ---------------------------------------------------------------------------
+// 1.1.1: every verify:* script the gate runs is named, whatever it is called
+// ---------------------------------------------------------------------------
+
+/** The audit's ground-truth fixture: pnpm, a spawnSync gate, two aliases files, a keystore. */
+async function seedGroundTruth(dir, git) {
+  await put(
+    dir,
+    'package.json',
+    JSON.stringify({
+      name: 'fixture',
+      version: '0.0.1',
+      type: 'module',
+      main: 'src/index.js',
+      packageManager: 'pnpm@9.12.0',
+      engines: { node: '>=20' },
+      scripts: {
+        verify: 'node scripts/verify.mjs',
+        typecheck: 'tsc --noEmit',
+        lint: 'eslint .',
+        test: 'node --test test/',
+        'verify:boundaries': 'node scripts/check-boundaries.mjs',
+        'verify:licenses': 'node scripts/check-licenses.mjs',
+      },
+      devDependencies: { typescript: '^5.4.0' },
+    }),
+  );
+  await put(
+    dir,
+    'scripts/verify.mjs',
+    [
+      "import { spawnSync } from 'node:child_process';",
+      "const steps = ['typecheck', 'lint', 'test', 'verify:boundaries', 'verify:licenses'];",
+      'for (const step of steps) {',
+      "  const r = spawnSync('pnpm', ['run', step], { stdio: 'inherit' });",
+      '  if (r.status !== 0) process.exit(r.status ?? 1);',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await put(dir, 'scripts/check-boundaries.mjs', '// see docs/boundaries.md\n');
+  await put(dir, 'scripts/check-licenses.mjs', '// licenses\n');
+  await put(dir, 'tsconfig.json', JSON.stringify({ compilerOptions: { strict: true, baseUrl: '.', paths: { '@a/*': ['src/a/*'] } } }));
+  await put(dir, 'babel.config.js', "module.exports = { plugins: [['module-resolver', { alias: { '@a': './src/a', '@b': './src/b' } }]] };\n");
+  await put(dir, 'src/index.js', 'export const x = 1;\n');
+  await put(dir, 'test/a.test.mjs', "import test from 'node:test'; test('x', () => {});\n");
+  await put(dir, 'src/outside.test.mjs', "import test from 'node:test'; test('y', () => {});\n");
+  await put(dir, 'README.md', '# Fixture\n\nRequires Node 18.\n');
+  await put(dir, '.gitignore', 'node_modules/\nbuild/\n*.keystore\n.env*\n*.pem\n');
+  await put(dir, 'test.keystore', 'NOT_A_REAL_KEYSTORE_SENTINEL\n');
+  await put(dir, 'build/App.swift', 'class App {}\n');
+  await git('add', '-A');
+  await git('add', '-f', 'test.keystore');
+  await git('commit', '-qm', 'fixture');
+}
+
+const sectionOf = (text, heading) => {
+  const start = text.indexOf(`## ${heading}`);
+  const end = text.indexOf('\n## ', start + 3);
+  return text.slice(start, end === -1 ? undefined : end);
+};
+
+test('Boundaries names every verify:* script the parsed gate runs, marked only when it does', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedGroundTruth(dir, git);
+    const pkg = JSON.parse(await read(dir, 'package.json'));
+    pkg.scripts['verify:orphan'] = 'node scripts/check-licenses.mjs';
+    await put(dir, 'package.json', JSON.stringify(pkg));
+    await git('commit', '-qam', 'an unwired check');
+
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const boundaries = sectionOf(await read(dir, AGENTS), 'Boundaries');
+    assert.match(boundaries, /- `verify:boundaries` \(`pnpm run verify:boundaries`\) — checks `scripts\/check-boundaries\.mjs`, runs in the gate/);
+    assert.match(boundaries, /- `verify:licenses` \(`pnpm run verify:licenses`\) — checks `scripts\/check-licenses\.mjs`, runs in the gate/);
+    assert.match(boundaries, /- `verify:orphan` .*not run by the gate/);
+    assert.ok(!/`verify:orphan`[^\n]*runs in the gate/.test(boundaries), 'an unwired script must not be marked as run');
+  });
 });
