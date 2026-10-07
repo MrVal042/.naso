@@ -53,37 +53,71 @@ const TOOL_DIR = path.join(PACKAGE_ROOT, 'tooling');
 const BIN = path.join(PACKAGE_ROOT, 'bin', 'naso-dev.mjs');
 const AGENTS = 'AGENTS.md';
 
+/**
+ * Drive the flow with a scripted question layer and record every question it asks.
+ *
+ * Written as `node -e` so the child has no dependency resolution of its own and
+ * inherits nothing from the test process except the repository directory. Each
+ * question is logged as a `@@{json}` line at the moment it is asked, so a test can
+ * check what was on screen before it and what was on disk when it was answered.
+ */
+const RUN_FLOW_SCRIPTED = `
+  const { existsSync } = await import('node:fs');
+  const path = await import('node:path');
+  const { main } = await import(${JSON.stringify(path.join(TOOL_DIR, 'flow.mjs'))});
+  const dir = process.argv[1];
+  const script = JSON.parse(process.env.NASO_SCRIPT);
+  const decisions = [...(script.decisions ?? [])];
+  const log = (event) => process.stdout.write('@@' + JSON.stringify(event) + '\\n');
+  const onDisk = () => ({
+    agents: existsSync(path.join(dir, 'AGENTS.md')),
+    naso: existsSync(path.join(dir, '.naso')),
+  });
+  main([dir, ...(script.args ?? [])], {
+    interactive: true,
+    prompts: {
+      questions: async (style, options, context) => {
+        log({ ask: 'questions', hook: context.hook.state, trackedDir: context.hook.trackedDir, hasBlock: context.hasBlock });
+        return script.questions === null
+          ? null
+          : { track: options.track, noHook: options.noHook, force: options.force, hookAction: options.hookAction, ...script.questions };
+      },
+      decide: async (style, info) => {
+        const answer = decisions.length > 0 ? decisions.shift() : null;
+        log({ ask: 'decide', ...info, answer, ...onDisk() });
+        return answer;
+      },
+      pickArea: async (style, areas) => {
+        log({ ask: 'pickArea', areas: areas.map((area) => area.name) });
+        return script.area ?? null;
+      },
+      afterRejections: async () => {
+        log({ ask: 'afterRejections', ...onDisk() });
+        return script.finish ?? null;
+      },
+      done: (message) => log({ done: message }),
+    },
+  }).then(() => process.exit(process.exitCode ?? 0), (err) => {
+    console.error(err);
+    process.exit(1);
+  });
+`;
+
+/** Run the scripted flow; returns the process result plus the questions it asked. */
+async function driveFlow(dir, script = {}) {
+  const res = await exec(process.execPath, ['--input-type=module', '-e', RUN_FLOW_SCRIPTED, dir], dir, {
+    NASO_SCRIPT: JSON.stringify(script),
+  });
+  const events = res.stdout
+    .split('\n')
+    .filter((line) => line.startsWith('@@'))
+    .map((line) => JSON.parse(line.slice(2)));
+  return { ...res, events };
+}
+
 // Secret-shaped fixtures are assembled at runtime and never written whole. A literal
 // here is a literal in the repository, and a push to a host with secret scanning on
 // would block NASO's own tests as though they had leaked a real credential.
-/**
- * Drivers that call the flow with an injected question layer.
- *
- * Written as `node -e` so the child has no dependency resolution of its own and
- * inherits nothing from the test process except the repository directory.
- */
-const RUN_FLOW = `
-  const { main } = await import(${JSON.stringify(path.join(TOOL_DIR, 'flow.mjs'))});
-  main([process.argv[1]], {
-    interactive: () => true,
-    ask: async () => ({ track: false, noHook: false, force: false }),
-  }).then(() => process.exit(process.exitCode ?? 0), (err) => {
-    console.error(err);
-    process.exit(1);
-  });
-`;
-
-const RUN_FLOW_CANCEL = `
-  const { main } = await import(${JSON.stringify(path.join(TOOL_DIR, 'flow.mjs'))});
-  main([process.argv[1]], {
-    interactive: () => true,
-    ask: async () => null,
-  }).then(() => process.exit(process.exitCode ?? 0), (err) => {
-    console.error(err);
-    process.exit(1);
-  });
-`;
-
 const STRIPE_FIXTURE = ['sk', 'live', 'abcdefghijklmnopqrstuvwxyz0123'].join('_');
 const GITHUB_FIXTURE = ['ghp', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'].join('_');
 
@@ -92,9 +126,14 @@ function exec(cmd, args, cwd, env = {}) {
     const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
     let stdout = '';
     let stderr = '';
+    // A child blocked on a prompt nobody can answer is a failure, not a hung suite.
+    const timer = setTimeout(() => child.kill('SIGKILL'), Number(process.env.NASO_TEST_EXEC_TIMEOUT ?? 60_000));
     child.stdout.on('data', (c) => (stdout += c));
     child.stderr.on('data', (c) => (stderr += c));
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
   });
 }
 
@@ -157,6 +196,28 @@ async function put(dir, relPath, contents = '') {
   await writeFile(full, contents, 'utf8');
 }
 
+/** A digest of every byte under `dir`, .git included, keyed by path. */
+async function treeHash(dir) {
+  const { createHash } = await import('node:crypto');
+  const hash = createHash('sha256');
+  const walk = async (rel) => {
+    const entries = (await readdir(path.join(dir, rel), { withFileTypes: true })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    for (const entry of entries) {
+      const child = path.join(rel, entry.name);
+      if (entry.isDirectory()) await walk(child);
+      else if (entry.isFile()) {
+        hash.update(`${child}\0`);
+        hash.update(await readFile(path.join(dir, child)));
+      }
+    }
+  };
+  await walk('');
+  return hash.digest('hex');
+}
+
+const plainStyleForTest = new Proxy({}, { get: () => (text) => String(text) });
 const read = (dir, relPath) => readFile(path.join(dir, relPath), 'utf8');
 const exists = (dir, relPath) => pathExists(path.join(dir, relPath));
 
@@ -884,50 +945,26 @@ test('bare --yes writes the briefing exactly as the retired setup command would'
   });
 });
 
-test('answering the questions accepts and writes', async () => {
+test('answering the questions and accepting writes the briefing, the toolset and the hook', async () => {
   await withRepo(async ({ dir, git }) => {
     await seedProject(dir, git);
-
-    // The prompt layer is injected rather than driven through a pty. A pty in a
-    // test suite is a flaky dependency and a way to hang forever; what is under
-    // test here is what the flow does with an answer, not how the question is
-    // drawn. The pty path itself is exercised by `npx naso-dev` in a terminal.
-    const res = await new Promise((resolve) => {
-      const child = spawn(process.execPath, ['--input-type=module', '-e', RUN_FLOW, dir], {
-        cwd: dir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      child.stdout.on('data', (d) => (stdout += d));
-      child.on('close', (code) => resolve({ code, stdout }));
-    });
-
-    assert.equal(res.code, 0, res.stdout);
-    assert.ok(await exists(dir, AGENTS), 'answering yes must write the briefing');
+    const res = await driveFlow(dir, { decisions: ['accept'] });
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.deepEqual(res.events.map((event) => event.ask), ['questions', 'decide']);
     assert.match(await read(dir, AGENTS), /naso:start/);
-    assert.ok(await exists(dir, '.naso'), 'the toolset must be vendored');
+    assert.ok(await isVendored(dir), 'the toolset must be vendored');
+    assert.ok(isNasoHook({ body: await read(dir, '.git/hooks/pre-commit') }), 'the hook must be installed');
   });
 });
 
-test('cancelling at a question writes nothing and is not an error', async () => {
+test('cancelling at the first question leaves the whole tree, .git included, byte-identical', async () => {
   await withRepo(async ({ dir, git }) => {
     await seedProject(dir, git);
-
-    const res = await new Promise((resolve) => {
-      const child = spawn(process.execPath, ['--input-type=module', '-e', RUN_FLOW_CANCEL, dir], {
-        cwd: dir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (d) => (stdout += d));
-      child.stderr.on('data', (d) => (stderr += d));
-      child.on('close', (code) => resolve({ code, stdout, stderr }));
-    });
-
+    const before = await treeHash(dir);
+    const res = await driveFlow(dir, { questions: null });
     assert.equal(res.code, 0, 'a cancelled install is a decision, not a failure');
-    assert.equal((await git('status', '--porcelain')).stdout.trim(), '', 'nothing may change');
-    assert.ok(!(await exists(dir, AGENTS)));
+    assert.equal(await treeHash(dir), before);
+    assert.match(res.events.at(-1).done, /Cancelled\. Nothing was written/);
   });
 });
 
@@ -1739,6 +1776,8 @@ test('a commit still runs the gate after the package directory is deleted', asyn
     await exec('cp', [BIN, path.join(copy, 'bin', 'naso-dev.mjs')]);
     await exec('cp', [path.join(PACKAGE_ROOT, 'VERSION'), path.join(copy, 'VERSION')]);
     await exec('cp', [path.join(PACKAGE_ROOT, 'package.json'), path.join(copy, 'package.json')]);
+    // An installed package has its dependencies; what goes away below is the package.
+    await exec('ln', ['-s', path.join(PACKAGE_ROOT, 'node_modules'), path.join(copy, 'node_modules')]);
 
     const dir = await mkdtemp(path.join(os.tmpdir(), 'naso-repo-'));
     try {
@@ -2316,27 +2355,6 @@ test('validate spawns pnpm, never npm or npx, in a pnpm repository (full and sta
 // 1.1.1: hooks NASO did not write, and what counts as "already set up"
 // ---------------------------------------------------------------------------
 
-/** A digest of every byte under `dir`, .git included, keyed by path. */
-async function treeHash(dir) {
-  const { createHash } = await import('node:crypto');
-  const hash = createHash('sha256');
-  const walk = async (rel) => {
-    const entries = (await readdir(path.join(dir, rel), { withFileTypes: true })).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    );
-    for (const entry of entries) {
-      const child = path.join(rel, entry.name);
-      if (entry.isDirectory()) await walk(child);
-      else if (entry.isFile()) {
-        hash.update(`${child}\0`);
-        hash.update(await readFile(path.join(dir, child)));
-      }
-    }
-  };
-  await walk('');
-  return hash.digest('hex');
-}
-
 const FOREIGN_HOOK = '#!/bin/sh\necho ran > "$(git rev-parse --show-toplevel)/.foreign-hook-ran"\nexit 0\n';
 
 test('a foreign hook is named in the plan, kept byte for byte, and setup still writes the briefing', async () => {
@@ -2438,4 +2456,119 @@ test('a NASO-owned re-run is reported without --force and regenerates only the b
     assert.match(after, /`docs\/`/, 'the regenerated block describes the new area');
     assert.ok(isNasoHook({ body: await read(dir, '.git/hooks/pre-commit') }), 'NASO\'s hook is reinstalled');
   });
+});
+
+// ---------------------------------------------------------------------------
+// 1.1.1: plan first, then one question — accept, reject, or exclude an area
+// ---------------------------------------------------------------------------
+
+/** `path  new, 12 lines` rows from the plan's file table. */
+function plannedWrites(stdout) {
+  const rows = new Map();
+  for (const line of stdout.split('\n')) {
+    const m = line.match(/^ {2}(\S+)\s+(?:(new|replace|replace block|moved here), |(append) )(\d+) lines?\b/);
+    if (m) rows.set(m[1], { change: m[2] ?? m[3], lines: Number(m[4]) });
+  }
+  return rows;
+}
+
+const linesIn = (text) => (text === '' ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0));
+
+test('the plan lists every file it writes, with exact line counts, before the only question', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    const res = await driveFlow(dir, { decisions: ['accept'] });
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const beforeQuestion = res.stdout.slice(0, res.stdout.indexOf('@@{"ask":"decide"'));
+    const planned = plannedWrites(beforeQuestion);
+    const tooling = [...planned.keys()].filter((p) => p.startsWith('.naso/tooling/'));
+    const vendored = (await readdir(path.join(dir, '.naso', 'tooling'))).map((f) => `.naso/tooling/${f}`);
+    assert.equal(tooling.length, 13, `13 tooling files must be listed, got:\n${tooling.join('\n')}`);
+    assert.deepEqual(tooling.sort(), vendored.sort(), 'the list must be exactly what is copied');
+
+    for (const [file, row] of planned) {
+      if (row.change === 'append') continue;
+      assert.equal(row.lines, linesIn(await read(dir, file)), `${file}: planned ${row.lines} lines`);
+    }
+    assert.ok(planned.has(AGENTS) && planned.has('.naso/config.json') && planned.has('.git/hooks/pre-commit'));
+    assert.match(beforeQuestion, /Hook decision: install/);
+
+    const decide = res.events.find((event) => event.ask === 'decide');
+    assert.equal(decide.installsHook, true);
+    assert.equal(decide.agents, false, 'nothing may be written before the answer');
+    assert.equal(decide.naso, false, 'nothing may be written before the answer');
+  });
+});
+
+test('reject, reject, exit: re-read once, then stop with the tree (.git included) byte-identical', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    const before = await treeHash(dir);
+    const res = await driveFlow(dir, { decisions: ['reject', 'reject'], finish: 'exit' });
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.equal(await treeHash(dir), before, 'reject-then-exit must leave every byte as it was');
+    assert.deepEqual(
+      res.events.filter((event) => event.ask).map((event) => [event.ask, event.rejections]),
+      [['questions', undefined], ['decide', 0], ['decide', 1], ['afterRejections', undefined]],
+    );
+    assert.equal(res.stdout.match(/Files this writes/g).length, 2, 'the first reject re-reads and re-plans');
+  });
+});
+
+test('reject twice, contact support: the report is printed and nothing is written', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    const before = await treeHash(dir);
+    const res = await driveFlow(dir, { decisions: ['reject', 'reject'], finish: 'support' });
+    assert.equal(res.code, 0);
+    assert.match(res.stdout, /--- REPORT ---/);
+    assert.match(res.stdout, /contactmrval@gmail\.com/);
+    assert.equal(await treeHash(dir), before);
+  });
+});
+
+test('excluding an area at the question re-plans without counting as a rejection', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    await put(dir, 'docs/guide.md', '# Guide\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'docs');
+    const res = await driveFlow(dir, { decisions: ['exclude', 'accept'], area: 'docs' });
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const decides = res.events.filter((event) => event.ask === 'decide');
+    assert.deepEqual(decides.map((event) => event.rejections), [0, 0]);
+    assert.deepEqual(JSON.parse(await read(dir, '.naso/config.json')).exclude, ['docs']);
+    assert.ok(!(await read(dir, AGENTS)).includes('`docs/`'));
+  });
+});
+
+test('cancelling at the accept question leaves the tree byte-identical', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    const before = await treeHash(dir);
+    const res = await driveFlow(dir, { decisions: [] });
+    assert.equal(res.code, 0);
+    assert.equal(await treeHash(dir), before);
+  });
+});
+
+test('the real accept prompt shows its question and marks the selection', async () => {
+  const { PassThrough } = await import('node:stream');
+  const { clackPrompts } = await import(pathToFileURL(path.join(TOOL_DIR, 'flow.mjs')).href);
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let frames = '';
+  output.on('data', (chunk) => (frames += chunk));
+  const answer = clackPrompts({ input, output }).decide(plainStyleForTest, { rejections: 0, installsHook: true });
+  setTimeout(() => {
+    input.write('\u001b[B'); // down: Accept -> Reject
+    setTimeout(() => input.write('\r'), 30);
+  }, 30);
+  assert.equal(await answer, 'reject');
+  const plain = frames.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
+  assert.match(plain, /Write these files and install the hook\?/);
+  assert.match(plain, /● Accept/, 'the default selection is marked');
+  assert.match(plain, /● Reject/, 'moving the selection marks the new choice');
+  assert.match(plain, /○ Exclude an area/);
 });

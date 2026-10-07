@@ -153,26 +153,27 @@ export async function vendoredVersion(repoRoot) {
  * Separate from `vendorTooling` on purpose: `refresh` calls the first and must not call
  * the second.
  */
-export async function writeConfig(repoRoot, { version, now, track, hook, exclude = [] }) {
+export async function writeConfig(repoRoot, settings) {
   const file = configPath(repoRoot);
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(
-    file,
-    `${JSON.stringify(
-      {
-        version,
-        generatedAt: now,
-        tooling: `${NASO_DIR}/tooling`,
-        hook,
-        track,
-        exclude: configuredExclusions({ exclude }),
-      },
-      null,
-      2,
-    )}\n`,
-    'utf8',
-  );
+  await writeFile(file, renderConfig(settings), 'utf8');
   return file;
+}
+
+/** The exact text `writeConfig` writes, so a plan can show it before anything is written. */
+export function renderConfig({ version, now, track, hook, exclude = [] }) {
+  return `${JSON.stringify(
+    {
+      version,
+      generatedAt: now,
+      tooling: `${NASO_DIR}/tooling`,
+      hook,
+      track,
+      exclude: configuredExclusions({ exclude }),
+    },
+    null,
+    2,
+  )}\n`;
 }
 
 /**

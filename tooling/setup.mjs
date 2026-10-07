@@ -43,12 +43,8 @@ import {
   run,
   toolVersion,
   nasoDir,
-  isInteractive,
-  promptChoice,
   plainStyle,
-  supportTemplate,
   isMainModule,
-  TOOLS,
   SUPPORT_EMAIL,
 } from './lib.mjs';
 import {
@@ -59,15 +55,20 @@ import {
   renderRootFiles,
   describeEntry,
   scanWarnings,
+  renderBriefing,
+  appendBlock,
+  plural,
   NASO_START,
   NASO_END,
 } from './briefing.mjs';
 import {
   installPreCommitHook,
   excludeLocally,
+  pendingLocalExclusion,
   findArtifacts,
   removeArtifacts,
   describeHook,
+  buildHookScript,
   CHAINED_HOOK_NAME,
   LOCAL_EXCLUDE_PATTERNS,
 } from './install.mjs';
@@ -76,7 +77,9 @@ import {
   readConfig,
   configuredExclusions,
   vendorTooling,
+  vendorSources,
   writeConfig,
+  renderConfig,
 } from './vendor.mjs';
 
 /** Greedy word wrap, for the explanatory paragraphs in the plan. */
@@ -128,25 +131,19 @@ Do not propose changes to AGENTS.md yet. I want to see your reading of it first.
 --------------------------------------------------------------`;
 }
 
-/**
- * Absolute paths of everything that gets copied into the repository, for display.
- *
- * The command-line tools come from `TOOLS`; the two libraries they share are listed
- * by hand, because they are not things anybody invokes. A preview that named only
- * the tools would understate the copy and invite the question of where `lock.mjs`
- * came from.
- */
-function toolingTree() {
-  const dir = path.join(nasoDir(), 'tooling');
-  const entries = [
-    { file: 'README.md', blurb: 'how to use, maintain and troubleshoot each tool' },
-    { file: 'lib.mjs', blurb: 'shared helpers every tool imports' },
-    { file: 'lock.mjs', blurb: 'the file lock, so two agents cannot write AGENTS.md at once' },
-    { file: 'vendor.mjs', blurb: 'locates and refreshes this copy; reads .naso/config.json' },
-  ];
-  for (const tool of TOOLS) entries.push({ file: tool.file, blurb: tool.blurb });
-  return entries.map((entry) => ({ ...entry, path: path.join(dir, entry.file) }));
+/** Lines in a text as an editor counts them: a trailing newline does not start one. */
+export function lineCount(text) {
+  const value = String(text);
+  if (value === '') return 0;
+  const lines = value.split('\n').length;
+  return value.endsWith('\n') ? lines - 1 : lines;
 }
+
+/** A path for the plan: relative to the repository when it is inside it. */
+const shown = (cwd, target) => {
+  const rel = path.relative(cwd, target);
+  return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel.split(path.sep).join('/') : target;
+};
 
 /** What `--hook-action` accepts. */
 export const HOOK_ACTIONS = ['install', 'chain', 'skip', 'abort'];
@@ -258,7 +255,12 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     ...new Set([...savedExclusions, ...(Array.isArray(exclude) ? exclude : [])]),
   ].sort();
 
-  const facts = await scanRepo(cwd, { exclude: excluded });
+  const pendingExclude = track ? null : await pendingLocalExclusion(cwd);
+  const facts = await scanRepo(cwd, {
+    exclude: excluded,
+    track,
+    pendingLocalExcludes: pendingExclude?.missing ?? [],
+  });
   const artifacts = await findArtifacts(cwd);
   const hook = await describeHook(cwd);
   const hookDecision = decideHook(hook, { noHook, hookAction });
@@ -342,7 +344,63 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
         },
   );
 
-  return { facts, artifacts, hook, hookDecision, version, plans, excluded, hasAgents, hasBlock };
+  // Every file this run writes, with the exact line count of what lands there. Computed
+  // from the same renderers the write uses, so the preview is the write, not a summary.
+  const now = new Date().toISOString().slice(0, 10);
+  const block = await renderBriefing(facts, { version, now });
+  const writes = [];
+  if (!hasAgents) {
+    writes.push({ path: 'AGENTS.md', change: 'new', lines: lineCount(block) });
+  } else if (!hasBlock) {
+    writes.push({
+      path: 'AGENTS.md',
+      change: 'append',
+      lines: lineCount(appendBlock(existing, block)) - lineCount(existing),
+      note: 'below the lines already there, which are not changed',
+    });
+  } else if (force) {
+    writes.push({ path: 'AGENTS.md', change: 'replace block', lines: lineCount(block), note: 'only between the markers' });
+  }
+
+  for (const source of await vendorSources()) {
+    const rel = `${NASO_DIR}/tooling/${path.basename(source)}`;
+    writes.push({
+      path: rel,
+      change: (await pathExists(path.join(cwd, rel))) ? 'replace' : 'new',
+      lines: lineCount(await readFile(source, 'utf8')),
+    });
+  }
+  const versionRel = `${NASO_DIR}/tooling/VERSION`;
+  writes.push({ path: versionRel, change: (await pathExists(path.join(cwd, versionRel))) ? 'replace' : 'new', lines: 1 });
+
+  const configRel = `${NASO_DIR}/config.json`;
+  writes.push({
+    path: configRel,
+    change: (await pathExists(path.join(cwd, configRel))) ? 'replace' : 'new',
+    lines: lineCount(renderConfig({ version, now, track, hook: hookDecision.action !== 'skip', exclude: excluded })),
+  });
+
+  if (pendingExclude?.text) {
+    writes.push({ path: shown(cwd, pendingExclude.path), change: 'append', lines: lineCount(pendingExclude.text) });
+  }
+
+  if (['install', 'reinstall', 'chain'].includes(hookDecision.action)) {
+    if (hookDecision.action === 'chain') {
+      writes.push({
+        path: shown(cwd, path.join(hook.hooksDir, CHAINED_HOOK_NAME)),
+        change: 'moved here',
+        lines: lineCount(await readFile(hook.path, 'utf8').catch(() => '')),
+        note: `the existing ${path.basename(hook.path)}, byte for byte`,
+      });
+    }
+    writes.push({
+      path: shown(cwd, hook.path),
+      change: hook.state === 'naso' ? 'replace' : 'new',
+      lines: lineCount(buildHookScript()),
+    });
+  }
+
+  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock };
 }
 
 /** Step 2's screen. Printed identically on every pass, so a second read is comparable. */
@@ -390,16 +448,18 @@ export async function displayPlan(state, cwd, style = plainStyle) {
   }
   console.log('');
 
-  console.log(style.heading('The toolset'));
+  console.log(style.heading('Files this writes'));
   console.log('');
-  console.log(`These scripts are copied into ${NASO_DIR}/tooling/ in this repository:`);
-  console.log('');
-  for (const entry of toolingTree()) {
-    console.log(`  ${path.basename(entry.path)}`);
-    console.log(`      ${entry.blurb}`);
+  const width = Math.max(...state.writes.map((write) => write.path.length)) + 2;
+  for (const write of state.writes) {
+    const size =
+      write.change === 'append' ? `append ${plural(write.lines, 'line')}` : `${write.change}, ${plural(write.lines, 'line')}`;
+    console.log(`  ${write.path.padEnd(width)}${size}${write.note ? `  ${style.dim(`(${write.note})`)}` : ''}`);
   }
+  const hookEntry = plans.find((plan) => plan.target.startsWith('Hook:') || /pre-commit/.test(plan.target));
   console.log('');
-  console.log('The copy is why the hook survives: no package install, no network, no npm cache.');
+  console.log(`  ${plural(state.writes.length, 'file')}, ${plural(state.writes.reduce((n, w) => n + w.lines, 0), 'line')}.`);
+  if (hookEntry) console.log(`  Hook decision: ${hookEntry.verb.toLowerCase()} — ${hookEntry.target.replace(/^Hook: /, '')}`);
   console.log('');
 
   console.log(style.heading('What will change'));
@@ -420,7 +480,7 @@ export async function displayPlan(state, cwd, style = plainStyle) {
     console.log('');
   }
 
-  console.log('Nothing else is touched. No file outside the list above is read or written.');
+  console.log('Nothing outside the files listed above is written.');
   console.log('');
 }
 
@@ -543,86 +603,32 @@ export async function install(cwd, { track, noHook, force, state }) {
   return verification.ok;
 }
 
-/** Steps 5 and 6. */
-async function afterSecondRejection(cwd, state) {
-  console.log('## Declined twice');
-  console.log('');
-  console.log('Nothing has been written to this repository, and nothing will be.');
-  console.log('');
-
-  const choice = await promptChoice('How would you like to finish?', [
-    { label: 'Contact support — print a pre-filled template' },
-    { label: 'Exit — clean up any leftovers and leave this repository as it is' },
-  ]);
-
-  if (choice === 0) {
-    console.log('');
-    console.log(`Send this to ${SUPPORT_EMAIL}. Everything a maintainer would ask for is`);
-    console.log('already in it; paste in the output and the state, and delete what is secret.');
-    console.log('');
-    console.log('--------------------------------------------------------------');
-    console.log(
-      await supportTemplate({
-        command: 'naso setup',
-        targetDir: cwd,
-        version: state.version,
-        now: new Date().toISOString().slice(0, 10),
-      }),
-    );
-    console.log('--------------------------------------------------------------');
-    console.log('');
-    console.log(`Support: ${SUPPORT_EMAIL}`);
-    return;
-  }
-
-  const artifacts = await findArtifacts(cwd);
-  const { removed, kept } = await removeArtifacts(artifacts);
-
-  console.log('');
-  console.log('## Left as found');
-  console.log('');
-  if (removed.length === 0) {
-    console.log('Nothing to clean up: this run wrote no files, and no earlier attempt left any.');
-  } else {
-    for (const artifact of removed) console.log(`- Removed ${artifact.path}`);
-  }
-  for (const artifact of kept) {
-    console.log(`- Left ${artifact.path} in place (${artifact.note}).`);
-  }
-  console.log('');
-  console.log(`${cwd} is exactly as you found it.`);
-  if (kept.length > 0) {
-    console.log('');
-    console.log('To remove the files above as well, delete them yourself — NASO will not');
-    console.log('guess which of them you care about.');
-  }
-  console.log('');
-  console.log('If you change your mind later, nothing is lost:');
-  console.log(`  npx naso-dev setup ${cwd}`);
-}
-
+/**
+ * The script entry, kept for `node .naso/tooling/setup.mjs` and older scripts.
+ *
+ * It plans, and writes only on --yes. The questions, the accept / reject loop and the
+ * support offer live in the `npx naso-dev` flow, which can draw a prompt; this file is
+ * vendored and must run with no node_modules, so it asks nothing.
+ */
 export async function main(argv = process.argv.slice(2)) {
-  const { flags, lists, positional } = parseArgs(argv);
+  const { flags, values, lists, positional } = parseArgs(argv);
 
-  if (flags.has('help') || flags.has('h')) {
+  if (flags.has('help')) {
     console.log(`NASO setup
 
 Usage:
-  npx naso-dev setup [target-dir] [options]
+  node ${NASO_DIR}/tooling/setup.mjs [target-dir] [options]
 
   --track              commit ${NASO_DIR}/ and AGENTS.md instead of excluding them locally
   --no-hook            do not install the pre-commit hook
+  --hook-action <a>    install | chain | skip | abort, for a hook NASO did not write
   --exclude <prefix>   keep an area out of the briefing; repeatable, saved to config.json
   --force              replace an existing naso:start / naso:end block, and nothing else
-  --yes                accept without asking; for CI and scripts
+  --yes                accept the plan and write it
   --dry-run            print the plan and stop
 
-An AGENTS.md you wrote yourself is never replaced. NASO's content lives between
-<!-- naso:start --> and <!-- naso:end -->, and nothing outside those markers is
-touched, with or without --force.
-
-With no --yes and no terminal, setup prints the plan and exits rather than
-waiting for input nobody can type.
+Without --yes this prints the plan and writes nothing. To answer the questions and
+accept or reject interactively, run \`npx naso-dev\`.
 
 Support: ${SUPPORT_EMAIL}`);
     return;
@@ -636,6 +642,7 @@ Support: ${SUPPORT_EMAIL}`);
     yes: flags.has('yes'),
     dryRun: flags.has('dry-run'),
     exclude: listOption(lists, 'exclude'),
+    hookAction: values.get('hook-action') ?? null,
   };
 
   if (!(await pathExists(cwd))) {
@@ -644,118 +651,30 @@ Support: ${SUPPORT_EMAIL}`);
     return;
   }
 
-  if (!(await run('git', ['rev-parse', '--is-inside-work-tree'], { cwd })).ok) {
-    console.log(`# NASO Setup — ${cwd}`);
-    console.log('');
-    console.log('Not a git repository. You can still get AGENTS.md and the toolset, but two');
-    console.log('of the checks will have nothing to work with: the pre-commit hook needs a git');
-    console.log('repository, and the scope check reads the staged diff.');
-    console.log('');
-    if (!options.yes && !isInteractive()) {
-      console.log('Re-run with --yes to write it anyway.');
-      return;
-    }
-    if (!options.yes) {
-      const proceed = await promptChoice('Continue anyway?', [
-        { label: 'Continue — write AGENTS.md and the toolset only' },
-        { label: 'Stop — leave this directory alone' },
-      ]);
-      if (proceed !== 0) return;
-    }
-  }
+  const state = await inspect(cwd, options);
+  await displayPlan(state, cwd);
 
-  const interactive = isInteractive();
-  if (!interactive && !options.yes && !options.dryRun) {
-    // Print the plan, then stop. Anything else means blocking forever on a
-    // prompt nobody can answer, which is how a CI job hangs until it is killed.
-    const state = await inspect(cwd, options);
-    await displayPlan(state, cwd);
-    console.log('## Next');
+  if (options.dryRun) {
+    console.log('--dry-run: nothing was written.');
+    return;
+  }
+  if (state.hookDecision.action === 'abort') {
+    console.log('--hook-action abort: nothing was written.');
+    return;
+  }
+  if (options.yes) {
+    console.log('--yes: accepting the plan above.');
     console.log('');
-    console.log('  This terminal cannot answer a question, so setup stopped before writing');
-    console.log('  anything. Run it again in a terminal to accept or reject, or pass --yes');
-    console.log('  to accept the plan above without asking.');
-    console.log('');
+    const ok = await install(cwd, { ...options, state });
+    if (!ok) process.exitCode = 1;
     return;
   }
 
-  // Rejections are capped at two. A third would be somebody stuck rather than somebody
-  // unconvinced, and the useful move after two is to stop and let them come back with a
-  // reason. Choosing "exclude" is not a rejection: it changes the plan and asks again.
-  let rejections = 0;
-
-  for (;;) {
-    const state = await inspect(cwd, options);
-    await displayPlan(state, cwd);
-
-    if (options.dryRun) {
-      console.log('--dry-run: nothing was written.');
-      return;
-    }
-
-    if (options.yes) {
-      console.log('--yes: accepting the plan above.');
-      console.log('');
-      const ok = await install(cwd, { ...options, state });
-      if (!ok) process.exitCode = 1;
-      return;
-    }
-
-    const choice = await promptChoice(
-      rejections === 0
-        ? 'Accept this plan?'
-        : 'Read the repository again and show you the plan again. Accept this one?',
-      [
-        { label: 'Accept — write the briefing, vendor the toolset, install the hook' },
-        {
-          label:
-            rejections === 0
-              ? 'Reject — write nothing and read the repository again'
-              : 'Reject — write nothing and leave this repository as it is',
-        },
-        { label: 'Exclude an area — keep it out of the briefing, then show the plan again' },
-      ],
-    );
-
-    if (choice === 0) {
-      const ok = await install(cwd, { ...options, state });
-      if (!ok) process.exitCode = 1;
-      return;
-    }
-
-    if (choice === 2) {
-      const areas = state.facts.areas.filter(
-        (entry) => !state.excluded.includes(entry.name),
-      );
-      if (areas.length === 0) {
-        console.log('');
-        console.log('Every top-level area is already excluded, or there are none. Nothing to pick.');
-        console.log('');
-        continue;
-      }
-      const picked = await promptChoice(
-        'Which area should the briefing ignore?',
-        areas.map((entry) => ({ label: `${entry.name}/ — ${entry.files.length} files` })),
-      );
-      options.exclude = [...new Set([...options.exclude, areas[picked].name])].sort();
-      console.log('');
-      console.log(`${areas[picked].name}/ will be left out of the briefing, and recorded in`);
-      console.log(`${NASO_DIR}/config.json so it stays out after a refresh.`);
-      console.log('');
-      continue;
-    }
-
-    rejections++;
-
-    console.log('');
-    console.log('Rejected. Nothing was written.');
-    console.log('');
-
-    if (rejections >= 2) {
-      await afterSecondRejection(cwd, state);
-      return;
-    }
-  }
+  console.log('## Not written');
+  console.log('');
+  console.log('  This script asks nothing. Pass --yes to write the plan above, or run');
+  console.log('  `npx naso-dev` to answer the questions and accept or reject it.');
+  console.log('');
 }
 
 if (isMainModule(import.meta.url)) {

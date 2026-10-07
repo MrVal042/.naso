@@ -30,7 +30,7 @@
 
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { pathExists, parseArgs, listOption, run, toolVersion, nasoDir, isInteractive } from './lib.mjs';
+import { pathExists, parseArgs, listOption, run, toolVersion, isInteractive, supportTemplate, SUPPORT_EMAIL } from './lib.mjs';
 import { topLevelEntries, areasOf, dominantLanguage, splitNul, NASO_START, NASO_END } from './briefing.mjs';
 import { describeHook } from './install.mjs';
 import { NASO_DIR, isVendored, vendoredVersion } from './vendor.mjs';
@@ -103,8 +103,8 @@ async function describeRepository(cwd) {
 /**
  * What is already here, and which of it is NASO's.
  *
- * Only NASO's own state makes a repository "already set up": a NASO block in AGENTS.md,
- * the vendored toolset, or NASO's hook. A hand-written AGENTS.md and somebody else's
+ * Only NASO's own state makes a repository "already set up": a NASO block in AGENTS.md
+ * or the vendored toolset. A hand-written AGENTS.md and somebody else's
  * pre-commit hook are facts about the repository the plan has to respect, not evidence
  * that setup ran — treating them as such left every husky or lefthook repository with no
  * way to be set up at all.
@@ -131,7 +131,9 @@ async function describeCurrentState(cwd) {
     vendored,
     vendoredVersion: await vendoredVersion(cwd),
     hook,
-    setUp: hasBlock || vendored || hook.state === 'naso',
+    // NASO's hook on its own is the remains of a partial install, not an install: the
+    // plan reinstalls it along with everything that is missing.
+    setUp: hasBlock || vendored,
   };
 }
 
@@ -178,14 +180,13 @@ function reportExistingState(state, cwd, style) {
  * not asked: the hook question only appears when there is a choice to make, and the
  * block question only when there is a block.
  */
-async function ask(style, options, context) {
-  note('Answer with Enter to accept the default. Nothing is written until the last question.', {
-    title: style.bold('Questions'),
-  });
+async function ask(style, options, context, io = {}) {
+  note('Answer with Enter to accept the default. Nothing is written until you accept the plan.', style.bold('Questions'), io);
 
   const track = await confirm({
     message: 'Commit AGENTS.md and .naso/ to git? (No keeps them local to this machine.)',
     initialValue: options.track,
+    ...io,
   });
   if (isCancel(track)) return null;
 
@@ -201,6 +202,7 @@ async function ask(style, options, context) {
         { value: 'skip', label: 'Skip', hint: 'leave it exactly as it is; no NASO hook' },
         { value: 'abort', label: 'Abort', hint: 'write nothing at all' },
       ],
+      ...io,
     });
     if (isCancel(choice)) return null;
     hookAction = choice;
@@ -213,11 +215,12 @@ async function ask(style, options, context) {
         { value: 'skip', label: 'Skip', hint: 'no NASO hook; run the gate by hand' },
         { value: 'abort', label: 'Abort', hint: 'write nothing at all' },
       ],
+      ...io,
     });
     if (isCancel(choice)) return null;
     hookAction = choice;
   } else if (!noHook && hook.state !== 'not-repo') {
-    const install = await confirm({ message: 'Install the pre-commit gate?', initialValue: true });
+    const install = await confirm({ message: 'Install the pre-commit gate?', initialValue: true, ...io });
     if (isCancel(install)) return null;
     noHook = !install;
   }
@@ -227,6 +230,7 @@ async function ask(style, options, context) {
     const replace = await confirm({
       message: 'AGENTS.md already has a NASO block. Replace it with one generated from the repository as it is now?',
       initialValue: false,
+      ...io,
     });
     if (isCancel(replace)) return null;
     force = replace;
@@ -236,32 +240,96 @@ async function ask(style, options, context) {
 }
 
 /**
- * `ask` is an argument so the flow can be driven without a terminal.
+ * The questions this flow asks, drawn with @clack/prompts.
  *
- * A pty is the only honest way to test a prompt, and a pty in CI is a flaky
- * dependency and a way to hang a test suite forever when it goes wrong. So the
- * question layer is injected: the flow's own logic — what it does with an
- * answer, and what it does with a cancellation — is tested directly, and what is
- * *not* tested is @clack's rendering, which is a library's job and not ours.
+ * Every function resolves to an answer, or to null when the person cancelled (Ctrl+C or
+ * Escape). `io` is the input and output streams, so the real prompts can be driven by a
+ * test without a pty; in a terminal it is empty and clack uses stdin and stdout.
+ */
+export function clackPrompts(io = {}) {
+  return {
+    questions: (style, options, context) => ask(style, options, context, io),
+
+    async decide(style, { rejections, installsHook }) {
+      const choice = await select({
+        message: installsHook ? 'Write these files and install the hook?' : 'Write these files? (No hook will be installed.)',
+        initialValue: 'accept',
+        options: [
+          { value: 'accept', label: 'Accept', hint: 'write exactly the files listed above' },
+          {
+            value: 'reject',
+            label: 'Reject',
+            hint: rejections === 0 ? 'write nothing, read the repository again' : 'write nothing and stop',
+          },
+          { value: 'exclude', label: 'Exclude an area', hint: 'keep one out of the briefing, then show the plan again' },
+        ],
+        ...io,
+      });
+      return isCancel(choice) ? null : choice;
+    },
+
+    async pickArea(style, areas) {
+      const choice = await select({
+        message: 'Which area should the briefing leave out?',
+        options: areas.map((area) => ({ value: area.name, label: `${area.name}/`, hint: `${area.files.length} files` })),
+        ...io,
+      });
+      return isCancel(choice) ? null : choice;
+    },
+
+    async afterRejections() {
+      const choice = await select({
+        message: 'Rejected twice. How would you like to finish?',
+        initialValue: 'exit',
+        options: [
+          { value: 'exit', label: 'Exit', hint: 'leave this repository exactly as it is' },
+          { value: 'support', label: 'Contact support', hint: 'print a pre-filled report to send' },
+        ],
+        ...io,
+      });
+      return isCancel(choice) ? null : choice;
+    },
+
+    done(message) {
+      outro(message, io);
+    },
+  };
+}
+
+/** `deps.interactive` is a boolean or a function returning one; absent, ask the terminal. */
+function resolveInteractive(deps) {
+  if (typeof deps.interactive === 'function') return Boolean(deps.interactive());
+  if (typeof deps.interactive === 'boolean') return deps.interactive;
+  return isInteractive();
+}
+
+/**
+ * The flow, with its question layer injectable.
+ *
+ * `deps.prompts` replaces the clack prompts (see `clackPrompts`), so what the flow *does*
+ * with an answer — and with a rejection, an exclusion, a cancellation — is tested without
+ * a pty. The clack adapter itself is tested by driving it through streams.
  *
  * @param {object} [deps]
- * @param {(style: object, options: object) => Promise<object|null>} [deps.ask]
- * @param {() => boolean} [deps.interactive]
+ * @param {ReturnType<typeof clackPrompts>} [deps.prompts]
+ * @param {boolean | (() => boolean)} [deps.interactive]
  */
 export async function main(argv = process.argv.slice(2), deps = {}) {
-  const askQuestions = deps.ask ?? ask;
+  const prompts = deps.prompts ?? clackPrompts();
   const { flags, values, lists, positional } = parseArgs(argv);
   const style = createStyle(colorEnabled(flags));
 
-  if (flags.has('help') || flags.has('h')) {
+  if (flags.has('help')) {
     console.log(`NASO
 
 Usage:
   npx naso-dev [target-dir] [options]
 
 One command, in the order it happens: read this repository, show what was
-found, show what will be written, ask, then write. Nothing is written before
-the answer.
+found, ask what the plan depends on, list every file it would write, and ask
+once more: accept, reject, or exclude an area. Nothing is written before you
+accept. Rejecting reads the repository again; rejecting twice stops, with the
+repository exactly as it was.
 
 Options:
   --track            commit ${NASO_DIR}/ and ${AGENTS_FILE} instead of excluding them locally
@@ -340,7 +408,7 @@ Other commands:
   }
   console.log('');
 
-  const interactive = deps.interactive ?? isInteractive();
+  const interactive = resolveInteractive(deps);
 
   // A repository NASO already set up is reported, not re-planned — unless --force asks
   // for the block to be regenerated, or a person at a terminal can be asked whether to.
@@ -361,27 +429,9 @@ Other commands:
     return;
   }
 
-  if (!options.yes && interactive) {
-    const answered = await askQuestions(style, options, { hook: state.hook, hasBlock: state.hasBlock });
-    if (answered === null) {
-      outro(style.warn('Cancelled. Nothing was written.'));
-      return;
-    }
-    choices = { ...options, ...answered };
-  }
-
-  const plan = await inspect(cwd, choices);
-  await displayPlan(plan, cwd, style);
-
-  if (plan.hookDecision.action === 'abort') {
-    console.log(style.heading('Aborted'));
-    console.log('');
-    console.log('You chose to abort at the hook. Nothing was written.');
-    console.log('');
-    return;
-  }
-
   if (!options.yes && !interactive) {
+    const plan = await inspect(cwd, options);
+    await displayPlan(plan, cwd, style);
     console.log(style.heading('Not written'));
     console.log('');
     console.log('This terminal cannot answer a question, so nothing was written — which');
@@ -393,10 +443,104 @@ Other commands:
     return;
   }
 
-  const label = options.yes ? '--yes: accepting the plan above.' : 'Accepted.';
-  console.log(`${style.dim(label)}`);
-  console.log('');
+  if (!options.yes) {
+    const answered = await prompts.questions(style, options, { hook: state.hook, hasBlock: state.hasBlock });
+    if (answered === null) {
+      prompts.done(style.warn('Cancelled. Nothing was written.'));
+      return;
+    }
+    choices = { ...options, ...answered };
+  }
 
-  const ok = await install(cwd, { ...choices, state: plan });
-  if (!ok) process.exitCode = 1;
+  // Rejections are capped at two. A third would be somebody stuck rather than somebody
+  // unconvinced, so after two the useful move is to stop and offer help. Excluding an
+  // area is not a rejection: it changes the plan, and the plan is shown again.
+  let rejections = 0;
+
+  for (;;) {
+    const plan = await inspect(cwd, choices);
+    await displayPlan(plan, cwd, style);
+
+    if (plan.hookDecision.action === 'abort') {
+      console.log(style.heading('Aborted'));
+      console.log('');
+      console.log('You chose to abort at the hook. Nothing was written.');
+      console.log('');
+      return;
+    }
+
+    if (options.yes) {
+      console.log(style.dim('--yes: accepting the plan above.'));
+      console.log('');
+      const ok = await install(cwd, { ...choices, state: plan });
+      if (!ok) process.exitCode = 1;
+      return;
+    }
+
+    const installsHook = ['install', 'reinstall', 'chain'].includes(plan.hookDecision.action);
+    const decision = await prompts.decide(style, { rejections, installsHook });
+
+    if (decision === null) {
+      prompts.done(style.warn('Cancelled. Nothing was written.'));
+      return;
+    }
+
+    if (decision === 'accept') {
+      console.log(style.dim('Accepted.'));
+      console.log('');
+      const ok = await install(cwd, { ...choices, state: plan });
+      if (!ok) process.exitCode = 1;
+      return;
+    }
+
+    if (decision === 'exclude') {
+      const areas = plan.facts.areas.filter((area) => !plan.excluded.includes(area.name));
+      if (areas.length === 0) {
+        console.log('Every top-level area is already excluded, or there are none. Nothing to pick.');
+        console.log('');
+        continue;
+      }
+      const picked = await prompts.pickArea(style, areas);
+      if (picked === null) {
+        prompts.done(style.warn('Cancelled. Nothing was written.'));
+        return;
+      }
+      choices = { ...choices, exclude: [...new Set([...(choices.exclude ?? []), picked])].sort() };
+      console.log(`${picked}/ will be left out of the briefing, and recorded in ${NASO_DIR}/config.json.`);
+      console.log('');
+      continue;
+    }
+
+    rejections++;
+    console.log('');
+    console.log(style.warn('Rejected. Nothing was written.'));
+    console.log('');
+
+    if (rejections < 2) {
+      console.log('Reading the repository again, in case it changed.');
+      console.log('');
+      continue;
+    }
+
+    const finish = await prompts.afterRejections(style);
+    if (finish === 'support') {
+      console.log('');
+      console.log(`Send this to ${SUPPORT_EMAIL}. Paste in the output above, and delete anything secret.`);
+      console.log('');
+      console.log('--------------------------------------------------------------');
+      console.log(
+        await supportTemplate({
+          command: 'npx naso-dev',
+          targetDir: cwd,
+          version,
+          now: new Date().toISOString().slice(0, 10),
+        }),
+      );
+      console.log('--------------------------------------------------------------');
+      console.log('');
+    }
+    console.log(`Nothing was written. ${cwd} is exactly as you found it.`);
+    console.log('');
+    return;
+  }
 }

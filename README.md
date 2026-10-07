@@ -22,10 +22,11 @@ One command, once per repository:
 npx naso-dev
 ```
 
-It reads the repository, prints what it found and exactly what it would write, asks three questions, and writes only after you answer.
+It reads the repository and prints what it found, asks what the plan depends on (commit the files or keep them local; the pre-commit hook, and what to do about a hook NASO did not write; whether to replace an existing NASO block), then lists every file it would write with its line count — and asks one question: **Write these files and install the hook?**
 
 - **Accept** writes `AGENTS.md`, vendors the toolset into `.naso/tooling/`, installs `.git/hooks/pre-commit`, and — unless you pass `--track` — keeps both `.naso/` and `AGENTS.md` out of git via `.git/info/exclude`.
-- **Reject** writes nothing and leaves the repository exactly as it was.
+- **Reject** writes nothing and reads the repository again. A second reject stops and offers to print a pre-filled support report; either way the repository is left byte-for-byte as it was.
+- **Exclude an area** keeps one top-level directory out of the briefing and shows the plan again.
 - **An existing `AGENTS.md` is never replaced.** The NASO block goes between `<!-- naso:start -->` and `<!-- naso:end -->`; everything outside those markers stays byte-identical.
 - **Nothing is written before the last answer.** Not the hook, not the config, not a half-written briefing.
 

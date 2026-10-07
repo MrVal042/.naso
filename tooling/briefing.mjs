@@ -1380,7 +1380,7 @@ function detectFeatureMap(files, pkg) {
  * the shape of a repository, and reading code to summarise it would produce the
  * confident fiction this tool exists to replace.
  */
-export async function scanRepo(cwd, { exclude = null, track = null } = {}) {
+export async function scanRepo(cwd, { exclude = null, track = null, pendingLocalExcludes = [] } = {}) {
   const { files, source } = await readFileIndex(cwd, { exclude });
   const pkg = await readJSONFile(path.join(cwd, 'package.json'));
   const entries = topLevelEntries(files);
@@ -1429,6 +1429,9 @@ export async function scanRepo(cwd, { exclude = null, track = null } = {}) {
     gate: await detectGate(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),
     manifestEntryPoints: manifestEntryPoints(pkg),
+    // Lines this run is about to add to .git/info/exclude, so a preview rendered before
+    // the write says what the written file will say.
+    pendingLocalExcludes,
   };
 }
 
@@ -2032,7 +2035,7 @@ async function renderBoundaries(facts) {
     }
   }
 
-  const local = await readLocalExcludes(facts.cwd);
+  const local = [...new Set([...(await readLocalExcludes(facts.cwd)), ...(facts.pendingLocalExcludes ?? [])])];
   if (local.length > 0) {
     lines.push(
       `**Local excludes.** .git/info/exclude holds ${local.join(', ')} on this machine only. ` +
@@ -2514,13 +2517,7 @@ export async function createBriefing(cwd, { force = false, exclude = null, track
 
       if (start === -1 || end === -1 || end < start) {
         // No block of ours in the file: append one and keep every existing line.
-        const separator =
-          before.length === 0 || before.endsWith('\n\n')
-            ? ''
-            : before.endsWith('\n')
-              ? '\n'
-              : '\n\n';
-        const appended = `${before}${separator}${block}`;
+        const appended = appendBlock(before, block);
         await writeFile(agentsPath, appended, 'utf8');
         return { ok: true, appended: true, existingLines, agentsPath, content: appended, facts };
       }
@@ -2551,6 +2548,18 @@ export async function createBriefing(cwd, { force = false, exclude = null, track
   );
 
   return outcome.ok ? outcome.value : { ok: false, reason: 'locked', holder: outcome.holder };
+}
+
+/**
+ * A hand-written AGENTS.md with the NASO block appended, every existing byte kept.
+ *
+ * One function for the write and for the plan's line count, so the preview cannot
+ * disagree with the file about how much was added.
+ */
+export function appendBlock(before, block) {
+  const separator =
+    before.length === 0 || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+  return `${before}${separator}${block}`;
 }
 
 /** Read one of the machine-readable header markers, or null when absent. */

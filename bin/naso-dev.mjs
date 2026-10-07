@@ -20,7 +20,9 @@ const COMMANDS = {
 // before and say one line about what replaced them.
 const RETIRED = {
   init: { module: 'init.mjs', replacement: 'npx naso-dev' },
-  setup: { module: 'setup.mjs', replacement: 'npx naso-dev' },
+  // `setup` was the plan-and-ask half of what the flow now does in one run, so it runs
+  // the flow: same flags, same questions, same accept / reject loop.
+  setup: { module: 'flow.mjs', replacement: 'npx naso-dev' },
 };
 
 async function usage() {

@@ -295,8 +295,24 @@ export function isNasoHook(hook) {
  * and skip this entirely.
  */
 export async function excludeLocally(targetDir, patterns = LOCAL_EXCLUDE_PATTERNS) {
+  const pending = await pendingLocalExclusion(targetDir, patterns);
+  if (!pending) return false;
+  if (pending.missing.length === 0) return true;
+
+  await mkdir(path.dirname(pending.path), { recursive: true });
+  await appendFile(pending.path, pending.text, 'utf8');
+  return true;
+}
+
+/**
+ * What `excludeLocally` would append to .git/info/exclude, without appending it.
+ *
+ * Returns null outside a git repository. `missing` is the patterns not already there and
+ * `text` the exact bytes that would be appended, so a plan can show the change first.
+ */
+export async function pendingLocalExclusion(targetDir, patterns = LOCAL_EXCLUDE_PATTERNS) {
   const gitDirRes = await run('git', ['rev-parse', '--git-dir'], { cwd: targetDir });
-  if (!gitDirRes.ok) return false;
+  if (!gitDirRes.ok) return null;
 
   const gitDirRaw = gitDirRes.stdout.trim();
   const gitDir = path.isAbsolute(gitDirRaw) ? gitDirRaw : path.resolve(targetDir, gitDirRaw);
@@ -304,16 +320,9 @@ export async function excludeLocally(targetDir, patterns = LOCAL_EXCLUDE_PATTERN
   const existing = await readFile(excludePath, 'utf8').catch(() => '');
 
   const missing = patterns.filter((pattern) => !existing.includes(pattern));
-  if (missing.length === 0) return true;
-
-  await mkdir(path.dirname(excludePath), { recursive: true });
   const prefix = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
-  await appendFile(
-    excludePath,
-    `${prefix}\n${EXCLUDE_MARKER}\n${missing.join('\n')}\n`,
-    'utf8',
-  );
-  return true;
+  const text = missing.length === 0 ? '' : `${prefix}\n${EXCLUDE_MARKER}\n${missing.join('\n')}\n`;
+  return { path: excludePath, missing, text };
 }
 
 /** Remove NASO's block from .git/info/exclude. Undoes excludeLocally. */
