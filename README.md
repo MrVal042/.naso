@@ -34,7 +34,7 @@ Add `--why` for the long-form rationale before you decide.
 
 ### Running it from a script
 
-With no terminal — piped, in CI, or run by an agent — it prints the plan, writes nothing, and exits 0. That makes `npx naso-dev` safe to call anywhere. To accept the plan you just read, add `--yes`:
+With no terminal — piped, in CI, or run by an agent — it prints the plan, writes nothing, and exits **2**, so a script can tell "not done" from "done". `--dry-run` prints the same plan and exits 0. To accept the plan you just read, add `--yes`:
 
 ```bash
 npx naso-dev --yes
@@ -61,7 +61,7 @@ The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplev
 
 | Command                                                            | What it does                                                                                                     |
 | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `npx naso-dev [target] [options]`                                   | The setup flow: read, plan, ask, write. No TTY and no `--yes` prints the plan, writes nothing, exits 0.           |
+| `npx naso-dev [target] [options]`                                   | The setup flow: read, plan, ask, write. No TTY and no `--yes` prints the plan, writes nothing, exits 2.           |
 | `npx naso-dev briefing [target] [check\|create\|refresh]`           | Verify `AGENTS.md` against disk, write the NASO block, or move the version stamp only.                            |
 | `npx naso-dev refresh [target]`                                     | Re-copy the toolset, re-stamp the briefing, reinstall the hook. Never rewrites briefing prose or `.naso/config.json`. |
 | `npx naso-dev guide <area-or-prefix> [target]`                      | The guide for one area: its paths, its checks, its boundary rules, and a ready-to-paste `NASO_SCOPE`.            |

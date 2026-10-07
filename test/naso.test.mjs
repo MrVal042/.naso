@@ -901,27 +901,29 @@ test('the README links only to files that exist, and names a real author', async
   });
 });
 
-test('the bare command runs the whole flow: explain, plan, ask, write', async () => {
+test('with no terminal and no --yes: the plan is printed, nothing is written, exit 2 names --yes and --dry-run', async () => {
   await withRepo(async ({ dir, git, bare }) => {
     await seedProject(dir, git);
+    const before = await treeHash(dir);
 
     const res = await bare([]);
+    assert.equal(res.code, 2, 'an unanswerable run must not look like a successful one');
+    assert.match(res.stdout, /Files\s+5 tracked in the git index/, 'it reads first');
+    assert.match(res.stdout, /Files this writes/, 'then shows the plan');
+    assert.match(res.stdout + res.stderr, /--yes/);
+    assert.match(res.stdout + res.stderr, /--dry-run/);
+    assert.equal(await treeHash(dir), before, 'nothing may change, .git included');
+  });
+});
+
+test('--dry-run prints the same plan, writes nothing and exits 0', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    const before = await treeHash(dir);
+    const res = await bare(['--dry-run']);
     assert.equal(res.code, 0, res.stdout + res.stderr);
-    const out = res.stdout;
-
-    // Reads first, and says what it read.
-    assert.match(out, /Files\s+5 tracked in the git index/);
-    assert.match(out, /Branch\s+main/);
-
-    // The compressed explanation keeps the guarantee the question depends on.
-    assert.match(out, /nothing at all is written/i);
-
-    // Then the plan for this repository.
-    assert.match(out, /src\/index\.ts/);
-
-    // And the verdict, when there is no TTY to ask: nothing written, --yes named.
-    assert.ok(!(await exists(dir, AGENTS)), 'a bare non-interactive run must not write AGENTS.md');
-    assert.match(out, /--yes/);
+    assert.match(res.stdout, /Files this writes/);
+    assert.equal(await treeHash(dir), before);
   });
 });
 
@@ -968,41 +970,29 @@ test('cancelling at the first question leaves the whole tree, .git included, byt
   });
 });
 
-test('the bare command never hangs without a TTY and never writes without a decision', async () => {
-  await withRepo(async ({ dir, git, bare }) => {
-    await seedProject(dir, git);
-
-    const started = Date.now();
-    const res = await bare([]);
-    assert.ok(Date.now() - started < 30_000, 'the bare command must not block on a prompt');
-    assert.equal(res.code, 0);
-    assert.equal((await git('status', '--porcelain')).stdout.trim(), '', 'nothing may change');
-  });
-});
-
 test('NO_COLOR and --no-color both strip every escape code', async () => {
   await withRepo(async ({ dir, git, bare }) => {
     await seedProject(dir, git);
 
     const esc = /\u001B\[[0-9;]*m/;
-    const plain = await exec(process.execPath, [BIN, dir], dir, { NO_COLOR: '1' });
+    const plain = await exec(process.execPath, [BIN, dir, '--dry-run'], dir, { NO_COLOR: '1' });
     assert.equal(plain.code, 0);
     assert.ok(!esc.test(plain.stdout), 'NO_COLOR must produce no escape codes');
 
-    const flagged = await bare(['--no-color']);
+    const flagged = await bare(['--dry-run', '--no-color']);
     assert.ok(!esc.test(flagged.stdout), '--no-color must produce no escape codes');
 
     // npm sets FORCE_COLOR for its own output and leaks it into every script it
     // runs. Treating that as a request for colour meant the flow emitted escape
     // codes into a pipe under `npm publish` and `npm test` — exactly where
     // nobody is at a terminal. This is what that looked like.
-    const forced = await exec(process.execPath, [BIN, dir], dir, { FORCE_COLOR: '1' });
+    const forced = await exec(process.execPath, [BIN, dir, '--dry-run'], dir, { FORCE_COLOR: '1' });
     assert.equal(forced.code, 0);
     assert.ok(!esc.test(forced.stdout), 'FORCE_COLOR from a parent process must not colour a pipe');
     assert.match(forced.stdout, /Files\s+\d+ tracked in the git index/, 'the text must stay readable');
 
     // --color is the way to ask for colour in a pipe, because it is typed.
-    const asked = await bare(['--color']);
+    const asked = await bare(['--dry-run', '--color']);
     assert.ok(esc.test(asked.stdout), '--color must colour even when piped');
   });
 });

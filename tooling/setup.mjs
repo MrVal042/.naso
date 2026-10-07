@@ -672,9 +672,10 @@ Support: ${SUPPORT_EMAIL}`);
 
   console.log('## Not written');
   console.log('');
-  console.log('  This script asks nothing. Pass --yes to write the plan above, or run');
-  console.log('  `npx naso-dev` to answer the questions and accept or reject it.');
+  console.log('  This script asks nothing. Pass --yes to write the plan above, --dry-run to');
+  console.log('  only print it, or run `npx naso-dev` to accept or reject it interactively.');
   console.log('');
+  process.exitCode = 2;
 }
 
 if (isMainModule(import.meta.url)) {

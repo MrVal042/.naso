@@ -16,8 +16,9 @@
 //   rather than a hook that fails on a file that is not there.
 //
 //   A run that cannot be answered stops instead of waiting. No TTY, no prompt,
-//   no --yes, nothing written and exit 0 — because the useful thing to print for
-//   a pipe or a CI step is the plan, and the useful thing to do is nothing.
+//   no --yes: the plan is printed, nothing is written, and the exit code is 2, so a
+//   script can tell "not done" from "done". --dry-run is the way to ask for only the
+//   plan, and it exits 0.
 //
 //   The flow is a path through the same code the retired commands run. It calls
 //   inspect() and install() rather than reimplementing them, so `npx naso-dev`
@@ -343,7 +344,8 @@ Options:
   --why              the long-form rationale for doing this at all
   --no-color         no escape codes, whatever the terminal supports
 
-With no terminal and no --yes, this prints the plan, writes nothing, and exits 0.
+With no terminal and no --yes, this prints the plan, writes nothing, and exits 2.
+--dry-run prints the same plan and exits 0.
 
 Other commands:
   briefing   regenerate or re-verify the ${AGENTS_FILE} briefing
@@ -434,12 +436,13 @@ Other commands:
     await displayPlan(plan, cwd, style);
     console.log(style.heading('Not written'));
     console.log('');
-    console.log('This terminal cannot answer a question, so nothing was written — which');
-    console.log('makes this command safe to run from a script, a CI step or an agent.');
+    console.log('This terminal cannot answer a question, so nothing was written. The exit');
+    console.log('code is 2, so a script or CI step can tell "not done" from "done".');
     console.log('');
-    console.log(`Read the plan above, then re-run with ${style.flag('--yes')} to accept it:`);
-    console.log(`  ${style.flag('npx naso-dev')} ${style.flag('--yes')} ${cwd}`);
+    console.log(`To accept the plan above:        ${style.flag('npx naso-dev')} ${style.flag('--yes')} ${cwd}`);
+    console.log(`To only print it, exiting 0:     ${style.flag('npx naso-dev')} ${style.flag('--dry-run')} ${cwd}`);
     console.log('');
+    process.exitCode = 2;
     return;
   }
 
