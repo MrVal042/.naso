@@ -258,7 +258,6 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
   const pendingExclude = track ? null : await pendingLocalExclusion(cwd);
   const facts = await scanRepo(cwd, {
     exclude: excluded,
-    track,
     pendingLocalExcludes: pendingExclude?.missing ?? [],
   });
   const artifacts = await findArtifacts(cwd);
@@ -497,7 +496,7 @@ export async function install(cwd, { track, noHook, force, state }) {
   // one thing the reader cannot work out alone, since nobody else has this file either.
   const excludedLocally = track ? false : await excludeLocally(cwd);
 
-  const created = await createBriefing(cwd, { force, exclude: state.excluded, track });
+  const created = await createBriefing(cwd, { force, exclude: state.excluded });
 
   if (created.ok) {
     const dirs = created.facts.areas;

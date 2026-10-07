@@ -1380,7 +1380,7 @@ function detectFeatureMap(files, pkg) {
  * the shape of a repository, and reading code to summarise it would produce the
  * confident fiction this tool exists to replace.
  */
-export async function scanRepo(cwd, { exclude = null, track = null, pendingLocalExcludes = [] } = {}) {
+export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] } = {}) {
   const { files, source } = await readFileIndex(cwd, { exclude });
   const pkg = await readJSONFile(path.join(cwd, 'package.json'));
   const entries = topLevelEntries(files);
@@ -1398,12 +1398,21 @@ export async function scanRepo(cwd, { exclude = null, track = null, pendingLocal
 
   const gitInfo = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
 
-  // AGENTS.md is the file the briefing is written into, so counting it makes the header
-  // wrong on the second run in a way nobody notices: the number goes up by one every time
-  // the briefing is regenerated, for no reason a reader can account for. In local mode it
-  // is excluded via .git/info/exclude and never reaches the index; in --track mode it is
-  // there, and it is subtracted here so both modes report the same repository.
-  const agentsTracked = files.includes(AGENTS_FILE) || track === true;
+  // AGENTS.md is the file the briefing is written into, so it is never counted: the
+  // number would otherwise go up by one the first time the briefing is committed, for no
+  // reason a reader can account for. It is subtracted only when it is in the index — a
+  // first --track run has not committed it yet, and subtracting it anyway undercounted.
+  const agentsInIndex = files.includes(AGENTS_FILE);
+
+  // Whether the briefing is (or is about to be) part of the repository is read from git,
+  // not from a flag: it is in the index, or git would not ignore it once this run's own
+  // .git/info/exclude lines are written. `--track` with a .gitignore that lists AGENTS.md
+  // is still a local file, and saying otherwise tells an agent to stage the unstageable.
+  const agentsTracked =
+    agentsInIndex ||
+    (source === 'git' &&
+      !pendingLocalExcludes.includes(AGENTS_FILE) &&
+      (await run('git', ['check-ignore', '-q', AGENTS_FILE], { cwd })).code === 1);
 
   const conventions = await detectConventions(cwd, files, pkg);
 
@@ -1411,7 +1420,7 @@ export async function scanRepo(cwd, { exclude = null, track = null, pendingLocal
     cwd,
     files,
     fileSource: source,
-    trackedCount: agentsTracked ? files.length - 1 : files.length,
+    trackedCount: agentsInIndex ? files.length - 1 : files.length,
     agentsTracked,
     pkg,
     packageManager,
@@ -2500,14 +2509,8 @@ export function printCheck(result) {
  * finds there, so two concurrent setups produce one of two complete briefings
  * rather than a half-written file.
  */
-export async function createBriefing(cwd, { force = false, exclude = null, track = null } = {}) {
+export async function createBriefing(cwd, { force = false, exclude = null } = {}) {
   const agentsPath = path.join(cwd, AGENTS_FILE);
-
-  // Whether AGENTS.md is meant to be committed is a property of the run, not of the
-  // index: on a first --track run the file does not exist yet, so the index cannot say.
-  // The saved config is the fallback, so a later `briefing create --force` reaches the
-  // same conclusion the setup that wrote the file did.
-  const saved = track === null ? (await readConfig(cwd))?.track : track;
 
   const version = await toolVersion();
   const now = new Date().toISOString().slice(0, 10);
@@ -2518,7 +2521,7 @@ export async function createBriefing(cwd, { force = false, exclude = null, track
       const before = await readFile(agentsPath, 'utf8').catch(() => null);
       const existingLines = before === null ? 0 : before.split('\n').length;
 
-      const facts = await scanRepo(cwd, { exclude, track: saved });
+      const facts = await scanRepo(cwd, { exclude });
       const block = await renderBriefing(facts, { version, now });
 
       if (before === null) {

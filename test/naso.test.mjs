@@ -380,23 +380,47 @@ test('a gitignored build directory is not counted, described or listed', async (
   });
 });
 
-test('the tracked total says what it is and excludes AGENTS.md in both tracking modes', async () => {
-  await withRepo(async ({ dir, git, script }) => {
+test('the tracked total equals the index, minus AGENTS.md, on a first --track run and every mode after', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
     await seedProject(dir, git);
+    const indexCount = (await git('ls-files')).stdout.trim().split('\n').length;
+    assert.equal(indexCount, 5);
 
-    // Local mode: AGENTS.md lives in .git/info/exclude and never reaches the index.
-    await script('setup', ['--yes']);
-    const local = await read(dir, AGENTS);
-    assert.match(local, /5 tracked files, excluding AGENTS\.md/);
-    const index1 = await git('ls-files');
-    assert.ok(!index1.stdout.includes('AGENTS.md'), 'local mode must not track AGENTS.md');
+    // First run with --track: AGENTS.md is not in the index yet, so nothing is subtracted.
+    const first = await bare(['--yes', '--track']);
+    assert.equal(first.code, 0, first.stdout + first.stderr);
+    assert.match(await read(dir, AGENTS), /from the 5 tracked files, excluding AGENTS\.md/);
 
-    // Tracked mode: it is in the index now, and the number must not move.
-    await git('add', '-f', 'AGENTS.md');
-    await git('commit', '-qm', 'track the briefing');
-    await script('setup', ['--yes', '--track', '--force']);
-    const tracked = await read(dir, AGENTS);
-    assert.match(tracked, /5 tracked files, excluding AGENTS\.md/);
+    // Once it is committed it is in the index, and it is the one file subtracted.
+    await git('add', '-f', AGENTS);
+    await git('commit', '-qm', 'track the briefing', '--no-verify');
+    await bare(['--yes', '--force']);
+    assert.match(await read(dir, AGENTS), /from the 5 tracked files, excluding AGENTS\.md/);
+  });
+});
+
+test('the staging rule follows git, not the flag: --track with AGENTS.md ignored is local', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, '.gitignore', 'AGENTS.md\n');
+    await git('add', '.gitignore');
+    await git('commit', '-qm', 'ignore the briefing');
+
+    const res = await bare(['--yes', '--track']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const text = await read(dir, AGENTS);
+    assert.match(text, /This file is not in the index and never will be/, 'an ignored file gets the local rule');
+    assert.ok(!/stages it with the commit/.test(text));
+  });
+});
+
+test('a first --track run gets the tracked staging rule, because the file is about to be committed', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await bare(['--yes', '--track']);
+    const text = await read(dir, AGENTS);
+    assert.match(text, /stages it with the commit/);
+    assert.equal((await git('check-ignore', '-q', AGENTS)).code, 1, 'and git agrees it is not ignored');
   });
 });
 
