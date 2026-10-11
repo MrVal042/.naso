@@ -22,7 +22,7 @@ import {
   NASO_START,
   NASO_END,
 } from './briefing.mjs';
-import { readHook, isNasoHook, findArtifacts } from './install.mjs';
+import { readHook, isNasoHook, findArtifacts, CLAUDE_FILE, claudeLoadsBriefing } from './install.mjs';
 import { NASO_DIR, readConfig, configuredExclusions, configPath, vendoredVersion } from './vendor.mjs';
 
 const OK = 'OK';
@@ -138,6 +138,15 @@ Support: ${SUPPORT_EMAIL}`);
     printRow('Unnamed areas', unknown.length === 0 ? OK : WARN, unknown.length === 0 ? 'none' : `${unknown.length} area(s)`);
   } catch (e) {
     printRow('Briefing scan', FAIL, e?.message ?? String(e));
+  }
+
+  const claude = await readFile(path.join(cwd, CLAUDE_FILE), 'utf8').catch(() => null);
+  if (claude === null) {
+    printRow('Claude Code link', WARN, 'no CLAUDE.md — Claude Code sessions will not read AGENTS.md');
+  } else if (claudeLoadsBriefing(claude)) {
+    printRow('Claude Code link', OK, 'CLAUDE.md loads AGENTS.md');
+  } else {
+    printRow('Claude Code link', WARN, 'CLAUDE.md does not load AGENTS.md — add `@AGENTS.md` to it');
   }
 
   const artifacts = await findArtifacts(cwd);

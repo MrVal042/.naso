@@ -66,6 +66,9 @@ import {
   excludeLocally,
   pendingLocalExclusion,
   localExcludePatterns,
+  planClaudeLink,
+  claudeLinkContent,
+  writeClaudeLink,
   findArtifacts,
   removeArtifacts,
   describeHook,
@@ -238,6 +241,27 @@ function hookPlanEntry(hook, decision) {
   };
 }
 
+const CLAUDE_ADVICE =
+  'Claude Code reads CLAUDE.md, not AGENTS.md, and this CLAUDE.md is tracked in git and does ' +
+  'not load the briefing: add `@AGENTS.md` to CLAUDE.md, or re-run with --track to let setup ' +
+  'append it.';
+
+/** The plan line for CLAUDE.md, in the same words the write will report. */
+function claudePlanEntry(claude) {
+  const detail = {
+    linked: 'It already names AGENTS.md, so Claude Code sessions load the briefing. Left as it is.',
+    create:
+      'Claude Code reads CLAUDE.md, not AGENTS.md. A CLAUDE.md holding one `@AGENTS.md` line, ' +
+      'inside naso markers, makes every Claude Code session start with the briefing.',
+    append:
+      'Claude Code reads CLAUDE.md, not AGENTS.md. One `@AGENTS.md` line, inside naso markers, ' +
+      'goes below what is there; nothing above it changes.',
+    advise: CLAUDE_ADVICE,
+  }[claude.action];
+  const verb = { linked: 'Keep', create: 'Write', append: 'Append', advise: 'Leave' }[claude.action];
+  return { target: 'CLAUDE.md', verb, detail };
+}
+
 const TRACKED_AGENTS_NOTE =
   'AGENTS.md is tracked in git already, and an exclude line cannot hide a tracked file: the ' +
   'NASO block shows in git status as a change to AGENTS.md. Commit it to share the briefing, ' +
@@ -261,7 +285,11 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     ...new Set([...savedExclusions, ...(Array.isArray(exclude) ? exclude : [])]),
   ].sort();
 
-  const localExcludes = track ? [] : await localExcludePatterns(cwd);
+  const claude = await planClaudeLink(cwd, { track });
+  // A CLAUDE.md this run creates holds nothing but the link, so it is as local as AGENTS.md.
+  const localExcludes = track
+    ? []
+    : [...(await localExcludePatterns(cwd)), ...(claude.action === 'create' ? ['CLAUDE.md'] : [])];
   const pendingExclude = track ? null : await pendingLocalExclusion(cwd, localExcludes);
   const facts = await scanRepo(cwd, {
     exclude: excluded,
@@ -311,6 +339,8 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
         'below those two markers is touched.',
     });
   }
+
+  plans.push(claudePlanEntry(claude));
 
   plans.push({
     target: `${NASO_DIR}/tooling/`,
@@ -374,6 +404,15 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     writes.push({ path: 'AGENTS.md', change: 'replace block', lines: lineCount(block), note: 'only between the markers' });
   }
 
+  if (claude.action === 'create' || claude.action === 'append') {
+    const after = claudeLinkContent(claude);
+    writes.push(
+      claude.action === 'create'
+        ? { path: 'CLAUDE.md', change: 'new', lines: lineCount(after) }
+        : { path: 'CLAUDE.md', change: 'append', lines: lineCount(after) - lineCount(claude.before), note: 'the link, below what is there' },
+    );
+  }
+
   for (const source of await vendorSources()) {
     const rel = `${NASO_DIR}/tooling/${path.basename(source)}`;
     writes.push({
@@ -412,7 +451,7 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     });
   }
 
-  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, localExcludes };
+  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, localExcludes, claude };
 }
 
 /** Step 2's screen. Printed identically on every pass, so a second read is comparable. */
@@ -538,6 +577,20 @@ export async function install(cwd, { track, noHook, force, state }) {
       }.`,
     );
     console.log('  Nothing outside the naso:start / naso:end markers is ever rewritten.');
+  }
+  console.log('');
+
+  const claude = state.claude ?? (await planClaudeLink(cwd, { track }));
+  if (await writeClaudeLink(claude)) {
+    console.log(
+      claude.action === 'create'
+        ? '- Wrote CLAUDE.md with one `@AGENTS.md` line, so Claude Code sessions load the briefing.'
+        : '- Appended `@AGENTS.md` to CLAUDE.md, so Claude Code sessions load the briefing.',
+    );
+  } else if (claude.action === 'advise') {
+    console.log(`- Left CLAUDE.md alone. ${CLAUDE_ADVICE}`);
+  } else {
+    console.log('- CLAUDE.md already names AGENTS.md; left as it is.');
   }
   console.log('');
 

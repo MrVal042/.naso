@@ -303,6 +303,61 @@ export async function localExcludePatterns(targetDir) {
 }
 
 /**
+ * Claude Code reads CLAUDE.md, not AGENTS.md.
+ *
+ * Without a link the briefing never reaches a Claude Code session at all — every token of
+ * it is spent on nothing. `@AGENTS.md` is Claude Code's import syntax, so one line makes
+ * the briefing load at the start of every session.
+ */
+export const CLAUDE_FILE = 'CLAUDE.md';
+
+export const CLAUDE_LINK_BLOCK =
+  '<!-- naso:start -->\n' +
+  'Claude Code reads this file, not AGENTS.md. The line below loads the NASO briefing.\n\n' +
+  '@AGENTS.md\n' +
+  '<!-- naso:end -->\n';
+
+/** Does this CLAUDE.md already bring AGENTS.md in? Any mention counts: it was put there on purpose. */
+export function claudeLoadsBriefing(text) {
+  return /AGENTS\.md/.test(String(text ?? ''));
+}
+
+/**
+ * What setup does about CLAUDE.md, decided before anything is written.
+ *
+ *   linked  — it already names AGENTS.md; nothing to do.
+ *   create  — there is none; write one holding only the link.
+ *   append  — it is the owner's but untracked, or --track was asked for; append the link.
+ *   advise  — git tracks it and this is a local run; editing it would put NASO in the
+ *             next commit, so setup says what to add instead.
+ */
+export async function planClaudeLink(targetDir, { track = false } = {}) {
+  const full = path.join(targetDir, CLAUDE_FILE);
+  const text = await readFile(full, 'utf8').catch(() => null);
+  if (text === null) return { action: 'create', path: full, before: '' };
+  if (claudeLoadsBriefing(text)) return { action: 'linked', path: full, before: text };
+  const tracked = await run('git', ['ls-files', '-z', '--', CLAUDE_FILE], { cwd: targetDir });
+  const isTracked = tracked.ok && tracked.stdout.length > 0;
+  return { action: isTracked && !track ? 'advise' : 'append', path: full, before: text };
+}
+
+/** The bytes CLAUDE.md will hold after `writeClaudeLink`, for the plan's line count. */
+export function claudeLinkContent(plan) {
+  if (plan.action === 'create') return CLAUDE_LINK_BLOCK;
+  if (plan.action !== 'append') return plan.before;
+  const before = plan.before;
+  const separator = before.length === 0 || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+  return `${before}${separator}${CLAUDE_LINK_BLOCK}`;
+}
+
+/** Carry out a `planClaudeLink` decision. Only create and append write anything. */
+export async function writeClaudeLink(plan) {
+  if (plan.action !== 'create' && plan.action !== 'append') return false;
+  await writeFile(plan.path, claudeLinkContent(plan), 'utf8');
+  return true;
+}
+
+/**
  * Keep the briefing files out of git entirely, using .git/info/exclude.
  *
  * That file is local-only and never committed, which is what makes it the right

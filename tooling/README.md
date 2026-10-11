@@ -37,7 +37,7 @@ every commit with a message nobody can act on.
 | `validate.mjs`   | The gate. `--staged` is what the hook runs; the default is the whole-project CI run.                                                                                |
 | `guide.mjs`      | The guide for one area. `--tour` gives the section-by-section read-through instead.                                                                                  |
 | `doctor.mjs`     | Environment and install diagnostics. Changes nothing.                                                                                                              |
-| `install.mjs`    | Git plumbing: the hook body, the hooks directory, `.git/info/exclude`, leftover detection.                                                                          |
+| `install.mjs`    | Git plumbing: the hook body, the hooks directory, `.git/info/exclude`, the `CLAUDE.md` link, leftover detection.                                                    |
 | `lock.mjs`       | A cooperative filesystem mutex, so two agents cannot rewrite one `AGENTS.md` at the same moment.                                                                     |
 | `lib.mjs`        | Shared helpers: argv parsing, running commands, NUL-delimited git output, path classification, output formatting.                                                  |
 | `vendor.mjs`     | Copies this directory into a target repository and reads/writes `.naso/config.json`.                                                                               |

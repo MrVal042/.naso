@@ -24,7 +24,7 @@ npx naso-dev
 
 It reads the repository and prints what it found, asks what the plan depends on (commit the files or keep them local; the pre-commit hook, and what to do about a hook NASO did not write; whether to replace an existing NASO block), then lists every file it would write with its line count — and asks one question: **Write these files and install the hook?**
 
-- **Accept** writes `AGENTS.md`, vendors the toolset into `.naso/tooling/`, installs `.git/hooks/pre-commit`, and — unless you pass `--track` — keeps both `.naso/` and `AGENTS.md` out of git via `.git/info/exclude`. An `AGENTS.md` git already tracks cannot be excluded: only `.naso/` is, and the plan says the NASO block will show in `git status` as a change to commit or drop.
+- **Accept** writes `AGENTS.md`, links it from `CLAUDE.md` for Claude Code, vendors the toolset into `.naso/tooling/`, installs `.git/hooks/pre-commit`, and — unless you pass `--track` — keeps both `.naso/` and `AGENTS.md` out of git via `.git/info/exclude`. An `AGENTS.md` git already tracks cannot be excluded: only `.naso/` is, and the plan says the NASO block will show in `git status` as a change to commit or drop.
 - **Reject** writes nothing and reads the repository again. A second reject stops and offers to print a pre-filled support report; either way the repository is left byte-for-byte as it was.
 - **Exclude an area** keeps one top-level directory out of the briefing and shows the plan again.
 - **An existing `AGENTS.md` is never replaced.** The NASO block goes between `<!-- naso:start -->` and `<!-- naso:end -->`; everything outside those markers stays byte-identical.
@@ -49,11 +49,12 @@ The two commands this replaces still work, print one deprecation line naming `np
 | Path                        | Purpose                                                                                          |
 | --------------------------- | ------------------------------------------------------------------------------------------------ |
 | `AGENTS.md`                 | The briefing, inside its `naso:start` / `naso:end` markers. Never overwritten outside them.     |
+| `CLAUDE.md`                 | One `@AGENTS.md` line, so Claude Code (which reads `CLAUDE.md`, not `AGENTS.md`) loads the briefing. Written only when there is no `CLAUDE.md` or yours is untracked; a tracked one is left alone unless you pass `--track`, and setup says what to add. |
 | `.naso/tooling/*.mjs`       | A copy of the toolset, so the hook works with no network and no global install.                  |
 | `.naso/tooling/VERSION`     | The version that copy was vendored from — the briefing stamp is compared against it.             |
 | `.naso/config.json`         | Per-repository setup choices, including any areas you excluded.                                  |
 | `.git/hooks/pre-commit`     | Runs the secret, scope, format and lint checks on staged files and keeps the briefing current.   |
-| `.git/info/exclude`         | Keeps `.naso/` and `AGENTS.md` untracked locally (default mode), except a file git already tracks. Use `--track` to version them. |
+| `.git/info/exclude`         | Keeps `.naso/`, `AGENTS.md` and a `CLAUDE.md` NASO created untracked locally (default mode), except a file git already tracks. Use `--track` to version them. |
 
 The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplevel`, so it runs identically from a clone, from the npx cache, or from a teammate's machine that never installed the package. If the vendored script is ever missing, the hook prints one loud line and lets the commit through rather than failing silently.
 
@@ -68,7 +69,7 @@ The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplev
 | `npx naso-dev guide --list [target]`                                | The areas that exist, with their file counts. Unknown areas are an error, not an empty screen.                   |
 | `npx naso-dev guide --tour [target]`                                | The read-through: every section of the briefing in reading order, plus the consistency check.                    |
 | `npx naso-dev validate [target] [--staged] [--scope a,b] [--strict]` | The pre-commit gate, and the full CI run without `--staged`.                                                     |
-| `npx naso-dev doctor [target]`                                      | Environment and install diagnostics: Node, git, hook, vendored copy, briefing consistency, leftovers.             |
+| `npx naso-dev doctor [target]`                                      | Environment and install diagnostics: Node, git, hook, vendored copy, briefing consistency, the Claude Code link, leftovers. |
 
 All commands accept `--help`. `init` and `setup` are retired but still run; both are covered by the test suite.
 

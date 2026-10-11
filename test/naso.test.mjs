@@ -1177,7 +1177,7 @@ test('boundaries lead the section: enforced seams, then aliases, then ignores', 
     // The local exclude file is named as its own, non-shared mechanism.
     assert.match(
       section,
-      /\*\*Local excludes\.\*\* \.git\/info\/exclude holds \.naso, AGENTS\.md on this machine only\./,
+      /\*\*Local excludes\.\*\* \.git\/info\/exclude holds \.naso, AGENTS\.md, CLAUDE\.md on this machine only\./,
     );
   });
 });
@@ -2993,5 +2993,54 @@ test('the area holding package.json "bin" is the published command, and lib.mjs 
     const text = await read(dir, AGENTS);
     assert.match(text, /^- `bin\/` — published command \(package\.json "bin"\);/m);
     assert.doesNotMatch(text, /entry `tooling\/lib\.mjs`/);
+  });
+});
+
+test('setup links the briefing for Claude Code with a local CLAUDE.md when there is none', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.match(await read(dir, 'CLAUDE.md'), /^@AGENTS\.md$/m);
+    assert.ok((await read(dir, '.git/info/exclude')).split('\n').includes('CLAUDE.md'));
+    assert.equal((await git('status', '--porcelain')).stdout, '', 'local mode leaves no trace in git status');
+  });
+});
+
+test('a tracked CLAUDE.md is not edited in local mode; setup says what to add', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    await put(dir, 'CLAUDE.md', '# Team rules\n');
+    await git('add', 'CLAUDE.md');
+    await git('commit', '-qm', 'claude');
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.equal(await read(dir, 'CLAUDE.md'), '# Team rules\n');
+    assert.match(res.stdout, /add `@AGENTS\.md` to CLAUDE\.md/);
+    assert.match((await script('doctor')).stdout, /Claude Code link\s+\S*\s*CLAUDE\.md does not load AGENTS\.md/);
+  });
+});
+
+test('with --track, a CLAUDE.md that does not load the briefing gets the link appended', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, 'CLAUDE.md', '# Team rules\n');
+    await git('add', 'CLAUDE.md');
+    await git('commit', '-qm', 'claude');
+    assert.equal((await bare(['--yes', '--track'])).code, 0);
+    const text = await read(dir, 'CLAUDE.md');
+    assert.ok(text.startsWith('# Team rules\n'));
+    assert.match(text, /^@AGENTS\.md$/m);
+  });
+});
+
+test('a CLAUDE.md that already names AGENTS.md is left alone', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    await put(dir, 'CLAUDE.md', 'Read AGENTS.md first.\n');
+    const res = await bare(['--yes']);
+    assert.equal(await read(dir, 'CLAUDE.md'), 'Read AGENTS.md first.\n');
+    assert.doesNotMatch(res.stdout, /add `@AGENTS\.md`/);
+    assert.match((await script('doctor')).stdout, /Claude Code link\s+\S*\s*CLAUDE\.md loads AGENTS\.md/);
   });
 });
