@@ -1608,6 +1608,7 @@ export async function scanWarnings(facts) {
 
   warnings.push(...(await detectVersionContradictions(facts)));
   warnings.push(...trackedSecretWarnings(facts));
+  warnings.push(...trackedJunkWarnings(facts));
 
   return warnings;
 }
@@ -1775,6 +1776,31 @@ function pythonDependencies(files) {
     `Python dependencies: ${declared.map((name) => `\`${name}\``).join(', ')}` +
     (lock ? `, locked by \`${lock[0]}\` (${lock[1]}).` : '.')
   );
+}
+
+/**
+ * Files a machine or a running program writes, which are almost never meant to be shared.
+ *
+ * A local database is listed as "usually": some projects commit a seed on purpose, and the
+ * warning says what it found rather than what to delete.
+ */
+const JUNK_FILE =
+  /(?:^|\/)(?:\.DS_Store|Thumbs\.db|desktop\.ini|npm-debug\.log[^/]*)$|(?:^|\/)__pycache__\/|\.py[co]$|\.(?:db|sqlite3?)$/i;
+
+function trackedJunkWarnings(facts) {
+  const junk = facts.files.filter((file) => JUNK_FILE.test(file));
+  if (junk.length === 0) return [];
+  return [
+    {
+      id: 'tracked-junk',
+      where: 'setup',
+      headline: `${plural(junk.length, 'machine or runtime file')} ${junk.length === 1 ? 'is' : 'are'} tracked in git`,
+      detail:
+        `${someOf(junk)} — OS metadata, bytecode or a local database, usually written by a machine ` +
+        'rather than a person. If none is meant to be shared, `git rm --cached` it and add it to .gitignore.',
+      paths: junk,
+    },
+  ];
 }
 
 /** The tests line, naming the runner and what the script actually runs. */

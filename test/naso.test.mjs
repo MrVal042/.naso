@@ -3096,3 +3096,18 @@ test('the briefing carries no rules it cannot ground in the repository', async (
     assert.match(text, /`npm run lint`/, 'the closing note names the command this repository declares');
   });
 });
+
+test('setup warns about machine and runtime files that are tracked, and keeps them out of AGENTS.md', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, '.DS_Store', 'x');
+    await put(dir, 'data/task.db', 'x');
+    await put(dir, 'src/__pycache__/m.cpython-312.pyc', 'x');
+    await git('add', '-A');
+    await git('commit', '-qm', 'junk');
+    const res = await bare(['--yes']);
+    assert.match(res.stdout, /3 machine or runtime files are tracked in git/);
+    assert.match(res.stdout, /\.DS_Store/);
+    assert.doesNotMatch(await read(dir, AGENTS), /machine or runtime files/);
+  });
+});
