@@ -2903,3 +2903,21 @@ test('the NASO block is still checked when it sits below hand-written text', asy
     assert.match(check.stdout, /MISSING[\s\S]*gone\/nowhere\.ts/);
   });
 });
+
+test('a tracked AGENTS.md is not put in .git/info/exclude, and the plan says it will show as a change', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, AGENTS, '# Ours\n\nHand-written and committed.\n');
+    await git('add', AGENTS);
+    await git('commit', '-qm', 'agents');
+
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const exclude = await read(dir, '.git/info/exclude');
+    assert.ok(!exclude.split('\n').includes('AGENTS.md'), 'excluding a tracked file does nothing and claims otherwise');
+    assert.ok(exclude.split('\n').includes('.naso'));
+    assert.doesNotMatch(res.stdout, /Kept \.naso and AGENTS\.md out of git/);
+    assert.match(res.stdout, /AGENTS\.md is tracked/);
+    assert.match((await git('status', '--porcelain')).stdout, /^ M AGENTS\.md$/m);
+  });
+});

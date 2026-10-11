@@ -24,7 +24,7 @@ npx naso-dev
 
 It reads the repository and prints what it found, asks what the plan depends on (commit the files or keep them local; the pre-commit hook, and what to do about a hook NASO did not write; whether to replace an existing NASO block), then lists every file it would write with its line count — and asks one question: **Write these files and install the hook?**
 
-- **Accept** writes `AGENTS.md`, vendors the toolset into `.naso/tooling/`, installs `.git/hooks/pre-commit`, and — unless you pass `--track` — keeps both `.naso/` and `AGENTS.md` out of git via `.git/info/exclude`.
+- **Accept** writes `AGENTS.md`, vendors the toolset into `.naso/tooling/`, installs `.git/hooks/pre-commit`, and — unless you pass `--track` — keeps both `.naso/` and `AGENTS.md` out of git via `.git/info/exclude`. An `AGENTS.md` git already tracks cannot be excluded: only `.naso/` is, and the plan says the NASO block will show in `git status` as a change to commit or drop.
 - **Reject** writes nothing and reads the repository again. A second reject stops and offers to print a pre-filled support report; either way the repository is left byte-for-byte as it was.
 - **Exclude an area** keeps one top-level directory out of the briefing and shows the plan again.
 - **An existing `AGENTS.md` is never replaced.** The NASO block goes between `<!-- naso:start -->` and `<!-- naso:end -->`; everything outside those markers stays byte-identical.
@@ -53,7 +53,7 @@ The two commands this replaces still work, print one deprecation line naming `np
 | `.naso/tooling/VERSION`     | The version that copy was vendored from — the briefing stamp is compared against it.             |
 | `.naso/config.json`         | Per-repository setup choices, including any areas you excluded.                                  |
 | `.git/hooks/pre-commit`     | Runs the secret, scope, format and lint checks on staged files and keeps the briefing current.   |
-| `.git/info/exclude`         | Keeps `.naso/` and `AGENTS.md` untracked locally (default mode). Use `--track` to version them.  |
+| `.git/info/exclude`         | Keeps `.naso/` and `AGENTS.md` untracked locally (default mode), except a file git already tracks. Use `--track` to version them. |
 
 The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplevel`, so it runs identically from a clone, from the npx cache, or from a teammate's machine that never installed the package. If the vendored script is ever missing, the hook prints one loud line and lets the commit through rather than failing silently.
 

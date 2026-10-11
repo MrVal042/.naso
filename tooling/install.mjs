@@ -286,6 +286,23 @@ export function isNasoHook(hook) {
 }
 
 /**
+ * The patterns .git/info/exclude can actually keep out of git here.
+ *
+ * An exclude line only hides untracked files. A repository that already commits its own
+ * AGENTS.md keeps tracking it whatever the exclude file says, so writing the line anyway
+ * and reporting the file as "kept out of git" was a claim git does not honour: the
+ * appended NASO block showed up in `git status`, one `git commit -a` from the history.
+ */
+export async function localExcludePatterns(targetDir) {
+  const kept = [];
+  for (const pattern of LOCAL_EXCLUDE_PATTERNS) {
+    const tracked = await run('git', ['ls-files', '-z', '--', pattern], { cwd: targetDir });
+    if (!(tracked.ok && tracked.stdout.length > 0)) kept.push(pattern);
+  }
+  return kept;
+}
+
+/**
  * Keep the briefing files out of git entirely, using .git/info/exclude.
  *
  * That file is local-only and never committed, which is what makes it the right
@@ -294,7 +311,7 @@ export function isNasoHook(hook) {
  * machine. Repos that want the briefing reviewed like any other file pass --track
  * and skip this entirely.
  */
-export async function excludeLocally(targetDir, patterns = LOCAL_EXCLUDE_PATTERNS) {
+export async function excludeLocally(targetDir, patterns = null) {
   const pending = await pendingLocalExclusion(targetDir, patterns);
   if (!pending) return false;
   if (pending.missing.length === 0) return true;
@@ -310,9 +327,10 @@ export async function excludeLocally(targetDir, patterns = LOCAL_EXCLUDE_PATTERN
  * Returns null outside a git repository. `missing` is the patterns not already there and
  * `text` the exact bytes that would be appended, so a plan can show the change first.
  */
-export async function pendingLocalExclusion(targetDir, patterns = LOCAL_EXCLUDE_PATTERNS) {
+export async function pendingLocalExclusion(targetDir, patterns = null) {
   const gitDirRes = await run('git', ['rev-parse', '--git-dir'], { cwd: targetDir });
   if (!gitDirRes.ok) return null;
+  patterns ??= await localExcludePatterns(targetDir);
 
   const gitDirRaw = gitDirRes.stdout.trim();
   const gitDir = path.isAbsolute(gitDirRaw) ? gitDirRaw : path.resolve(targetDir, gitDirRaw);

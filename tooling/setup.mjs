@@ -65,6 +65,7 @@ import {
   installPreCommitHook,
   excludeLocally,
   pendingLocalExclusion,
+  localExcludePatterns,
   findArtifacts,
   removeArtifacts,
   describeHook,
@@ -237,6 +238,11 @@ function hookPlanEntry(hook, decision) {
   };
 }
 
+const TRACKED_AGENTS_NOTE =
+  'AGENTS.md is tracked in git already, and an exclude line cannot hide a tracked file: the ' +
+  'NASO block shows in git status as a change to AGENTS.md. Commit it to share the briefing, ' +
+  'or `git checkout -- AGENTS.md` to drop it.';
+
 /**
  * Everything step 2 knows, computed once.
  *
@@ -255,7 +261,8 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     ...new Set([...savedExclusions, ...(Array.isArray(exclude) ? exclude : [])]),
   ].sort();
 
-  const pendingExclude = track ? null : await pendingLocalExclusion(cwd);
+  const localExcludes = track ? [] : await localExcludePatterns(cwd);
+  const pendingExclude = track ? null : await pendingLocalExclusion(cwd, localExcludes);
   const facts = await scanRepo(cwd, {
     exclude: excluded,
     pendingLocalExcludes: pendingExclude?.missing ?? [],
@@ -337,9 +344,15 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
           target: '.git/info/exclude',
           verb: 'Exclude',
           detail:
-            `Keeps ${LOCAL_EXCLUDE_PATTERNS.join(' and ')} out of git entirely, and only on this ` +
-            'machine. Set-up leaves no trace in the history, and no teammate gets a briefing ' +
-            'generated for someone else’s machine. Pass --track to commit both instead.',
+            localExcludes.length === 0
+              ? `Nothing to exclude: ${LOCAL_EXCLUDE_PATTERNS.join(' and ')} are tracked in git already, ` +
+                'so the changes this run makes show in git status like any other.'
+              : `Keeps ${localExcludes.join(' and ')} out of git entirely, and only on this ` +
+                'machine. Set-up leaves no trace in the history, and no teammate gets a briefing ' +
+                'generated for someone else’s machine. ' +
+                (localExcludes.includes('AGENTS.md')
+                  ? 'Pass --track to commit both instead.'
+                  : TRACKED_AGENTS_NOTE),
         },
   );
 
@@ -399,7 +412,7 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     });
   }
 
-  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock };
+  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, localExcludes };
 }
 
 /** Step 2's screen. Printed identically on every pass, so a second read is comparable. */
@@ -494,7 +507,8 @@ export async function install(cwd, { track, noHook, force, state }) {
   // section reports what .git/info/exclude holds, and a briefing generated one step before
   // those lines existed would describe the mechanism and not its contents — which is the
   // one thing the reader cannot work out alone, since nobody else has this file either.
-  const excludedLocally = track ? false : await excludeLocally(cwd);
+  const localExcludes = state.localExcludes ?? (await localExcludePatterns(cwd));
+  const excludedLocally = track ? false : await excludeLocally(cwd, localExcludes);
 
   const created = await createBriefing(cwd, { force, exclude: state.excluded });
 
@@ -564,10 +578,13 @@ export async function install(cwd, { track, noHook, force, state }) {
 
   if (!track) {
     console.log(
-      excludedLocally
-        ? `- Kept ${LOCAL_EXCLUDE_PATTERNS.join(' and ')} out of git via .git/info/exclude (this machine only, never committed).`
+      excludedLocally && localExcludes.length === 0
+        ? `- Excluded nothing: ${LOCAL_EXCLUDE_PATTERNS.join(' and ')} are tracked in git already.`
+        : excludedLocally
+        ? `- Kept ${localExcludes.join(' and ')} out of git via .git/info/exclude (this machine only, never committed).`
         : '- Could not update .git/info/exclude (no git repository here); those files are untracked.',
     );
+    if (excludedLocally && localExcludes.length > 0 && !localExcludes.includes('AGENTS.md')) console.log(`  ${TRACKED_AGENTS_NOTE}`);
   } else {
     console.log(`- Tracking ${NASO_DIR}/ and AGENTS.md in git, as --track asked. Commit both when ready.`);
   }
