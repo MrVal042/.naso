@@ -1,8 +1,10 @@
 # NASO tooling
 
-These are the scripts behind NASO. Node.js core modules only — no npm dependencies, no
-build step, no `.sh` files. Everything here runs on Node 20 or newer, on macOS, Linux and
-Windows, through the single entry point `npx naso-dev <command>`.
+These are the scripts behind NASO. No build step and no `.sh` files. Every module that is
+copied into a repository uses Node.js core modules only; `ui.mjs` and `flow.mjs` import
+`picocolors` and `@clack/prompts` for the interactive setup, so they are never copied.
+Everything here runs on Node 20 or newer, on macOS, Linux and Windows, through the single
+entry point `npx naso-dev <command>`.
 
 ## They are copied into your repository
 
