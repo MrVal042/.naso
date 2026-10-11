@@ -381,17 +381,18 @@ export async function isIgnored(targetDir, file) {
 export async function findArtifacts(targetDir) {
   const found = [];
 
-  for (const file of OWNED_FILES) {
+  // AGENTS.md is not a leftover. It is the briefing — the owner's file, or the one NASO
+  // just wrote — and the plan already says what happens to it. Listing it here put a
+  // repository's own documentation under "Leftovers to remove" and made doctor warn on
+  // every healthy install.
+  for (const file of OWNED_FILES.filter((name) => name !== 'AGENTS.md')) {
     const full = path.join(targetDir, file);
     if (await pathExists(full)) {
       found.push({
         path: full,
         label: file,
-        owned: file === 'AGENTS.md' ? 'may' : 'yes',
-        note:
-          file === 'AGENTS.md'
-            ? 'pre-existing or generated briefing — removed only when you ask'
-            : 'NASO 2.x one-time setup guide, obsolete in 3.0',
+        owned: 'yes',
+        note: 'NASO 2.x one-time setup guide, obsolete in 3.0',
       });
     }
   }

@@ -2921,3 +2921,14 @@ test('a tracked AGENTS.md is not put in .git/info/exclude, and the plan says it 
     assert.match((await git('status', '--porcelain')).stdout, /^ M AGENTS\.md$/m);
   });
 });
+
+test('an existing AGENTS.md is not listed as a leftover, by setup or by doctor', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    await put(dir, AGENTS, '# Ours\n\nHand-written.\n');
+    const res = await bare(['--yes']);
+    assert.doesNotMatch(res.stdout, /Leftovers to remove/);
+    const doctor = await script('doctor');
+    assert.match(doctor.stdout, /Leftover NASO artifacts\s+\S*\s*none/);
+  });
+});
