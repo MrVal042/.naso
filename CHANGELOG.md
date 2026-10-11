@@ -14,6 +14,14 @@
 - **Counts and the staging rule follow git.** A first `--track` run no longer subtracts an AGENTS.md that is not in the index, and whether AGENTS.md is tracked is read from the index and `git check-ignore`, not from the flag.
 - **`@a` and `@a/*` are one alias.** A `.js` file's module system comes from its folder's own package.json. Tests under `test/` are no longer called co-located.
 - `refresh` reports a briefing stamped by a newer NASO; `validate`'s full run honours `--scope` and `--strict`; failed deletes of leftovers and locks are reported instead of swallowed.
+- **A hand-written AGENTS.md no longer fails setup.** The consistency check read the whole file, so words the owner put in backticks (`web`, `sk_live`) were reported as missing paths and setup exited 1 after writing. Only the NASO block is checked now.
+- **A tracked AGENTS.md is not put in `.git/info/exclude`.** An exclude line cannot hide a tracked file, so the NASO block showed up in `git status` while setup said it was kept out of git. Only `.naso` is excluded, and the plan and the result say the block will show as a change.
+- **AGENTS.md is no longer a "leftover".** Setup listed the repository's own briefing under *Leftovers to remove*, and `doctor` warned about it on every healthy install.
+- **A test script that runs a script file makes no coverage claim.** `test:workspace: ./tooling/scripts/test-workspace.sh` was read as "the only tests are under that path", and every other test file was reported as run by nothing.
+- **Long warnings name five paths and count the rest**, on screen and in AGENTS.md. A monorepo's 155 test paths cost thousands of tokens in every session that read the briefing.
+- **A repository with no package.json is not told to use npm.** A Python project gets its dependency files (`requirements.txt`, `pyproject.toml`, `Pipfile`, `setup.py`) and lockfile tool instead, and the entry-point note no longer mentions package.json.
+- **The area package.json `"bin"` points into is the published command**, not "developer scripts", and `lib.*` is an entry point only as Rust's `lib.rs`.
+- **An area the published entry imports is named for that**, not by its folder name: NASO's own `tooling/` was "developer scripts" although it is everything the command runs. Literal relative imports only, one hop.
 
 ### Changed
 
@@ -21,6 +29,10 @@
 - **No terminal and no `--yes` exits 2**, naming `--yes` and `--dry-run`. `--dry-run` exits 0.
 - **`FORCE_COLOR` is honoured.** Precedence: `--no-color`, `NO_COLOR`, `FORCE_COLOR` or `--color`, then whether stdout is a terminal.
 - The opening screen uses one label column.
+- **The briefing reaches Claude Code.** Claude Code reads `CLAUDE.md`, not `AGENTS.md`, so a briefing with no link was never loaded. Setup writes a `CLAUDE.md` holding one `@AGENTS.md` line when there is none (excluded locally like `AGENTS.md`), appends the line to an untracked one, and leaves a tracked one alone in local mode, saying what to add; `--track` appends it. `doctor` reports the link.
+- **The commit standard is read from the repository's history.** The subject format is stated only when most of the last 50 commits follow it, with the types they use; the co-author rule only when none carries a trailer. Generic rules ("inventory first", "the body explains why") are gone, and *Final Response Expectations* is replaced by *When Done*, which names the commands this repository declares. Scope and Secrets are shorter.
+- **Setup warns about machine and runtime files tracked in git**: `.DS_Store`, `Thumbs.db`, Python bytecode, local databases. Paths only, on the setup screen, never in AGENTS.md.
+- **`briefing.mjs` is split** into `scan.mjs`, `render.mjs` and `check.mjs`; `briefing.mjs` re-exports all three, so every import of it keeps working. The test suite is split by topic, with shared fixtures in `test/helpers.mjs`; `npm test` names `test/*.test.mjs`.
 
 ## Planned for 1.2.0
 
