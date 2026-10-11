@@ -2979,3 +2979,19 @@ test('a Python repository is not told to use npm or package.json', async () => {
     assert.match(text, /Python dependencies: `requirements\.txt`/);
   });
 });
+
+test('the area holding package.json "bin" is the published command, and lib.mjs is not an entry', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await put(dir, 'package.json', JSON.stringify({ name: 'demo', bin: { demo: 'bin/demo.mjs' } }));
+    await put(dir, 'bin/demo.mjs', '');
+    await put(dir, 'tooling/lib.mjs', '');
+    await put(dir, 'tooling/work.mjs', '');
+    await git('add', '-A');
+    await git('commit', '-qm', 'cli');
+
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.match(text, /^- `bin\/` — published command \(package\.json "bin"\);/m);
+    assert.doesNotMatch(text, /entry `tooling\/lib\.mjs`/);
+  });
+});

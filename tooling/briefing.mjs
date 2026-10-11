@@ -133,8 +133,14 @@ const CODE_EXTS = new Set([
   'sql', 'graphql', 'gql', 'proto', 'sh', 'bash',
 ]);
 
-/** Basenames that mark a file as the way into an area. */
-const ENTRY_BASENAME = /^(index|main|app|server|mod|lib|__init__|__main__|entry|cli)\.[a-z]+$/i;
+/**
+ * Basenames that mark a file as the way into an area.
+ *
+ * `lib` only for Rust, where `lib.rs` is the crate root by rule. Anywhere else a file
+ * called lib is the shared helpers, and naming it the entry sent readers to the one file
+ * that explains nothing about how the area is used.
+ */
+const ENTRY_BASENAME = /^(index|main|app|server|mod|__init__|__main__|entry|cli)\.[a-z]+$|^lib\.rs$/i;
 
 /** Files that declare what an area is, in rough order of authority. */
 const MANIFESTS = [
@@ -1450,6 +1456,7 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
   const pkg = await readJSONFile(path.join(cwd, 'package.json'));
   const entries = topLevelEntries(files);
   const packageManager = await detectPackageManager(cwd, pkg);
+  const published = manifestEntryPoints(pkg).filter((point) => point.field === 'bin');
 
   for (const entry of entries) {
     entry.manifest = await manifestFor(cwd, entry);
@@ -1459,6 +1466,11 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
     // Resolved once, here, so the generator, the pre-commit append and the guide
     // can never disagree about which areas are named and which are not.
     entry.role = roleFor(entry.name) ?? (entry.manifest ? ROLE_BY_MANIFEST.get(entry.manifest) ?? null : null);
+    // The manifest outranks the name. `bin/` reads as "developer scripts", but when
+    // package.json "bin" points into it, it is what the package ships to every user.
+    if (entry.isDir && published.some((point) => point.value.startsWith(`${entry.name}/`))) {
+      entry.role = 'published command (package.json "bin")';
+    }
   }
 
   const gitInfo = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
