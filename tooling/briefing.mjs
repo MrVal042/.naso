@@ -1522,6 +1522,18 @@ export const humanize = (key) =>
 export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
+ * The first few of a list, and a count of the rest.
+ *
+ * A warning's paths land in AGENTS.md, which an agent reads at the start of every session.
+ * All 155 of a monorepo's test files cost thousands of tokens there and say nothing the
+ * count and five examples do not; `paths` on the warning still carries the full list.
+ */
+export function someOf(items, shown = 5) {
+  if (items.length <= shown) return items.join(', ');
+  return `${items.slice(0, shown).join(', ')}, and ${items.length - shown} more`;
+}
+
+/**
  * The findings the briefing and the setup screen both have to say out loud.
  *
  * Two rules keep this list honest. A warning names paths that exist — no speculative
@@ -1541,7 +1553,7 @@ export async function scanWarnings(facts) {
       headline:
         `\`${tests.command}\` runs ${tests.targets.map((t) => `\`${t}\``).join(', ')}, ` +
         `and ${plural(tests.missed.length, 'tracked test file')} ${tests.missed.length === 1 ? 'is' : 'are'} outside it`,
-      detail: tests.missed.join(', '),
+      detail: someOf(tests.missed),
       paths: tests.missed,
     });
   }
@@ -1639,7 +1651,7 @@ function trackedSecretWarnings(facts) {
       where: 'setup',
       headline: `${plural(secrets.length, 'credential-shaped file')} ${secrets.length === 1 ? 'is' : 'are'} tracked in git`,
       detail:
-        `${secrets.join(', ')} — path only, contents not read.` +
+        `${someOf(secrets)} — path only, contents not read.` +
         (alsoIgnored
           ? ` ${ignored.join(', ')} ${ignored.length === 1 ? 'is' : 'are'} in .gitignore, so ${secrets.length === 1 ? 'this file is' : 'these files are'} tracked from before the rule or added with -f, and will not appear in git status.`
           : ' Nothing in .gitignore covers them, so a new one will be added by accident.'),

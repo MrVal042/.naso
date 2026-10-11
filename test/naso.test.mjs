@@ -2943,3 +2943,22 @@ test('a test script that runs a script file makes no coverage claim', () => {
   }
   assert.deepEqual(parseTestTargets('node --test test/a.test.mjs').targets, ['test/a.test.mjs']);
 });
+
+test('a long warning names a few paths and counts the rest, in AGENTS.md and on screen', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await put(dir, 'package.json', JSON.stringify({ name: 'demo', scripts: { test: 'node --test test/' } }));
+    await put(dir, 'test/a.test.mjs', '');
+    for (let i = 0; i < 12; i += 1) await put(dir, `e2e/case${String(i).padStart(2, '0')}.test.mjs`, '');
+    await git('add', '-A');
+    await git('commit', '-qm', 'tests');
+
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const text = await read(dir, AGENTS);
+    for (const out of [text, res.stdout]) {
+      assert.match(out, /12 tracked test files are outside it/);
+      assert.match(out, /and 7 more/);
+      assert.doesNotMatch(out, /case11\.test\.mjs/);
+    }
+  });
+});
