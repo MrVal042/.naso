@@ -3044,3 +3044,18 @@ test('a CLAUDE.md that already names AGENTS.md is left alone', async () => {
     assert.match((await script('doctor')).stdout, /Claude Code link\s+\S*\s*CLAUDE\.md loads AGENTS\.md/);
   });
 });
+
+test('an area the published command imports is named as what it loads, not by its folder name', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await put(dir, 'package.json', JSON.stringify({ name: 'demo', bin: { demo: 'bin/demo.mjs' } }));
+    await put(dir, 'bin/demo.mjs', "import { go } from '../tooling/core.mjs';\ngo();\n");
+    await put(dir, 'tooling/core.mjs', 'export const go = () => {};\n');
+    await put(dir, 'scripts/release.mjs', '');
+    await git('add', '-A');
+    await git('commit', '-qm', 'cli');
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.match(text, /^- `tooling\/` — code the published command loads \(`bin\/demo\.mjs` imports it\);/m);
+    assert.match(text, /^- `scripts\/` — developer scripts;/m);
+  });
+});

@@ -839,6 +839,28 @@ function entryPointOf(entry) {
   return candidates[0] ?? null;
 }
 
+/** Relative module specifiers in a file: static and literal dynamic imports, and require. */
+const RELATIVE_SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)(['"])(\.{1,2}\/[^'"]+)\1/gm;
+
+/**
+ * The top-level areas one file imports from, one hop deep.
+ *
+ * Literal specifiers only. A path built at runtime is not read, so an area loaded that way
+ * keeps its name-based role — less precise, but never a claim the code does not make.
+ */
+export async function importedAreas(cwd, file) {
+  const text = await readFile(path.join(cwd, file), 'utf8').catch(() => null);
+  if (text === null) return [];
+  const areas = new Set();
+  for (const match of text.matchAll(RELATIVE_SPECIFIER)) {
+    const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), match[2]));
+    if (target.startsWith('..')) continue;
+    const [area, ...rest] = target.split('/');
+    if (rest.length > 0) areas.add(area);
+  }
+  return [...areas].sort();
+}
+
 /** Manifest fields that name a real entry point: main, module, bin, exports. */
 function manifestEntryPoints(pkg) {
   if (!pkg) return [];
@@ -1470,6 +1492,19 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
     // package.json "bin" points into it, it is what the package ships to every user.
     if (entry.isDir && published.some((point) => point.value.startsWith(`${entry.name}/`))) {
       entry.role = 'published command (package.json "bin")';
+    }
+  }
+
+  // A folder name is a guess; an import from the published entry is a fact. NASO's own
+  // `tooling/` read as "developer scripts" although it is everything the command runs.
+  // Only a generic or missing role is replaced: "application source" was already right.
+  for (const point of manifestEntryPoints(pkg)) {
+    for (const area of await importedAreas(cwd, point.value)) {
+      const entry = entries.find((candidate) => candidate.isDir && candidate.name === area);
+      if (!entry || (entry.role && entry.role !== 'developer scripts')) continue;
+      if (point.value.startsWith(`${area}/`)) continue;
+      const what = point.field === 'bin' ? 'the published command' : 'the package entry';
+      entry.role = `code ${what} loads (\`${point.value}\` imports it)`;
     }
   }
 
