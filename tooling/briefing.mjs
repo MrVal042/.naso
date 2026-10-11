@@ -1660,6 +1660,25 @@ function trackedSecretWarnings(facts) {
   ];
 }
 
+/** Root files that declare a Python project's dependencies, and the lockfile that names its tool. */
+const PYTHON_MANIFESTS = ['pyproject.toml', 'requirements.txt', 'Pipfile', 'setup.py'];
+const PYTHON_LOCKS = [
+  ['uv.lock', 'uv'],
+  ['poetry.lock', 'Poetry'],
+  ['Pipfile.lock', 'Pipenv'],
+];
+
+/** The Python dependency line, from root files that exist; null when there are none. */
+function pythonDependencies(files) {
+  const declared = PYTHON_MANIFESTS.filter((name) => files.includes(name));
+  if (declared.length === 0) return null;
+  const lock = PYTHON_LOCKS.find(([name]) => files.includes(name));
+  return (
+    `Python dependencies: ${declared.map((name) => `\`${name}\``).join(', ')}` +
+    (lock ? `, locked by \`${lock[0]}\` (${lock[1]}).` : '.')
+  );
+}
+
 /** The tests line, naming the runner and what the script actually runs. */
 function renderTests(facts) {
   const { conventions, tests } = facts;
@@ -1757,7 +1776,7 @@ export function renderRootFiles(entries, facts = null) {
   return (
     `Root files, none of which is an area of its own: ${names}.` +
     (withEntries
-      ? `\npackage.json declares no entry point; ${withEntries} ${roots.filter((e) => e.entryPoint).length === 1 ? 'is' + ' named for one' : 'are named like one'}, which is a filename guess.`
+      ? `\n${facts?.pkg ? 'package.json declares no entry point' : 'No manifest declares an entry point'}; ${withEntries} ${roots.filter((e) => e.entryPoint).length === 1 ? 'is' + ' named for one' : 'are named like one'}, which is a filename guess.`
       : '')
   );
 }
@@ -1855,7 +1874,9 @@ function renderConventions(facts) {
     );
   }
 
-  if (packageManager) {
+  // A repository with no package.json has no Node package manager, and naming npm there
+  // ("from no package.json, no lockfile") told a Python project every command used npm.
+  if (packageManager && packageManager.source !== 'none') {
     // Said once, here, because every command further down depends on it and a reader who
     // pastes `npm run verify` into a pnpm repository gets a lockfile nobody asked for.
     lines.push(
@@ -1863,6 +1884,9 @@ function renderConventions(facts) {
         'Every command in this file uses it.',
     );
   }
+
+  const python = pythonDependencies(facts.files);
+  if (python) lines.push(python);
 
   if (conventions.moduleSystem) lines.push(`Modules: ${conventions.moduleSystem}.`);
 

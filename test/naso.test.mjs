@@ -2962,3 +2962,20 @@ test('a long warning names a few paths and counts the rest, in AGENTS.md and on 
     }
   });
 });
+
+test('a Python repository is not told to use npm or package.json', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await put(dir, 'app.py', 'print(1)\n');
+    await put(dir, 'requirements.txt', 'flask\n');
+    await put(dir, 'templates/index.html', '<p></p>\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'py');
+
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const text = await read(dir, AGENTS);
+    assert.doesNotMatch(text, /npm/);
+    assert.doesNotMatch(text, /package\.json/);
+    assert.match(text, /Python dependencies: `requirements\.txt`/);
+  });
+});
