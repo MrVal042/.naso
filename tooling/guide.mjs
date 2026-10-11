@@ -56,8 +56,8 @@ const SECTION_NOTES = [
   ['Scope', 'the prefixes to claim before editing, so the hook can check the diff'],
   ['Boundaries', 'the lines that are easy to cross without noticing'],
   ['Secrets', 'never print a credential, even accidentally'],
-  ['Commit Standard', 'how a change is expected to be shaped and described'],
-  ['Final Response Expectations', 'what a finished answer has to contain'],
+  ['Commit Standard', 'how commits here are written, read from the history the repository already has'],
+  ['When Done', 'the commands to report on before calling the work finished'],
 ];
 
 /** Pull the sections out of the briefing, keeping only the ones actually present. */

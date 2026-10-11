@@ -850,7 +850,7 @@ test('an excluded AGENTS.md is local-only, with no staging rule to follow', asyn
     const text = await read(dir, AGENTS);
     assert.match(
       text,
-      /8\. This file is not in the index and never will be: it is local to this machine/,
+      /- This file is not in the index and never will be: it is local to this machine/,
     );
     assert.match(text, /excluded through \.git\/info\/exclude so setup leaves no trace/);
     assert.match(text, /Do\n\s+not stage it, do not `git add -f` it/);
@@ -874,7 +874,7 @@ test('a tracked AGENTS.md keeps the staging rule, because it is reviewable', asy
     const text = await read(dir, AGENTS);
     assert.match(
       text,
-      /8\. When a commit adds a genuinely new area, the hook appends one line for it/,
+      /- When a commit adds a genuinely new area, the hook appends one line for it/,
     );
     assert.match(text, /stages it with the commit\. This file is tracked/);
     assert.ok(!/never will be/.test(text), 'a tracked file is not local-only');
@@ -3057,5 +3057,42 @@ test('an area the published command imports is named as what it loads, not by it
     const text = await read(dir, AGENTS);
     assert.match(text, /^- `tooling\/` — code the published command loads \(`bin\/demo\.mjs` imports it\);/m);
     assert.match(text, /^- `scripts\/` — developer scripts;/m);
+  });
+});
+
+test('the commit standard is read from history: conventional subjects are stated, freeform ones are not invented', async () => {
+  const commitAll = async (git, dir, subjects) => {
+    for (const [i, subject] of subjects.entries()) {
+      await put(dir, `src/f${i}.ts`, `export const v${i} = ${i};\n`);
+      await git('add', '-A');
+      await git('commit', '-qm', subject);
+    }
+  };
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await commitAll(git, dir, ['feat: a', 'fix(api): b', 'fix: c', 'docs: d', 'chore: e', 'test: f']);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.match(text, /`type\(scope\): summary`/);
+    assert.match(text, /fix, chore, docs, feat, test/);
+    assert.match(text, /No commit in the last \d+ carries a `Co-Authored-By:` trailer/);
+  });
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await commitAll(git, dir, ['Added login', 'wip', 'More stuff', 'Fix the thing', 'Update readme', 'tweaks']);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.doesNotMatch(text, /type\(scope\)/);
+  });
+});
+
+test('the briefing carries no rules it cannot ground in the repository', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.doesNotMatch(text, /Inventory first/);
+    assert.doesNotMatch(text, /## Final Response Expectations/);
+    assert.match(text, /`npm run lint`/, 'the closing note names the command this repository declares');
   });
 });

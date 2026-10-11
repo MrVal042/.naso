@@ -1529,6 +1529,7 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
   const conventions = await detectConventions(cwd, files, pkg);
 
   return {
+    history: await readCommitHistory(cwd),
     cwd,
     files,
     fileSource: source,
@@ -1705,6 +1706,56 @@ function trackedSecretWarnings(facts) {
       paths: secrets,
     },
   ];
+}
+
+/** How many commits the commit standard is read from. */
+const HISTORY_DEPTH = 50;
+
+/** Fewer commits than this is not a habit, and the standard says nothing about style. */
+const HISTORY_MINIMUM = 5;
+
+const CONVENTIONAL_SUBJECT = /^([a-z]+)(?:\([^)]+\))?!?: \S/;
+
+/**
+ * What the repository's own recent history says about how commits are written.
+ *
+ * The old Commit Standard handed every repository the same seven rules, conventional
+ * subjects included, whatever its history looked like. Here the subject format is stated
+ * only when most recent commits already follow it, and the co-author rule only when no
+ * recent commit carries a trailer — a repository that does is not told to stop.
+ */
+export async function readCommitHistory(cwd) {
+  const res = await run(
+    'git',
+    ['log', `-${HISTORY_DEPTH}`, '--no-merges', '--format=%s%x1f%(trailers:key=Co-authored-by,valueonly)%x1e'],
+    { cwd },
+  );
+  if (!res.ok) return { count: 0, conventional: 0, types: [], coAuthored: 0 };
+  const commits = res.stdout
+    .split('\x1e')
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const [subject, trailers = ''] = record.split('\x1f');
+      return { subject, coAuthored: trailers.trim().length > 0 };
+    });
+
+  const counts = new Map();
+  let conventional = 0;
+  for (const { subject } of commits) {
+    const match = CONVENTIONAL_SUBJECT.exec(subject);
+    if (!match) continue;
+    conventional += 1;
+    counts.set(match[1], (counts.get(match[1]) ?? 0) + 1);
+  }
+  const types = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([type]) => type);
+
+  return {
+    count: commits.length,
+    conventional,
+    types,
+    coAuthored: commits.filter((commit) => commit.coAuthored).length,
+  };
 }
 
 /** Root files that declare a Python project's dependencies, and the lockfile that names its tool. */
@@ -2225,6 +2276,46 @@ async function renderBoundaries(facts) {
 }
 
 /**
+ * The commit rules this repository's history and NASO's hook can stand behind.
+ *
+ * Only two kinds of line: what the last commits show, and what the hook enforces. A
+ * generic rule ("inventory first", "the body explains why") costs every session the
+ * same tokens and tells an agent nothing about this repository.
+ */
+function renderCommitStandard(facts) {
+  const history = facts.history ?? { count: 0 };
+  const lines = [];
+
+  if (history.count >= HISTORY_MINIMUM && history.conventional / history.count >= 0.6) {
+    lines.push(
+      `- Subjects follow \`type(scope): summary\` in ${history.conventional} of the last ` +
+        `${history.count} commits. Types used: ${history.types.join(', ')}.`,
+    );
+  }
+  if (history.count >= HISTORY_MINIMUM && history.coAuthored === 0) {
+    lines.push(
+      `- No commit in the last ${history.count} carries a \`Co-Authored-By:\` trailer; do not ` +
+        'add one for the assisting agent or tool.',
+    );
+  }
+  lines.push('- Do not bypass the pre-commit hook. Fix what it reports and commit again.');
+  lines.push(`- ${commitStandardRule8(facts).replace(/^8\. /, '').replace(/\n {3}/g, '\n  ')}`);
+  return lines;
+}
+
+/** The closing note, naming the commands this repository declares; null when it names none. */
+function renderWhenDone(facts) {
+  const commands = facts.gate?.command
+    ? [facts.gate.command]
+    : facts.validation.map((command) => command.command);
+  if (commands.length === 0) return null;
+  return (
+    `Say which of ${commands.map((command) => `\`${command}\``).join(', ')} ran and what it ` +
+    'printed, which files changed, and what is left uncommitted.'
+  );
+}
+
+/**
  * Rule 8, which depends on whether this file is in the index.
  *
  * The old wording told every reader to stage the line the hook appends, in a repository
@@ -2420,48 +2511,26 @@ export async function renderBriefing(facts, { version, now }) {
 
   parts.push(`## Scope
 
-Name the path prefixes that own a task **before** editing, so the pre-commit
-hook can check the diff against what you claimed:
+Before editing, name the path prefixes the task owns; the pre-commit hook reports
+staged paths outside them, and refuses them with \`NASO_SCOPE_STRICT=1\`:
 
 \`\`\`bash
 export NASO_SCOPE=path/to/area,other/area
-\`\`\`
-
-Paths outside those prefixes are reported. Set \`NASO_SCOPE_STRICT=1\` to refuse
-the commit instead of warning. Splitting unrelated work into its own commit is
-usually the right answer, and this is how you find out when you have not.`);
+\`\`\``);
 
   const boundaries = await renderBoundaries(facts);
   if (boundaries) parts.push(`## Boundaries\n\n${boundaries.join('\n')}`);
 
   parts.push(`## Secrets
 
-Never print secret values from \`.env*\`, deployment secrets, service-role keys,
-webhook secrets, tokens, or credentials. If one is already committed, stop and
-report the path — never paste the value, not into a chat, not into a log.`);
+The pre-commit hook refuses staged lines shaped like keys and tokens, and reports
+the path and rule, never the value. Do the same: if a secret is already committed,
+report its path and stop.`);
 
-  parts.push(`## Commit Standard
+  parts.push(`## Commit Standard\n\n${renderCommitStandard(facts).join('\n')}`);
 
-1. Inventory first. \`git status\`, then read the full diff before staging.
-2. Stage explicit paths. Never stage a whole tree in a mixed working directory.
-3. Split into logically scoped commits by concern; each should revert alone.
-4. Conventional style: \`type(scope): summary\`, type from
-   fix / feat / test / chore / docs / refactor, summary under ~70 characters.
-5. The body explains *why*, not which lines moved. For a bug fix, name the root
-   cause and the evidence.
-6. No \`Co-Authored-By:\` trailer for the assisting agent or tool.
-7. Never bypass the pre-commit hook, never amend a pushed commit, never
-   force-push. Fix the finding and make a new commit.
-${commitStandardRule8(facts)}`);
-
-  parts.push(`## Final Response Expectations
-
-State, when the work is done:
-
-- what changed, by file
-- which validation command ran, and its result
-- anything left uncommitted, and why
-- remaining risks, gaps, or assumptions not verified`);
+  const done = renderWhenDone(facts);
+  if (done) parts.push(`## When Done\n\n${done}`);
 
   parts.push(`${NASO_END}`);
 
