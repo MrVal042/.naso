@@ -31,7 +31,10 @@ every commit with a message nobody can act on.
 | File             | What it does                                                                                                                                                     |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bin` entry      | `bin/naso-dev.mjs` dispatches a command name to one of the modules below. It is the only thing npm puts on your `PATH`.                                          |
-| `briefing.mjs`   | Scans the repository, renders `AGENTS.md` into its `naso:start` / `naso:end` block, and checks that the block still matches disk.                                 |
+| `briefing.mjs`   | The `briefing` command: creates, re-stamps and checks the `naso:start` / `naso:end` block. Re-exports the three below, so it is the one import for every other module. |
+| `scan.mjs`       | Reads the repository into facts: areas, entry points and what they import, conventions, tests, the gate, commit history. Writes nothing.                             |
+| `render.mjs`     | Turns those facts into the briefing block. Every sentence is a count, a config value or a path the scan read.                                                        |
+| `check.mjs`      | Checks the NASO block against disk: every claimed path exists, every area is named, no placeholder remains. Text outside the markers is the owner's and is not checked. |
 | `setup.mjs`      | The two-pass plan-and-confirm flow. Writes the block, vendors this directory, installs the hook, verifies.                                                           |
 | `refresh.mjs`    | Re-vendors, re-stamps, reinstalls the hook. Never rewrites briefing prose or `.naso/config.json`.                                                                    |
 | `validate.mjs`   | The gate. `--staged` is what the hook runs; the default is the whole-project CI run.                                                                                |

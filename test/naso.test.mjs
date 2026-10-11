@@ -2494,7 +2494,7 @@ test('the plan lists every file it writes, with exact line counts, before the on
     const planned = plannedWrites(beforeQuestion);
     const tooling = [...planned.keys()].filter((p) => p.startsWith('.naso/tooling/'));
     const vendored = (await readdir(path.join(dir, '.naso', 'tooling'))).map((f) => `.naso/tooling/${f}`);
-    assert.equal(tooling.length, 13, `13 tooling files must be listed, got:\n${tooling.join('\n')}`);
+    assert.equal(tooling.length, 16, `16 tooling files must be listed, got:\n${tooling.join('\n')}`);
     assert.deepEqual(tooling.sort(), vendored.sort(), 'the list must be exactly what is copied');
 
     for (const [file, row] of planned) {
