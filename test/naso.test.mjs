@@ -2932,3 +2932,14 @@ test('an existing AGENTS.md is not listed as a leftover, by setup or by doctor',
     assert.match(doctor.stdout, /Leftover NASO artifacts\s+\S*\s*none/);
   });
 });
+
+test('a test script that runs a script file makes no coverage claim', () => {
+  for (const body of [
+    './tooling/scripts/test-workspace.sh',
+    'bash scripts/test.sh --ci',
+    'node scripts/run-tests.mjs',
+  ]) {
+    assert.equal(parseTestTargets(body).openEnded, true, body);
+  }
+  assert.deepEqual(parseTestTargets('node --test test/a.test.mjs').targets, ['test/a.test.mjs']);
+});

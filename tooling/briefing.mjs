@@ -681,6 +681,9 @@ export async function detectAliases(cwd, tsconfig) {
 const RUNNER_WORD =
   /^(?:node|npx|jest|vitest|mocha|ava|tsx|ts-node|playwright|pnpm|npm|yarn|bun|bunx|run|watch|t|ci|all|changed|related|coverage|silent|bail|passWithNoTests|ui|list|install|config|help|version|register|experimental-vm-modules)$/;
 
+/** A file a test script executes rather than names as input. */
+const SCRIPT_FILE = /\.(?:sh|bash|zsh|ps1|[cm]?js|ts|py)$/;
+
 /** A path-ish token: contains a separator, a glob, or a test file extension. */
 const PATH_LIKE = /[/\\*]|\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
@@ -712,6 +715,14 @@ export function parseTestTargets(scriptBody) {
     // src` targets src/, but `echo "no tests here"` targets nothing.
     return PATH_LIKE.test(token) || runnerNamed;
   });
+
+  // A script file in the body is a program the script runs, not a set of tests. What it
+  // goes on to run is inside it, out of sight, so its own path is no coverage claim: a
+  // monorepo whose `test:workspace` was `./tooling/scripts/test-workspace.sh` was told
+  // 155 test files were run by nothing.
+  if (targets.some((token) => SCRIPT_FILE.test(token) && !TEST_FILE.test(token) && !token.includes('*'))) {
+    return { targets: [], openEnded: true };
+  }
 
   return { targets, openEnded: targets.length === 0 };
 }
