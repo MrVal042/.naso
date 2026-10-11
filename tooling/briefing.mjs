@@ -2465,7 +2465,13 @@ export async function checkBriefing(cwd) {
   }
 
   const briefing = await readFile(agentsPath, 'utf8');
-  const tokens = extractPathTokens(briefing);
+  // Only the NASO block is NASO's claim. Text around it is the owner's, and a hand-written
+  // rule like "scope commits to `web` or `mobile`" names areas, not files — checking it as
+  // paths failed a fresh setup on every repository whose own AGENTS.md used backticks.
+  const start = briefing.indexOf(NASO_START);
+  const end = briefing.indexOf(NASO_END);
+  const claimed = start !== -1 && end > start ? briefing.slice(start, end) : briefing;
+  const tokens = extractPathTokens(claimed);
   const entries = await listTopLevelEntries(cwd);
 
   const missing = [];
@@ -2473,11 +2479,11 @@ export async function checkBriefing(cwd) {
     if (!(await pathExists(path.join(cwd, token)))) missing.push(token);
   }
 
-  const uncovered = findUncovered(entries, briefing);
+  const uncovered = findUncovered(entries, claimed);
 
   const markerCounts = MARKERS.map((marker) => ({
     marker,
-    count: (briefing.match(new RegExp(escapeRegExp(marker), 'g')) ?? []).length,
+    count: (claimed.match(new RegExp(escapeRegExp(marker), 'g')) ?? []).length,
   }));
   const unfilled = markerCounts.filter((m) => m.count > 0);
 

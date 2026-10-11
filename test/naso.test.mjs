@@ -2878,3 +2878,28 @@ test('deps.interactive is called, so an injected "no terminal" really means no t
     assert.equal(await treeHash(dir), before);
   });
 });
+
+test('words in backticks in a hand-written AGENTS.md are not checked as paths', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    await put(dir, AGENTS, '# Ours\n\nScope a commit to one area (`web`, `mobile`, `sdk`).\nNever commit `sk_live` keys.\n');
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.doesNotMatch(res.stdout, /MISSING/);
+    const check = await script('briefing');
+    assert.equal(check.code, 0, check.stdout + check.stderr);
+  });
+});
+
+test('the NASO block is still checked when it sits below hand-written text', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    await put(dir, AGENTS, '# Ours\n\nHand-written.\n');
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    await put(dir, AGENTS, text.replace(NASO_END, `- \`gone/nowhere.ts\` — claimed.\n\n${NASO_END}`));
+    const check = await script('briefing');
+    assert.notEqual(check.code, 0);
+    assert.match(check.stdout, /MISSING[\s\S]*gone\/nowhere\.ts/);
+  });
+});
