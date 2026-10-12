@@ -25,9 +25,8 @@
 //   and `npx naso-dev setup --yes` cannot drift into producing two different
 //   AGENTS.md files.
 //
-// Not vendored: this module imports a prompt library and picocolors, and the
-// vendored toolset has to run with no node_modules anywhere near it. See
-// vendorSources().
+// Not vendored: it is the interactive setup, and the pre-commit hook never asks
+// anything. See vendorSources().
 
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
@@ -37,7 +36,7 @@ import { describeHook } from './install.mjs';
 import { NASO_DIR, isVendored, vendoredVersion } from './vendor.mjs';
 import { inspect, install, displayPlan, HOOK_ACTIONS } from './setup.mjs';
 import { colorEnabled, createStyle } from './ui.mjs';
-import { confirm, select, isCancel, note, outro } from '@clack/prompts';
+import { confirm, select, isCancel, note, outro } from './prompt.mjs';
 
 const AGENTS_FILE = 'AGENTS.md';
 
@@ -204,11 +203,12 @@ function reportExistingState(state, cwd, style) {
  * block question only when there is a block.
  */
 async function ask(style, options, context, io = {}) {
-  note('Answer with Enter to accept the default. Nothing is written until you accept the plan.', style.bold('Questions'), io);
+  note('Answer with Enter to accept the default. Nothing is written until you accept the plan.', style.bold('Questions'), { style, ...io });
 
   const track = await confirm({
     message: 'Commit AGENTS.md and .naso/ to git? (No keeps them local to this machine.)',
     initialValue: options.track,
+    style,
     ...io,
   });
   if (isCancel(track)) return null;
@@ -225,6 +225,7 @@ async function ask(style, options, context, io = {}) {
         { value: 'skip', label: 'Skip', hint: 'leave it exactly as it is; no NASO hook' },
         { value: 'abort', label: 'Abort', hint: 'write nothing at all' },
       ],
+      style,
       ...io,
     });
     if (isCancel(choice)) return null;
@@ -238,12 +239,13 @@ async function ask(style, options, context, io = {}) {
         { value: 'skip', label: 'Skip', hint: 'no NASO hook; run the gate by hand' },
         { value: 'abort', label: 'Abort', hint: 'write nothing at all' },
       ],
+      style,
       ...io,
     });
     if (isCancel(choice)) return null;
     hookAction = choice;
   } else if (!noHook && hook.state !== 'not-repo') {
-    const install = await confirm({ message: 'Install the pre-commit gate?', initialValue: true, ...io });
+    const install = await confirm({ message: 'Install the pre-commit gate?', initialValue: true, style, ...io });
     if (isCancel(install)) return null;
     noHook = !install;
   }
@@ -253,6 +255,7 @@ async function ask(style, options, context, io = {}) {
     const replace = await confirm({
       message: 'AGENTS.md already has a NASO block. Replace it with one generated from the repository as it is now?',
       initialValue: false,
+      style,
       ...io,
     });
     if (isCancel(replace)) return null;
@@ -263,13 +266,13 @@ async function ask(style, options, context, io = {}) {
 }
 
 /**
- * The questions this flow asks, drawn with @clack/prompts.
+ * The questions this flow asks, drawn with ./prompt.mjs.
  *
  * Every function resolves to an answer, or to null when the person cancelled (Ctrl+C or
  * Escape). `io` is the input and output streams, so the real prompts can be driven by a
- * test without a pty; in a terminal it is empty and clack uses stdin and stdout.
+ * test without a pty; in a terminal it is empty and the prompts use stdin and stdout.
  */
-export function clackPrompts(io = {}) {
+export function terminalPrompts(io = {}) {
   return {
     questions: (style, options, context) => ask(style, options, context, io),
 
@@ -286,6 +289,7 @@ export function clackPrompts(io = {}) {
           },
           { value: 'exclude', label: 'Exclude an area', hint: 'keep one out of the briefing, then show the plan again' },
         ],
+        style,
         ...io,
       });
       return isCancel(choice) ? null : choice;
@@ -295,12 +299,13 @@ export function clackPrompts(io = {}) {
       const choice = await select({
         message: 'Which area should the briefing leave out?',
         options: areas.map((area) => ({ value: area.name, label: `${area.name}/`, hint: `${area.files.length} files` })),
+        style,
         ...io,
       });
       return isCancel(choice) ? null : choice;
     },
 
-    async afterRejections() {
+    async afterRejections(style) {
       const choice = await select({
         message: 'Rejected twice. How would you like to finish?',
         initialValue: 'exit',
@@ -308,6 +313,7 @@ export function clackPrompts(io = {}) {
           { value: 'exit', label: 'Exit', hint: 'leave this repository exactly as it is' },
           { value: 'support', label: 'Contact support', hint: 'print a pre-filled report to send' },
         ],
+        style,
         ...io,
       });
       return isCancel(choice) ? null : choice;
@@ -329,16 +335,16 @@ function resolveInteractive(deps) {
 /**
  * The flow, with its question layer injectable.
  *
- * `deps.prompts` replaces the clack prompts (see `clackPrompts`), so what the flow *does*
+ * `deps.prompts` replaces the terminal prompts (see `terminalPrompts`), so what the flow *does*
  * with an answer — and with a rejection, an exclusion, a cancellation — is tested without
- * a pty. The clack adapter itself is tested by driving it through streams.
+ * a pty. The prompt adapter itself is tested by driving it through streams.
  *
  * @param {object} [deps]
- * @param {ReturnType<typeof clackPrompts>} [deps.prompts]
+ * @param {ReturnType<typeof terminalPrompts>} [deps.prompts]
  * @param {boolean | (() => boolean)} [deps.interactive]
  */
 export async function main(argv = process.argv.slice(2), deps = {}) {
-  const prompts = deps.prompts ?? clackPrompts();
+  const prompts = deps.prompts ?? terminalPrompts();
   const { flags, values, lists, positional } = parseArgs(argv);
   const style = createStyle(colorEnabled(flags));
 

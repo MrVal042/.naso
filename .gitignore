@@ -6,3 +6,5 @@ node_modules/
 
 # A vendored NASO install, if this repository is ever set up with itself.
 .naso/
+# No dependencies, so nothing to lock. npm writes one on `npm install` anyway.
+package-lock.json

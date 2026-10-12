@@ -85,9 +85,10 @@ test('nothing vendored imports a package, because the hook has no node_modules',
     const vendored = await filesIn(path.join(dir, '.naso', 'tooling'), ['.mjs']);
     const names = vendored.map((file) => path.basename(file));
 
-    // The two modules that carry dependencies are the ones that must not be here.
-    assert.ok(!names.includes('ui.mjs'), 'ui.mjs imports picocolors and must not be vendored');
-    assert.ok(!names.includes('flow.mjs'), 'flow.mjs imports @clack/prompts and must not be vendored');
+    // The interactive setup is not the hook's business.
+    for (const name of ['ui.mjs', 'prompt.mjs', 'flow.mjs']) {
+      assert.ok(!names.includes(name), `${name} drives the interactive setup and must not be vendored`);
+    }
 
     // The general rule, so the next module somebody adds is caught here rather
     // than by a pre-commit hook failing on somebody else's machine.

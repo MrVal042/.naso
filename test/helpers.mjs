@@ -393,16 +393,16 @@ export const sectionOf = (text, heading) => {
   return text.slice(start, end === -1 ? undefined : end);
 };
 
-/** Answer the real clack questions through streams: one key sequence per prompt. */
+/** Answer the real questions through streams: one key sequence per prompt. */
 export async function answerRealQuestions(context, keys) {
   const { PassThrough } = await import('node:stream');
-  const { clackPrompts } = await import(pathToFileURL(path.join(TOOL_DIR, 'flow.mjs')).href);
+  const { terminalPrompts } = await import(pathToFileURL(path.join(TOOL_DIR, 'flow.mjs')).href);
   const input = new PassThrough();
   const output = new PassThrough();
   let frames = '';
   output.on('data', (chunk) => (frames += chunk));
   const options = { track: false, noHook: false, force: false, hookAction: null };
-  const answer = clackPrompts({ input, output }).questions(plainStyleForTest, options, context);
+  const answer = terminalPrompts({ input, output }).questions(plainStyleForTest, options, context);
   for (const key of keys) {
     await new Promise((resolve) => setTimeout(resolve, 40));
     input.write(key);

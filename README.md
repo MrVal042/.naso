@@ -1,6 +1,6 @@
 # NASO — Agent Briefing System
 
-NASO (Never Assume, Scan Once) generates a truthful `AGENTS.md` from your repository and keeps it consistent with what actually exists. One command sets it up: it reads the repository, shows you the plan, asks, and then writes. It copies a small toolset in, installs a minimal pre-commit gate, and gives five tools: `briefing`, `refresh`, `guide`, `validate`, and `doctor`.
+NASO (Never Assume, Scan Once) generates a truthful `AGENTS.md` from your repository and keeps it consistent with what actually exists. One command sets it up: it reads the repository, shows you the plan, asks, and then writes. It copies a small toolset in, installs a minimal pre-commit gate, and gives five tools: `briefing`, `refresh`, `guide`, `validate`, and `doctor`. It has no dependencies: `npm i naso-dev` installs naso-dev and nothing else.
 
 The npm package is `naso-dev`, so every command below is `npx naso-dev <command>`.
 
@@ -29,6 +29,8 @@ It reads the repository and prints what it found, asks what the plan depends on 
 - **Exclude an area** keeps one top-level directory out of the briefing and shows the plan again.
 - **An existing `AGENTS.md` is never replaced.** The NASO block goes between `<!-- naso:start -->` and `<!-- naso:end -->`; everything outside those markers stays byte-identical.
 - **Nothing is written before the last answer.** Not the hook, not the config, not a half-written briefing.
+
+Arrow keys (or j/k) move between answers, Enter picks one, and y or n answers a yes/no question at once. Ctrl+C or Escape cancels at any question, and nothing is written.
 
 Add `--why` for the long-form rationale before you decide.
 
@@ -79,7 +81,7 @@ All commands accept `--help`. `init` and `setup` are retired but still run; both
 - `--no-hook` — do not install the pre-commit hook.
 - `--hook-action <install|chain|skip|abort>` — what to do when `.git/hooks/pre-commit` already exists and NASO did not write it, or when `core.hooksPath` points at a directory git tracks (husky's `.husky/`). `chain` moves the existing hook, unchanged, to `pre-commit.pre-naso` and NASO's hook runs it first. The default is `skip`: NASO never overwrites a hook it did not write, and never writes into a tracked hooks directory unless you choose to. In a terminal this is asked as a question instead.
 - `--exclude <prefix>` — keep an area out of the briefing. Repeatable. Saved to `.naso/config.json`.
-- `--yes` — accept without prompting (CI and scripts).
+- `--yes`, `-y` — accept without prompting (CI and scripts).
 - `--dry-run` — print the plan and stop. Writes nothing.
 - `--force` — replace an existing `naso:start` / `naso:end` block. On a repository NASO already set up, `npx naso-dev --force` re-runs setup and regenerates the block; without it the run only reports what is installed. It never touches anything outside the markers.
 - `--why` — print the long-form rationale for adopting NASO.
@@ -111,11 +113,10 @@ Issues and pull requests are welcome. For anything larger than a small fix, open
 
 ```bash
 git clone https://github.com/MrVal042/.naso.git && cd .naso
-npm ci
 npm test
 ```
 
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Every behavior change needs a test that fails before the fix.
+There is nothing to install first: NASO has no dependencies, and the tests run on Node's built-in test runner. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Every behavior change needs a test that fails before the fix.
 
 ## Contributors
 

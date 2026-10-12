@@ -4,16 +4,14 @@
 // One file, one job: decide whether this screen may contain colour, and if so
 // return functions that wrap text in it. Every other module writes plain strings
 // and lets this one style them, which is what keeps colour out of the modules
-// that get vendored into a repository and run by a pre-commit hook — a hook that
-// depends on picocolors cannot run on a machine that never ran npm install.
+// that get vendored into a repository and run by a pre-commit hook. The codes are
+// plain ANSI SGR sequences, so colour costs no dependency.
 //
 // The rule that matters: `style()` never throws and never changes the text it is
 // given. Every function is total, so a broken colour decision costs colour and
 // nothing else.
 //
 // Not vendored. See vendorSources().
-
-import pc from 'picocolors';
 
 /**
  * Whether this process may colour its output. First match wins:
@@ -37,11 +35,34 @@ export function colorEnabled(flags = new Set(), stream = process.stdout, env = p
   return Boolean(stream?.isTTY);
 }
 
-/** The style set: identity functions when colour is off, picocolors when it is on. */
+/** An SGR open code and the code that closes it, which is not always a full reset. */
+const CODES = {
+  bold: [1, 22],
+  dim: [2, 22],
+  red: [31, 39],
+  green: [32, 39],
+  yellow: [33, 39],
+  blue: [34, 39],
+  magenta: [35, 39],
+  cyan: [36, 39],
+  gray: [90, 39],
+};
+
+/**
+ * Wrap text in one SGR pair. A close code inside the text (a nested style ending) is
+ * followed by this style's open code again, so `bold(cyan(x) + y)` keeps y bold.
+ */
+function sgr(open, close) {
+  const start = `\u001b[${open}m`;
+  const end = `\u001b[${close}m`;
+  return (text) => `${start}${String(text).replaceAll(end, end + start)}${end}`;
+}
+
+/** The style set: identity functions when colour is off, ANSI codes when it is on. */
 export function createStyle(enabled = colorEnabled()) {
-  // createColors(true), not the default export: picocolors makes its own decision from
-  // the environment, and this module has already made it.
-  const c = enabled ? pc.createColors(true) : new Proxy({}, { get: () => (text) => String(text) });
+  const c = Object.fromEntries(
+    Object.entries(CODES).map(([name, [open, close]]) => [name, enabled ? sgr(open, close) : (text) => String(text)]),
+  );
   const identity = (text) => String(text);
 
   return {

@@ -609,12 +609,12 @@ test('cancelling at the accept question leaves the tree byte-identical', async (
 
 test('the real accept prompt shows its question and marks the selection', async () => {
   const { PassThrough } = await import('node:stream');
-  const { clackPrompts } = await import(pathToFileURL(path.join(TOOL_DIR, 'flow.mjs')).href);
+  const { terminalPrompts } = await import(pathToFileURL(path.join(TOOL_DIR, 'flow.mjs')).href);
   const input = new PassThrough();
   const output = new PassThrough();
   let frames = '';
   output.on('data', (chunk) => (frames += chunk));
-  const answer = clackPrompts({ input, output }).decide(plainStyleForTest, { rejections: 0, installsHook: true });
+  const answer = terminalPrompts({ input, output }).decide(plainStyleForTest, { rejections: 0, installsHook: true });
   setTimeout(() => {
     input.write('\u001b[B'); // down: Accept -> Reject
     setTimeout(() => input.write('\r'), 30);

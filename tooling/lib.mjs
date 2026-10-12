@@ -579,9 +579,8 @@ export async function toolVersion() {
  * A style set that does nothing.
  *
  * Lives here rather than in ui.mjs because this module gets vendored into a
- * repository and run by a pre-commit hook on a machine with no node_modules.
- * ui.mjs imports picocolors; a hook that imported it would fail at startup, and
- * the vendored modules therefore style nothing and accept a style as an argument.
+ * repository and run by a pre-commit hook, and ui.mjs is not vendored. The
+ * vendored modules therefore style nothing and accept a style as an argument.
  */
 export const plainStyle = new Proxy(
   { enabled: false, identity: (text) => String(text) },

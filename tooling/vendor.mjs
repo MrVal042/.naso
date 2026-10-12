@@ -24,14 +24,12 @@ import { pathExists, readJSONFile, run, nasoDir } from './lib.mjs';
 export const NASO_DIR = '.naso';
 
 /**
- * Tooling modules that must never be vendored.
+ * Tooling modules that are never vendored.
  *
- * Each of these imports something from node_modules. Copying them into a
- * repository would produce a hook that throws on the first line it runs, on a
- * machine that installed nothing — which is the entire reason the toolset is
- * copied at all.
+ * They draw the interactive setup — colour, prompts, the flow that asks them — and
+ * the pre-commit hook asks nothing, so a copy would be dead weight in every repository.
  */
-const DEPENDENT_MODULES = ['ui.mjs', 'flow.mjs'];
+const INTERACTIVE_MODULES = ['ui.mjs', 'prompt.mjs', 'flow.mjs'];
 
 /** Where the tool scripts land inside a target repository. */
 export function vendoredToolingDir(repoRoot) {
@@ -102,11 +100,10 @@ export async function vendorSources() {
   const names = entries
     .filter((entry) => entry.isFile() && entry.name.endsWith('.mjs'))
     .map((entry) => entry.name)
-    // These two carry dependencies, and a vendored pre-commit hook has no
-    // node_modules to resolve them against. They exist to drive the npx entry
-    // point; the vendored toolset is driven by the copied briefing, validate and
-    // install modules, all of which style through a no-op style passed in.
-    .filter((name) => !DEPENDENT_MODULES.includes(name))
+    // These drive the npx entry point; the vendored toolset is driven by the copied
+    // briefing, validate and install modules, all of which style through a no-op
+    // style passed in.
+    .filter((name) => !INTERACTIVE_MODULES.includes(name))
     .sort();
   if ((await pathExists(path.join(dir, 'README.md')))) names.push('README.md');
   return names.map((name) => path.join(dir, name));

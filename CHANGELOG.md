@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **No dependencies.** `npm i naso-dev` installs naso-dev and nothing else. `picocolors` is replaced by plain ANSI codes in `ui.mjs`, and `@clack/prompts` by `prompt.mjs`, a confirm and select on Node's own readline that look and answer the same: arrow keys or j/k, Enter, y/n, Ctrl+C or Escape.
+
 ## 1.1.1
 
 1.1.0 was published from `ceab466`. Everything below is relative to it.

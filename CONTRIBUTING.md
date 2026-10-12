@@ -25,11 +25,11 @@ A test that never failed proves nothing about the bug it claims to cover.
 
 ```bash
 git clone https://github.com/MrVal042/.naso.git && cd .naso
-npm ci
 npm test
 ```
 
-Node 20 or newer. That is the only requirement beyond git.
+Node 20 or newer. That is the only requirement beyond git. There is no `npm install`
+step: NASO has no dependencies, and the tests use `node:test`.
 
 ## Before you open a pull request
 
@@ -53,10 +53,10 @@ that sounds reassuring.
 ## Things that will be rejected
 
 - **A test that did not fail first.** See the one rule.
-- **A vendored module that imports a package.** `vendorSources()` excludes
-  `tooling/ui.mjs` and `tooling/flow.mjs` because they import packages. The
-  vendored toolset runs from a pre-commit hook on a machine with no
-  `node_modules`, and a test asserts no vendored module imports a bare specifier.
+- **A dependency.** `npm i naso-dev` installs one package, and the vendored toolset
+  runs from a pre-commit hook on a machine with no `node_modules`. Node's core
+  modules cover colour (`tooling/ui.mjs`) and prompts (`tooling/prompt.mjs`); use
+  them. A test asserts no vendored module imports a bare specifier.
 - **Reading and printing a secret.** Credential-shaped files are reported by path,
   never by content. A warning that quoted the file would put the key in the
   terminal scrollback and in whatever the reader pastes it into.
