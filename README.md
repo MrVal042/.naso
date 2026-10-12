@@ -1,6 +1,6 @@
 # NASO — Agent Briefing System
 
-NASO (Never Assume, Scan Once) generates a truthful `AGENTS.md` from your repository and keeps it consistent with what actually exists. One command sets it up: it reads the repository, shows you the plan, asks, and then writes. It copies a small toolset in, installs a minimal pre-commit gate, and gives five tools: `briefing`, `refresh`, `guide`, `validate`, and `doctor`. It has no dependencies: `npm i naso-dev` installs naso-dev and nothing else.
+NASO (Never Assume, Scan Once) generates a truthful `AGENTS.md` from your repository and keeps it consistent with what actually exists. One command sets it up: it reads the repository, shows you the plan, asks, and then writes. It copies a small toolset in, installs a minimal pre-commit gate, and gives five tools: `briefing`, `refresh`, `guide`, `validate`, and `doctor`. It has no dependencies, so installing it adds naso-dev and nothing else.
 
 The npm package is `naso-dev`, so every command below is `npx naso-dev <command>`.
 
@@ -33,6 +33,16 @@ It reads the repository and prints what it found, asks what the plan depends on 
 Arrow keys (or j/k) move between answers, Enter picks one, and y or n answers a yes/no question at once. Ctrl+C or Escape cancels at any question, and nothing is written.
 
 Add `--why` for the long-form rationale before you decide.
+
+### Adding it to a project
+
+`npx naso-dev` needs no install. To pin a version for the team, add it as a **dev dependency**:
+
+```bash
+npm i -D naso-dev     # pnpm add -D naso-dev · yarn add -D naso-dev · bun add -d naso-dev
+```
+
+It is a development tool. Nothing in your app imports it, so it belongs in `devDependencies`, where a production install (`npm ci --omit=dev`) and your app's build leave it out. The pre-commit hook does not need it installed at all: it runs the copy in `.naso/tooling/`.
 
 ### Running it from a script
 
@@ -98,7 +108,7 @@ Every command is also a script you can run directly:
 node <path-to-the-naso-dev-package>/bin/naso-dev.mjs
 ```
 
-The path is wherever the package landed — a clone, `npm i -g`, or the npx cache. `npx naso-dev ...` and `node .../bin/naso-dev.mjs ...` run exactly the same code.
+The path is wherever the package landed — a clone, `node_modules/naso-dev` after `npm i -D`, or the npx cache. `npx naso-dev ...` and `node .../bin/naso-dev.mjs ...` run exactly the same code.
 
 ## Author
 

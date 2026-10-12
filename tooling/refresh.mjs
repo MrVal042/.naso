@@ -111,7 +111,7 @@ Support: ${SUPPORT_EMAIL}`);
       // "already stamped" hid the one case where the tool, not the briefing, is behind.
       console.log(`--  ${AGENTS_FILE} is stamped ${stamped.previous}, newer than this tool (${version}).`);
       console.log('    Left it alone: the tool is what needs updating here, not the briefing.');
-      console.log('    Run `npm install -g naso-dev` or `npm update naso-dev` to catch up.');
+      console.log('    Run `npm i -D naso-dev@latest`, or `npx naso-dev@latest refresh`, to catch up.');
     } else if (!stamped.changed) {
       console.log(`--  ${AGENTS_FILE} is already stamped ${version}.`);
     } else {

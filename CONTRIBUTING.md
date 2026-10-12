@@ -53,7 +53,7 @@ that sounds reassuring.
 ## Things that will be rejected
 
 - **A test that did not fail first.** See the one rule.
-- **A dependency.** `npm i naso-dev` installs one package, and the vendored toolset
+- **A dependency.** `npm i -D naso-dev` installs one package, and the vendored toolset
   runs from a pre-commit hook on a machine with no `node_modules`. Node's core
   modules cover colour (`tooling/ui.mjs`) and prompts (`tooling/prompt.mjs`); use
   them. A test asserts no vendored module imports a bare specifier.
