@@ -1,10 +1,16 @@
 # Changelog
 
+## 1.1.3
+
+### Fixed
+
+- **Install it as a dev dependency.** The README said `npm i naso-dev`, which puts it in a project's `dependencies`, where a production install and the app's build pick it up. It now says `npm i -D naso-dev` (with the pnpm, yarn and bun forms), or no install at all with `npx`. `refresh` suggests `npm i -D naso-dev@latest` instead of a global install.
+
 ## 1.1.2
 
 ### Changed
 
-- **No dependencies.** `npm i -D naso-dev` installs naso-dev and nothing else. The README says to add it as a dev dependency, or not install it at all and use `npx`; `refresh` suggests `npm i -D naso-dev@latest` instead of a global install. `picocolors` is replaced by plain ANSI codes in `ui.mjs`, and `@clack/prompts` by `prompt.mjs`, a confirm and select on Node's own readline that look and answer the same: arrow keys or j/k, Enter, y/n, Ctrl+C or Escape.
+- **No dependencies.** `npm i -D naso-dev` installs naso-dev and nothing else. `picocolors` is replaced by plain ANSI codes in `ui.mjs`, and `@clack/prompts` by `prompt.mjs`, a confirm and select on Node's own readline that look and answer the same: arrow keys or j/k, Enter, y/n, Ctrl+C or Escape.
 
 ## 1.1.1
 
