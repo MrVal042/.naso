@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased (1.2.0)
+
+The generated briefing changes shape, so this is a minor release.
+
+### Added
+
+- **One command sets up and records the dev dependency.** In a repository with a `package.json`, `npx naso-dev` asks whether to add naso-dev to `devDependencies`, or to move it there from `dependencies`, and runs the repository's own package manager as the last step. `--save-dev` does the same from a script; `--yes` alone never runs the package manager. Setup is not run from an install script: npm hides that script's output and gives it no terminal, pnpm and bun do not run it by default, and it would run on every `npm ci`.
+- **The agent prompt asks for a correction backed by evidence.** The agent reads the rules the repository already wrote down, checks every claim in the NASO block, and corrects it between the markers only, citing a file for every change. It runs `npx naso-dev briefing` and hands back a diff without committing.
+- **Setup ends with "What you have now"**, built from what the run actually did, not from the plan.
+- **Where To Look First links `CONTRIBUTING.md`** and a folder-structure or architecture doc under `docs/`.
+
+### Fixed
+
+- **The commit standard states the subject form the history uses.** A history of `type: KEY-12: summary` was described as `type(scope): summary`, which a push rule then rejects. Scope and ticket key are counted, and the count says it is of non-merge commits.
+- **`.gitlab-ci.yml` is read as the gate.** A GitLab repository was told it "names no single gate". Its jobs are listed with what each runs, and an `include:` is reported as configuration NASO did not read. A GitHub job that runs several commands is described the same way.
+- **Scripts that rewrite files are not validation commands.** `format: prettier --write .` was listed beside `format:check`. Scripts passing `--write`, `--fix` or `-w` are named as rewriting files instead.
+- **Three claims the scan could not back are gone.** "A bare relative import is the one mistake TypeScript will not catch" is replaced by the alias mapping alone. The language mix no longer counts AGENTS.md, and its total is every file with an extension, not the four shown. A TypeScript repository with no `"type"` field is no longer "CommonJS by default"; the line says that applies to its root `.js` files.
+- **`*.p8` and `*.mobileprovision` are credentials**, not ignored build output.
+- **The briefing says the hook runs only where setup installed it**, and that CI does not run it.
+
 ## 1.1.3
 
 ### Fixed
