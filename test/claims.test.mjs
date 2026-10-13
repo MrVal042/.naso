@@ -216,6 +216,16 @@ test('Where To Look First names the contributing guide and a folder-structure do
   });
 });
 
+test('Apple signing files are listed as credentials, not as ignored build output', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const boundaries = sectionOf(await read(dir, AGENTS), 'Boundaries');
+    assert.match(boundaries, /\*\*Credentials\.\*\*[^\n]*\*\.p8[^\n]*\*\.mobileprovision/);
+    assert.doesNotMatch(boundaries.match(/\*\*Ignored paths\.\*\*[^\n]*/)?.[0] ?? '', /\*\.p8|mobileprovision/);
+  });
+});
+
 test('briefing check passes on the customer-app fixture', async () => {
   await withRepo(async ({ dir, git, bare, script }) => {
     await seedCustomerApp(dir, git, SCRUM_HISTORY);

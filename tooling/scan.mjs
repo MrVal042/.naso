@@ -1746,7 +1746,7 @@ export async function readCommitHistory(cwd) {
 
 /** Ignore entries that name something whose contents must never be committed. */
 export const CREDENTIAL_PATTERN =
-  /(keystore|jks|\.env|\.pem|\.p12|\.pfx|\.key|\.crt|\.cer|\.netrc|id_rsa|id_ed25519|credential|secret|token)/i;
+  /(keystore|jks|\.env|\.pem|\.p12|\.p8\b|\.pfx|\.key|\.crt|\.cer|\.mobileprovision|\.netrc|id_rsa|id_ed25519|credential|secret|token)/i;
 
 /** Every ignore pattern a repository declares, split by what the pattern is for. */
 export function parseIgnorePatterns(text) {
