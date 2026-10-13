@@ -670,8 +670,11 @@ async function renderBoundaries(facts) {
       );
     }
 
-    const shown = ignored.ordinary.slice(0, 10);
-    const elided = ignored.ordinary.length - shown.length;
+    // Root-anchored first: `/ios` is this repository's own decision, `node_modules/` is
+    // everybody's, and the cap below hid the former behind the latter.
+    const ordered = [...ignored.ordinary.filter((p) => p.startsWith('/')), ...ignored.ordinary.filter((p) => !p.startsWith('/'))];
+    const shown = ordered.slice(0, 10);
+    const elided = ordered.length - shown.length;
     if (shown.length > 0) {
       lines.push(
         `**Ignored paths.** Nothing under ${shown.join(', ')} reaches a commit, and nothing ` +

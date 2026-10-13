@@ -387,3 +387,15 @@ test('a CONTRIBUTING.md that states commit rules is named as the authority over 
     );
   });
 });
+
+test('root-anchored ignore patterns are listed before generic ones', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    await put(dir, '.gitignore', 'node_modules/\ndist/\n*.log\n.DS_Store\ncoverage/\n.expo/\nweb-build/\n*.tsbuildinfo\n.cache/\ntmp/\nbuild/\n/ios\n/android\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'chore: SCRUM-5: ignore');
+    assert.equal((await bare(['--yes'])).code, 0);
+    const ignored = sectionOf(await read(dir, AGENTS), 'Boundaries').match(/\*\*Ignored paths\.\*\*[^\n]*/)[0];
+    assert.match(ignored, /Nothing under \/ios, \/android, node_modules\//);
+  });
+});
