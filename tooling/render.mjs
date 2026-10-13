@@ -893,11 +893,11 @@ export function renderValidation(facts) {
 
 /** "`npm run format` rewrites files" — said once, so nobody runs it as a check. */
 function rewriterNote(facts) {
-  const rewriters = facts.rewriters ?? [];
-  if (rewriters.length === 0) return null;
-  return rewriters
-    .map((entry) => `\`${entry.command}\` rewrites files (\`${entry.body}\`); it is not a check.`)
-    .join(' ');
+  const notes = [
+    ...(facts.rewriters ?? []).map((entry) => `\`${entry.command}\` rewrites files (\`${entry.body}\`); it is not a check.`),
+    ...(facts.generated ?? []).map((entry) => `\`${entry.command}\` rewrites \`${entry.path}\`; it is not a check.`),
+  ];
+  return notes.length > 0 ? notes.join(' ') : null;
 }
 
 /**

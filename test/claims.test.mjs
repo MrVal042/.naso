@@ -365,3 +365,11 @@ test('the Scope section says what the hook checks, what it does not, and when it
     assert.match(scope, /If \.naso\/tooling\/ is missing it prints one line and lets the commit through/);
   });
 });
+
+test('a codegen script is named as rewriting the file it generates', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    assert.match(await read(dir, AGENTS), /`npm run api-types` rewrites `src\/api\/schema\.d\.ts`; it is not a check\./);
+  });
+});
