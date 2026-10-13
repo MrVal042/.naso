@@ -1566,6 +1566,19 @@ export function generatedOutputs(pkg, files, pm = 'npm') {
   return out;
 }
 
+/**
+ * The contributing guide, and whether it writes commit rules down.
+ *
+ * Only a yes or no is kept. The rule itself stays in the file: a briefing that copied it
+ * would go stale the day the guide changed, and the guide is the one people maintain.
+ */
+async function readContributing(cwd, files) {
+  const file = ['CONTRIBUTING.md', '.github/CONTRIBUTING.md', 'docs/CONTRIBUTING.md'].find((name) => files.includes(name));
+  if (!file) return null;
+  const text = await readFile(path.join(cwd, file), 'utf8').catch(() => '');
+  return { path: file, commits: /\bcommit/i.test(text) };
+}
+
 /** A script body that changes files instead of reporting on them. */
 const REWRITES = /--write\b|--fix\b|(?:^|\s)-w(?:\s|$)/;
 
@@ -1759,6 +1772,7 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
     tests: detectTestCoverage(files, pkg, packageManager.name, conventions.runner),
     validation: await detectValidationCommands(cwd, pkg, packageManager.name),
     rewriters: detectRewritingScripts(pkg, packageManager.name),
+    contributing: await readContributing(cwd, files),
     generated: generatedOutputs(pkg, files, packageManager.name),
     gate: await detectGate(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),

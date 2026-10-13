@@ -712,6 +712,10 @@ function renderCommitStandard(facts) {
   const history = facts.history ?? { count: 0 };
   const lines = [];
 
+  if (facts.contributing?.commits) {
+    lines.push(`- \`${facts.contributing.path}\` writes the commit rules down; where it and this count differ, it wins.`);
+  }
+
   if (history.count >= HISTORY_MINIMUM && history.conventional / history.count >= 0.6) {
     lines.push(
       `- Subjects follow \`${subjectShape(history)}\` in ${history.conventional} of the last ` +

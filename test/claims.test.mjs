@@ -373,3 +373,17 @@ test('a codegen script is named as rewriting the file it generates', async () =>
     assert.match(await read(dir, AGENTS), /`npm run api-types` rewrites `src\/api\/schema\.d\.ts`; it is not a check\./);
   });
 });
+
+test('a CONTRIBUTING.md that states commit rules is named as the authority over the count', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git, SCRUM_HISTORY);
+    await put(dir, 'CONTRIBUTING.md', '# Contributing\n\n## Commits\n\nUse `<type>: <KEY>: <summary>`.\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'docs: SCRUM-9: commits');
+    assert.equal((await bare(['--yes'])).code, 0);
+    assert.match(
+      sectionOf(await read(dir, AGENTS), 'Commit Standard'),
+      /`CONTRIBUTING\.md` writes the commit rules down; where it and this count differ, it wins\./,
+    );
+  });
+});
