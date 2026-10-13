@@ -616,6 +616,22 @@ async function renderBoundaries(facts) {
     }
   }
 
+  // Before the aliases: editing a generated file is a mistake that survives review and
+  // is undone, silently, by the next regenerate.
+  const generated = facts.generated ?? [];
+  if (generated.length > 0) {
+    const guarded = new Set((facts.gate?.jobs ?? []).flatMap((job) => job.diffChecks ?? []));
+    lines.push(
+      `**Generated files.** ${generated
+        .map(
+          (entry) =>
+            `\`${entry.path}\` is written by \`${entry.command}\`; regenerate it, never edit it by hand.` +
+            (guarded.has(entry.path) ? ' CI fails if it changes.' : ''),
+        )
+        .join(' ')}`,
+    );
+  }
+
   const declared = conventions.aliases?.declared ?? [];
   if (declared.length > 0) {
     lines.push(
@@ -884,10 +900,24 @@ function rewriterNote(facts) {
     .join(' ');
 }
 
-/** The commands CI runs, in order, as one list a reader can paste. */
+/**
+ * The commands CI runs, in order, as one list a reader can paste.
+ *
+ * A job that regenerates a file and then diffs it is one command here, joined with `&&`:
+ * the regenerate step alone rewrites the file and passes whatever it wrote.
+ */
 function ciCommands(gate) {
-  return [...new Set(gate.jobs.flatMap((job) => job.commands))];
+  const lines = gate.jobs.flatMap((job) => {
+    const checks = job.diffChecks ?? [];
+    if (checks.length === 0 || job.commands.length === 0) return job.commands;
+    const last = `${job.commands.at(-1)} && git diff --exit-code ${checks.join(' ')}`;
+    return [...job.commands.slice(0, -1), last];
+  });
+  return [...new Set(lines)];
 }
+
+/** A path in backticks only when it exists: the checker reads a backticked path as a claim. */
+const pathOrPlain = (facts, file) => (facts.files.includes(file) ? `\`${file}\`` : file);
 
 /**
  * CI is the gate, and no one local command reproduces it.
@@ -901,7 +931,11 @@ function renderCiGate(facts, rewriters) {
   const { gate, validation } = facts;
   const lines = ['### Validation commands\n'];
   const jobs = gate.jobs
-    .map((job) => `${job.name} (${job.commands.map((command) => `\`${command}\``).join(', ')})`)
+    .map((job) => {
+      const checks = job.diffChecks ?? [];
+      const guard = checks.length > 0 ? `, then fails if ${checks.map((file) => pathOrPlain(facts, file)).join(', ')} changed` : '';
+      return `${job.name} (${job.commands.map((command) => `\`${command}\``).join(', ')}${guard})`;
+    })
     .join(', ');
   lines.push(`CI is the gate: \`${gate.ciFile}\` runs ${plural(gate.jobs.length, 'job')}: ${jobs}.`);
   if (gate.external) {

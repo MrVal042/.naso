@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { parseGitlabJobs } from '../tooling/briefing.mjs';
+import { parseGitlabJobs, parseWorkflowJobs } from '../tooling/briefing.mjs';
 import { AGENTS, withRepo, put, read, sectionOf } from './helpers.mjs';
 
 const GITLAB_CI = `include:
@@ -84,6 +84,8 @@ async function seedCustomerApp(dir, git, subjects = []) {
   await put(dir, 'docs/release.md', '# Release\n');
   await put(dir, 'src/app/_layout.tsx', 'export default function Layout() { return null; }\n');
   await put(dir, 'src/api/client.ts', 'export const client = 1;\n');
+  await put(dir, 'src/api/schema.d.ts', 'export interface paths {}\n');
+  await put(dir, 'openapi.yaml', 'openapi: 3.1.0\n');
   await put(dir, 'src/api/client.test.ts', "test('x', () => {});\n");
   await put(dir, '.gitignore', 'node_modules/\n/ios\n/android\n*.p8\n*.mobileprovision\n.env*\n');
   await git('add', '-A');
@@ -147,7 +149,7 @@ test('.gitlab-ci.yml is the gate, and the briefing does not say the repository n
     assert.doesNotMatch(text, /names no single gate/);
     assert.match(text, /CI is the gate: `\.gitlab-ci\.yml` runs 5 jobs/);
     assert.match(text, /lint \(`npm run lint`\)/);
-    assert.match(text, /api-types \(`npm run api-types`\)/);
+    assert.match(text, /api-types \(`npm run api-types`, then fails if/);
     assert.match(text, /includes configuration from outside this repository/);
   });
 });
@@ -243,5 +245,48 @@ test('briefing check passes on the customer-app fixture', async () => {
     assert.equal((await bare(['--yes'])).code, 0);
     const check = await script('briefing');
     assert.equal(check.code, 0, check.stdout + check.stderr);
+  });
+});
+
+test('a CI job that regenerates a file and diffs it is a check, recorded with the path it guards', () => {
+  const api = parseGitlabJobs(GITLAB_CI).find((job) => job.name === 'api-types');
+  assert.deepEqual(api.diffChecks, ['src/api/schema.d.ts']);
+  const lint = parseGitlabJobs(GITLAB_CI).find((job) => job.name === 'lint');
+  assert.deepEqual(lint.diffChecks, []);
+
+  const github = parseWorkflowJobs(
+    'jobs:\n  types:\n    steps:\n      - run: npm run gen\n      - run: git diff --exit-code -- src/gen.ts\n',
+  );
+  assert.deepEqual(github[0].diffChecks, ['src/gen.ts']);
+});
+
+test('codegen is run with its diff, never alone, and the generated file is marked do-not-edit', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.match(text, /api-types \(`npm run api-types`, then fails if `src\/api\/schema\.d\.ts` changed\)/);
+    const commands = text.match(/```bash\n([\s\S]*?)```/)?.[1] ?? '';
+    assert.match(commands, /^npm run api-types && git diff --exit-code src\/api\/schema\.d\.ts$/m);
+    assert.doesNotMatch(commands, /^npm run api-types$/m, 'run alone it rewrites the file and checks nothing');
+    assert.match(
+      sectionOf(text, 'Boundaries'),
+      /\*\*Generated files\.\*\* `src\/api\/schema\.d\.ts` is written by `npm run api-types`; regenerate it, never edit it by hand\. CI fails if it changes\./,
+    );
+    assert.equal((await script('briefing')).code, 0);
+  });
+});
+
+test('a codegen script CI does not check is still marked generated, with no CI claim', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await put(dir, 'package.json', JSON.stringify({ name: 'g', scripts: { gen: 'graphql-codegen --output src/gql.ts', lint: 'eslint .' } }));
+    await put(dir, 'src/gql.ts', 'export {};\n');
+    await put(dir, 'src/missing-output-is-not-claimed.ts', 'export {};\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'init');
+    assert.equal((await bare(['--yes'])).code, 0);
+    const boundaries = sectionOf(await read(dir, AGENTS), 'Boundaries');
+    assert.match(boundaries, /\*\*Generated files\.\*\* `src\/gql\.ts` is written by `npm run gen`; regenerate it, never edit it by hand\.\n/);
+    assert.doesNotMatch(boundaries, /CI fails/);
   });
 });

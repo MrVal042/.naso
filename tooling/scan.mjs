@@ -1103,6 +1103,28 @@ export function collapseSteps(labels) {
 }
 
 /**
+ * The paths a `git diff --exit-code` line guards, or null when the line is not one.
+ *
+ * In CI that line is the second half of a check: regenerate, then fail if the output
+ * moved. Dropped as "not a command" (it is git, not a script), the first half was listed
+ * on its own as a check, and run locally it rewrote the generated file and checked nothing.
+ */
+export function diffCheckPaths(line) {
+  const match = String(line).trim().match(/^git\s+diff\b(.*)$/);
+  if (!match || !/--exit-code\b/.test(match[1])) return null;
+  return match[1].split(/\s+/).filter((word) => word && !word.startsWith('-'));
+}
+
+/** Split a CI line into its commands, keeping diff checks apart from invocations. */
+function noteCiLine(job, value) {
+  for (const segment of String(value).split(/&&|;/)) {
+    const paths = diffCheckPaths(segment);
+    if (paths) job.diffChecks.push(...paths);
+    else job.commands.push(...extractInvocations(segment));
+  }
+}
+
+/**
  * The jobs in a GitHub Actions workflow, with the commands each one runs.
  *
  * Hand-rolled rather than pulling a YAML parser, and the reason is the same one that keeps
@@ -1119,7 +1141,7 @@ export function parseWorkflowJobs(text) {
   let blockIndent = -1;
 
   const note = (value) => {
-    if (job) job.commands.push(...extractInvocations(value));
+    if (job) noteCiLine(job, value);
   };
 
   for (const raw of String(text).split('\n')) {
@@ -1137,7 +1159,7 @@ export function parseWorkflowJobs(text) {
 
     const jobHeader = raw.match(/^ {2}([A-Za-z0-9_.-]+):\s*(?:#.*)?$/);
     if (jobHeader) {
-      job = { name: jobHeader[1], label: jobHeader[1], commands: [] };
+      job = { name: jobHeader[1], label: jobHeader[1], commands: [], diffChecks: [] };
       jobs.push(job);
       blockIndent = -1;
       continue;
@@ -1204,7 +1226,7 @@ export function parseGitlabJobs(text) {
   let blockIndent = -1;
 
   const note = (value) => {
-    if (job) job.commands.push(...extractInvocations(value));
+    if (job) noteCiLine(job, value);
   };
 
   for (const raw of String(text).split('\n')) {
@@ -1213,7 +1235,7 @@ export function parseGitlabJobs(text) {
 
     if (indent === 0) {
       const key = raw.match(/^([^\s#][^:]*):/)?.[1]?.trim().replace(/^["']|["']$/g, '');
-      job = key && !key.startsWith('.') && !GITLAB_KEYWORDS.has(key) ? { name: key, label: key, commands: [] } : null;
+      job = key && !key.startsWith('.') && !GITLAB_KEYWORDS.has(key) ? { name: key, label: key, commands: [], diffChecks: [] } : null;
       if (job) jobs.push(job);
       scriptIndent = -1;
       blockIndent = -1;
@@ -1395,7 +1417,7 @@ export async function detectGate(cwd, pkg, pm = 'npm') {
       script: sole,
       authority: `\`${workflow.file}\`, the ${job.label || job.name} job`,
       ciFile: workflow.file,
-      jobs: [{ name: job.label || job.name, commands: job.commands }],
+      jobs: [{ name: job.label || job.name, commands: job.commands, diffChecks: job.diffChecks ?? [] }],
       steps: collapseSteps(expansion.steps),
       rawSteps: expansion.steps,
       commands: expansion.commands,
@@ -1421,7 +1443,7 @@ export async function detectGate(cwd, pkg, pm = 'npm') {
       ...empty,
       authority: '`.gitlab-ci.yml`',
       ciFile: '.gitlab-ci.yml',
-      jobs: gitlabJobs.map((job) => ({ name: job.name, commands: job.commands })),
+      jobs: gitlabJobs.map((job) => ({ name: job.name, commands: job.commands, diffChecks: job.diffChecks })),
       // An `include:` pulls jobs from another project or file, which this scan cannot
       // see. Said in the briefing so the job list is not read as the whole pipeline.
       external: /^include:/m.test(gitlab),
@@ -1473,6 +1495,35 @@ function enforcementScripts(scripts, gateSteps) {
  * with no package-lock.json that command installs a second dependency tree instead of
  * checking anything.
  */
+/** `-o path`, `--output=path`, `> path`: where a script says it writes. */
+const OUTPUT_FLAG = /(?:^|\s)(?:-o|--output|--out|--outfile|--out-file)(?:=|\s+)(['"]?)([^\s'"]+)\1/g;
+const REDIRECT = /(?:^|\s)>\s*([^\s&|;]+)/g;
+
+/**
+ * Tracked files a package.json script writes: the output of codegen.
+ *
+ * Only an output the script names and git tracks counts. A file somebody hand-edits gets
+ * overwritten on the next regenerate, or fails CI's diff check, and neither failure names
+ * the cause; the briefing can, but only for a path it read off the script.
+ */
+export function generatedOutputs(pkg, files, pm = 'npm') {
+  const tracked = new Set(files);
+  const out = [];
+  for (const [name, body] of Object.entries(pkg?.scripts ?? {})) {
+    if (typeof body !== 'string') continue;
+    const targets = [
+      ...[...body.matchAll(OUTPUT_FLAG)].map((match) => match[2]),
+      ...[...body.matchAll(REDIRECT)].map((match) => match[1]),
+    ].map((target) => target.replace(/^\.\//, ''));
+    for (const target of targets) {
+      if (tracked.has(target) && !out.some((entry) => entry.path === target)) {
+        out.push({ path: target, script: name, command: pmRunText(pm, name) });
+      }
+    }
+  }
+  return out;
+}
+
 /** A script body that changes files instead of reporting on them. */
 const REWRITES = /--write\b|--fix\b|(?:^|\s)-w(?:\s|$)/;
 
@@ -1666,6 +1717,7 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
     tests: detectTestCoverage(files, pkg, packageManager.name, conventions.runner),
     validation: await detectValidationCommands(cwd, pkg, packageManager.name),
     rewriters: detectRewritingScripts(pkg, packageManager.name),
+    generated: generatedOutputs(pkg, files, packageManager.name),
     gate: await detectGate(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),
     manifestEntryPoints: manifestEntryPoints(pkg),
