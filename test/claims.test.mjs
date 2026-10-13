@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { readdir } from 'node:fs/promises';
-import { parseGitlabJobs, parseWorkflowJobs, diffCheckPaths } from '../tooling/briefing.mjs';
+import { parseGitlabJobs, parseWorkflowJobs, diffCheckPaths, extractPathTokens } from '../tooling/briefing.mjs';
 import { AGENTS, withRepo, put, read, sectionOf } from './helpers.mjs';
 
 const GITLAB_CI = `include:
@@ -316,6 +316,14 @@ test('with an unread include:, scripts outside the jobs NASO read are not called
     assert.doesNotMatch(text, /Declared but not run by CI/);
     assert.match(text, /Not in the jobs NASO could read; the included configuration may run them: `npm run lint`/);
   });
+});
+
+test('the checker reads paths, not every word in backticks', () => {
+  const tokens = extractPathTokens(
+    'Run `lint` and `code`; send `X-App-Version`; use `formatMoney`; `.svg` files; see `README.md`, ' +
+      '`src/app/(tabs)/`, `src/app/[id].tsx`, `Makefile`, `CODEOWNERS`, `.gitignore`.',
+  );
+  assert.deepEqual(tokens, ['.gitignore', 'CODEOWNERS', 'Makefile', 'README.md', 'src/app/(tabs)/', 'src/app/[id].tsx']);
 });
 
 test('the vendored toolset is invisible to the repository\'s ESLint and Prettier', async () => {

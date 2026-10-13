@@ -40,7 +40,18 @@ const TOOL_SCRIPT_NAMES =
  * `type(scope): summary` in prose. Only path-shaped tokens are candidates for a
  * filesystem check; everything else is a false positive waiting to happen.
  */
-const PATH_SHAPED_TOKEN = /^[\w.@~-]+(?:\/[\w.@~-]+)*\/?$/;
+const PATH_SHAPED_TOKEN = /^[\w.@~()[\]-]+(?:\/[\w.@~()[\]-]+)*\/?$/;
+
+/**
+ * A token that names a file or folder rather than a word: it has a slash, a `name.ext`
+ * shape, a dotfile name longer than an extension, or is one of the extensionless files
+ * every repository knows. `lint`, `formatMoney`, `X-App-Version` and `.svg` are words;
+ * checking them as paths reported 29 false MISSING items in one corrected briefing and
+ * taught its authors to drop the backticks from code. `(tabs)` and `[id]` are route
+ * segments in Expo and Next.js, so they are allowed inside a path.
+ */
+const NAMES_A_PATH = /\/|^[^.].*\.[A-Za-z][A-Za-z0-9]*$|^\.[\w.-]{5,}$/;
+const EXTENSIONLESS_FILES = /^(?:Makefile|Dockerfile|Containerfile|LICEN[CS]E|NOTICE|CODEOWNERS|Gemfile|Procfile|Jenkinsfile|Rakefile|Brewfile|Vagrantfile|VERSION)$/;
 
 const MARKERS = ['TODO(fill)', 'TODO(describe)'];
 
@@ -75,6 +86,7 @@ export function extractPathTokens(text) {
     if (token.startsWith('-')) continue;
     if (TOOL_SCRIPT_NAMES.test(token)) continue;
     if (!PATH_SHAPED_TOKEN.test(token)) continue;
+    if (!NAMES_A_PATH.test(token) && !EXTENSIONLESS_FILES.test(token)) continue;
     tokens.add(token);
   }
   return Array.from(tokens).sort();
