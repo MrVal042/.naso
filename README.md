@@ -91,7 +91,8 @@ The two commands this replaces still work, print one deprecation line naming `np
 | --------------------------- | ------------------------------------------------------------------------------------------------ |
 | `AGENTS.md`                 | The briefing, inside its `naso:start` / `naso:end` markers. Never overwritten outside them.     |
 | `CLAUDE.md`                 | One `@AGENTS.md` line, so Claude Code (which reads `CLAUDE.md`, not `AGENTS.md`) loads the briefing. Written only when there is no `CLAUDE.md` or yours is untracked; a tracked one is left alone unless you pass `--track`, and setup says what to add. |
-| `.naso/tooling/*.mjs`       | A copy of the toolset, so the hook works with no network and no global install.                  |
+| `.naso/tooling/*.mjs`       | A copy of the toolset, so the hook works with no network and no global install. Each file starts with `/* eslint-disable */`, so your lint rules do not apply to NASO's code. |
+| `.prettierignore`           | One `.naso/` line, only in a repository that uses Prettier, so `prettier --check .` leaves the toolset alone. Prettier does not read `.git/info/exclude`. |
 | `.naso/tooling/VERSION`     | The version that copy was vendored from — the briefing stamp is compared against it.             |
 | `.naso/config.json`         | Per-repository setup choices, including any areas you excluded.                                  |
 | `.git/hooks/pre-commit`     | Runs the secret, scope, format and lint checks on staged files and keeps the briefing current.   |
