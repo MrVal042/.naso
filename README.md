@@ -22,9 +22,17 @@ One command, once per repository:
 npx naso-dev
 ```
 
-It reads the repository and prints what it found, asks what the plan depends on (commit the files or keep them local; the pre-commit hook, and what to do about a hook NASO did not write; whether to replace an existing NASO block), then lists every file it would write with its line count — and asks one question: **Write these files and install the hook?**
+It works like a guided installer. In order:
+
+1. **Reads** the repository and shows what it found: branch, files, areas, language.
+2. **Asks** what the plan depends on: commit the files or keep them local; the pre-commit hook, and what to do about a hook NASO did not write; whether to replace an existing NASO block; whether to record naso-dev in `devDependencies`.
+3. **Shows the plan** as an overview: what the briefing covers, what must pass, any warning, and one row per file it would write with its exact line count (the 16-file toolset is one row).
+4. **Asks once:** *Write these files and install the hook?* Accept, Show details, Reject, or Exclude an area.
+5. **Installs**, one ✓ line per step, verifies the briefing against the repository, and says what you have now.
+6. **Ends with a prompt for your coding agent**, which finishes the job: it checks the briefing against the rules your repository already wrote down and corrects it.
 
 - **Accept** writes `AGENTS.md`, links it from `CLAUDE.md` for Claude Code, vendors the toolset into `.naso/tooling/`, installs `.git/hooks/pre-commit`, and — unless you pass `--track` — keeps both `.naso/` and `AGENTS.md` out of git via `.git/info/exclude`. An `AGENTS.md` git already tracks cannot be excluded: only `.naso/` is, and the plan says the NASO block will show in `git status` as a change to commit or drop.
+- **Show details** prints every file one by one, what the briefing will say, and why each change is made, then asks again. It is not a rejection.
 - **Reject** writes nothing and reads the repository again. A second reject stops and offers to print a pre-filled support report; either way the repository is left byte-for-byte as it was.
 - **Exclude an area** keeps one top-level directory out of the briefing and shows the plan again.
 - **An existing `AGENTS.md` is never replaced.** The NASO block goes between `<!-- naso:start -->` and `<!-- naso:end -->`; everything outside those markers stays byte-identical.
@@ -44,10 +52,12 @@ Why not set up from `npm i naso-dev` itself: npm 7 and later run a package's ins
 
 ### When it finishes
 
-Setup ends with two things:
+Setup ends with two things, in this order:
 
-- **A prompt for your coding agent.** It asks the agent to read the rules this repository already wrote down (CONTRIBUTING, CODEOWNERS, review templates, CI, docs), check every claim in the NASO block against them, and correct the block. Every change must cite the file that proves it and stay between the markers. The agent runs `npx naso-dev briefing` before reporting, never opens credential files, and does not commit: you get a diff to review.
 - **What you have now.** One line per thing the run actually did: how many path claims were checked, whether Claude Code loads the briefing, what the hook checks on this machine, whether naso-dev was recorded in `devDependencies`, and whether anything reached git history. Nothing that was skipped or failed is listed.
+- **A prompt for your coding agent**, printed last so it is the next thing to do. It asks the agent to read the rules this repository already wrote down (CONTRIBUTING, CODEOWNERS, review templates, CI, docs), check every claim in the NASO block against them, and correct the block. Every change must cite the file that proves it and stay between the markers. The agent runs `npx naso-dev briefing` before reporting, never opens credential files, and does not commit: you get a diff to review.
+
+`--yes` and `--dry-run` print the full plan instead of the overview, since nobody is there to ask for details.
 
 ### Running it from a script
 

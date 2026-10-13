@@ -528,7 +528,7 @@ test('a NASO-owned re-run is reported without --force and regenerates only the b
   });
 });
 
-test('the plan lists every file it writes, with exact line counts, before the only question', async () => {
+test('the overview lists every destination with exact line counts before the only question', async () => {
   await withRepo(async ({ dir, git }) => {
     await seedProject(dir, git);
     const res = await driveFlow(dir, { decisions: ['accept'] });
@@ -536,22 +536,44 @@ test('the plan lists every file it writes, with exact line counts, before the on
 
     const beforeQuestion = res.stdout.slice(0, res.stdout.indexOf('@@{"ask":"decide"'));
     const planned = plannedWrites(beforeQuestion);
-    const tooling = [...planned.keys()].filter((p) => p.startsWith('.naso/tooling/'));
+    // The toolset is one row in the overview: sixteen lines of .mjs names tell a person
+    // deciding nothing that "16 files, N lines, the hook runs this copy" does not.
     const vendored = (await readdir(path.join(dir, '.naso', 'tooling'))).map((f) => `.naso/tooling/${f}`);
-    assert.equal(tooling.length, 16, `16 tooling files must be listed, got:\n${tooling.join('\n')}`);
-    assert.deepEqual(tooling.sort(), vendored.sort(), 'the list must be exactly what is copied');
+    assert.equal(vendored.length, 16);
+    let toolingLines = 0;
+    for (const file of vendored) toolingLines += linesIn(await read(dir, file));
+    assert.deepEqual(planned.get('.naso/tooling/'), { change: 'new', lines: toolingLines });
+    assert.match(beforeQuestion, /\.naso\/tooling\/\s+new, \d+ lines\s+\(16 files/);
 
     for (const [file, row] of planned) {
-      if (row.change === 'append') continue;
+      if (row.change === 'append' || file.endsWith('/')) continue;
       assert.equal(row.lines, linesIn(await read(dir, file)), `${file}: planned ${row.lines} lines`);
     }
     assert.ok(planned.has(AGENTS) && planned.has('.naso/config.json') && planned.has('.git/hooks/pre-commit'));
-    assert.match(beforeQuestion, /Hook decision: install/);
 
     const decide = res.events.find((event) => event.ask === 'decide');
     assert.equal(decide.installsHook, true);
     assert.equal(decide.agents, false, 'nothing may be written before the answer');
     assert.equal(decide.naso, false, 'nothing may be written before the answer');
+  });
+});
+
+test('"Show details" lists every file one by one and asks again, without counting as a reject', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    const res = await driveFlow(dir, { decisions: ['details', 'accept'] });
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+
+    const decides = res.events.filter((event) => event.ask === 'decide');
+    assert.equal(decides.length, 2);
+    assert.equal(decides[1].rejections, 0, 'asking for detail is not a rejection');
+
+    const first = res.stdout.indexOf('@@{"ask":"decide"');
+    const between = res.stdout.slice(first, res.stdout.indexOf('@@{"ask":"decide"', first + 1));
+    const tooling = [...plannedWrites(between).keys()].filter((p) => p.startsWith('.naso/tooling/') && p !== '.naso/tooling/');
+    const vendored = (await readdir(path.join(dir, '.naso', 'tooling'))).map((f) => `.naso/tooling/${f}`);
+    assert.deepEqual(tooling.sort(), vendored.sort(), 'the detail is exactly what is copied');
+    assert.match(between, /What will change/);
   });
 });
 
@@ -616,14 +638,15 @@ test('the real accept prompt shows its question and marks the selection', async 
   output.on('data', (chunk) => (frames += chunk));
   const answer = terminalPrompts({ input, output }).decide(plainStyleForTest, { rejections: 0, installsHook: true });
   setTimeout(() => {
-    input.write('\u001b[B'); // down: Accept -> Reject
+    input.write('\u001b[B'); // down: Accept -> Show details
     setTimeout(() => input.write('\r'), 30);
   }, 30);
-  assert.equal(await answer, 'reject');
+  assert.equal(await answer, 'details');
   const plain = frames.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
   assert.match(plain, /Write these files and install the hook\?/);
   assert.match(plain, /● Accept/, 'the default selection is marked');
-  assert.match(plain, /● Reject/, 'moving the selection marks the new choice');
+  assert.match(plain, /● Show details/, 'moving the selection marks the new choice');
+  assert.match(plain, /○ Reject/);
   assert.match(plain, /○ Exclude an area/);
 });
 

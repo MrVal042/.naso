@@ -35,7 +35,7 @@
 // of this file runs with no node_modules anywhere near it.
 
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import {
   pathExists,
   parseArgs,
@@ -115,11 +115,12 @@ const wrap = (text, width = 74) => {
  * checker runs before anything is reported — an agent "improving" a briefing without
  * evidence produces exactly the confident fiction NASO exists to replace.
  */
-function agentPrompt(cwd) {
+function agentPrompt(cwd, here = ` ${cwd}`) {
+  const where = here ? ` (${cwd})` : '';
   return `Copy everything between the lines below and paste it into your coding agent.
 
 --------------------------------------------------------------
-Read AGENTS.md in this repository (${cwd}). NASO generated the part between
+Read AGENTS.md in this repository${where}. NASO generated the part between
 <!-- naso:start --> and <!-- naso:end --> from file lists, manifests and git
 history. Its aim: every path is real, every count is a count, and every rule
 is this repository's own. Your job is to make that true here.
@@ -138,7 +139,7 @@ is this repository's own. Your job is to make that true here.
    add or change must name the file it came from. If you cannot cite it, leave
    it out. Never open or print the contents of .env files, keys or other
    credentials; name them by path only.
-5. Run \`npx naso-dev briefing ${cwd}\` and fix anything it reports.
+5. Run \`npx naso-dev briefing${here}\` and fix anything it reports.
 6. Do not commit. Show me the diff of AGENTS.md, and for each change say what
    was wrong or missing and which file proves it. Then list what you found
    that NASO should derive on its own, so it can be reported upstream.
@@ -504,11 +505,93 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
           : 'Teammates get the same version from an ordinary install, and production installs leave it out. ') +
         `Runs \`${how}\` last, after everything else is written. This is the only step that uses the network.`,
     });
-    writes.push({ path: 'package.json', change: 'devDependencies', lines: 1, note: `by ${devDependency.pm}` });
-    writes.push({ path: LOCKFILE_OF[devDependency.pm] ?? 'package-lock.json', change: 'update', lines: 0, note: `by ${devDependency.pm}, with node_modules/` });
+    // The package manager writes these, so NASO cannot promise a line count; the row says who.
+    writes.push({ path: 'package.json', change: 'by-pm', lines: 0, note: `devDependencies, by ${devDependency.pm}, last` });
+    writes.push({ path: LOCKFILE_OF[devDependency.pm] ?? 'package-lock.json', change: 'by-pm', lines: 0, note: `by ${devDependency.pm}, with node_modules/` });
   }
 
-  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, localExcludes, claude, devDependency, recordsDev };
+  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, localExcludes, claude, devDependency, recordsDev, track };
+}
+
+/**
+ * The overview a person decides from: what the briefing will cover, any warning, and one row
+ * per destination with its exact line count.
+ *
+ * The toolset is one row. Sixteen script names tell a person deciding nothing that
+ * "16 files, N lines, the hook runs this copy" does not, and the full list is one answer
+ * away ("Show details"), which is also what --dry-run and a script without a terminal print.
+ */
+export async function displayOverview(state, cwd, style = plainStyle) {
+  const { facts, excluded } = state;
+  const name = facts.pkg?.name ?? path.basename(cwd);
+
+  console.log(`${style.bold(`The plan for ${name}`)}  ${style.dim('nothing is written until you accept')}`);
+  console.log('');
+
+  const areas = facts.areas.map((entry) => `${entry.name}/`);
+  console.log(
+    `  The briefing covers ${plural(areas.length, 'area')}${areas.length ? `: ${areas.slice(0, 8).join(', ')}${areas.length > 8 ? ', …' : ''}` : ''}` +
+      ` from ${plural(facts.files.length, 'file')}${facts.branch ? ` on ${facts.branch}` : ''}.`,
+  );
+  if (excluded.length > 0) console.log(`  Left out on request: ${excluded.map((p) => `${p}/`).join(', ')}`);
+  const gate = facts.gate?.command
+    ? facts.gate.command
+    : facts.gate?.ciFile
+      ? `${facts.gate.ciFile} (${plural(facts.gate.jobs.length, 'CI job')})`
+      : facts.validation.map((command) => command.command).join(', ');
+  if (gate) console.log(`  What must pass: ${gate}`);
+
+  const warnings = await scanWarnings(facts);
+  for (const warning of warnings) console.log(`  ${style.warn(warning.headline)}  ${style.dim('(Show details)')}`);
+  console.log('');
+
+  const tooling = state.writes.filter((write) => write.path.startsWith(`${NASO_DIR}/tooling/`));
+  const rows = [];
+  let toolingShown = false;
+  for (const write of state.writes) {
+    if (!write.path.startsWith(`${NASO_DIR}/tooling/`)) {
+      rows.push(write);
+      continue;
+    }
+    if (toolingShown) continue;
+    toolingShown = true;
+    rows.push({
+      path: `${NASO_DIR}/tooling/`,
+      change: tooling.every((write) => write.change === 'new') ? 'new' : 'replace',
+      lines: tooling.reduce((sum, write) => sum + write.lines, 0),
+      note: `${plural(tooling.length, 'file')}; the hook runs this copy`,
+    });
+  }
+  const notes = {
+    'AGENTS.md': 'the briefing',
+    'CLAUDE.md': 'makes Claude Code load the briefing',
+    [`${NASO_DIR}/config.json`]: 'the choices you made here',
+  };
+
+  console.log(style.heading('Files this writes'));
+  console.log('');
+  const width = Math.max(...rows.map((row) => row.path.length)) + 2;
+  for (const row of rows) {
+    const size = sizeText(row);
+    const note = row.note ?? notes[row.path] ?? (/pre-commit$/.test(row.path) ? 'the gate, on this machine' : null);
+    console.log(`  ${row.path.padEnd(width)}${size}${note ? `  ${style.dim(`(${note})`)}` : ''}`);
+  }
+  console.log('');
+  console.log(
+    `  ${plural(state.writes.length, 'file')}, ${plural(state.writes.reduce((n, w) => n + w.lines, 0), 'line')}. ` +
+      `${state.track ? 'Yours to commit.' : 'Kept out of git on this machine.'} Nothing else is written.`,
+  );
+  if (state.recordsDev) {
+    console.log(`  Last, \`${state.devDependency.commands.map(commandText).join(' && ')}\`, the only step that uses the network.`);
+  }
+  console.log('');
+}
+
+/** "new, 83 lines", "append 5 lines", or "changed" for a file the package manager writes. */
+function sizeText(write) {
+  if (write.change === 'by-pm') return 'changed';
+  if (write.change === 'append') return `append ${plural(write.lines, 'line')}`;
+  return `${write.change}, ${plural(write.lines, 'line')}`;
 }
 
 /** Step 2's screen. Printed identically on every pass, so a second read is comparable. */
@@ -560,8 +643,7 @@ export async function displayPlan(state, cwd, style = plainStyle) {
   console.log('');
   const width = Math.max(...state.writes.map((write) => write.path.length)) + 2;
   for (const write of state.writes) {
-    const size =
-      write.change === 'append' ? `append ${plural(write.lines, 'line')}` : `${write.change}, ${plural(write.lines, 'line')}`;
+    const size = sizeText(write);
     console.log(`  ${write.path.padEnd(width)}${size}${write.note ? `  ${style.dim(`(${write.note})`)}` : ''}`);
   }
   const hookEntry = plans.find((plan) => plan.target.startsWith('Hook:') || /pre-commit/.test(plan.target));
@@ -593,8 +675,11 @@ export async function displayPlan(state, cwd, style = plainStyle) {
 }
 
 /** Step 3. */
-export async function install(cwd, { track, noHook, force, state }) {
+export async function install(cwd, { track, noHook, force, state, style = plainStyle }) {
   const done = { hook: false, claude: false, dev: false };
+  // A tick that survives no-colour output: plainStyle has no glyphs of its own.
+  const ok = (text) => `${style.green ? style.green('✓') : '✓'} ${text}`;
+  const no = (text) => `${style.yellow ? style.yellow('!') : '!'} ${text}`;
   console.log('## Accepted — writing');
   console.log('');
 
@@ -609,55 +694,38 @@ export async function install(cwd, { track, noHook, force, state }) {
 
   const created = await createBriefing(cwd, { force, exclude: state.excluded });
 
+  // The areas were on screen in the plan a moment ago; printing them again here pushed the
+  // prompt this run ends with off the top of a normal terminal.
   if (created.ok) {
-    const dirs = created.facts.areas;
+    const lines = lineCount(await readFile(path.join(cwd, 'AGENTS.md'), 'utf8').catch(() => ''));
     if (created.appended) {
-      console.log(
-        `- Appended the NASO block to AGENTS.md below the ${created.existingLines} lines already in it.`,
-      );
+      console.log(ok(`AGENTS.md: wrote the NASO block below your ${created.existingLines} lines, which are unchanged`));
     } else if (created.replacedBlock) {
-      console.log(
-        `- Replaced the naso:start / naso:end block in AGENTS.md. The other ${created.existingLines} lines are untouched.`,
-      );
+      console.log(ok(`AGENTS.md: wrote the NASO block in place of the old one; your ${created.existingLines} other lines are unchanged`));
     } else {
-      console.log(`- Wrote the NASO block in AGENTS.md from ${created.facts.files.length} files.`);
+      console.log(ok(`AGENTS.md: wrote the NASO block, ${plural(lines, 'line')}`));
     }
-    for (const entry of dirs) console.log(`    ${describeEntry(entry)}`);
-    const rootFiles = renderRootFiles(created.facts.entries, created.facts);
-    if (rootFiles) console.log(`    ${rootFiles.split('\n').join('\n    ')}`);
   } else if (created.reason === 'has-block') {
-    console.log('- Left the existing NASO block in AGENTS.md exactly as it is.');
-    console.log('  To regenerate just that block, re-run setup with --force.');
+    console.log(ok('AGENTS.md: kept the existing NASO block as it is (--force regenerates it)'));
   } else {
     console.log(
-      `- Left AGENTS.md alone: ${
-        created.reason === 'locked' ? `locked by ${created.holder}` : created.reason
-      }.`,
+      no(`AGENTS.md: left alone, ${created.reason === 'locked' ? `locked by ${created.holder}` : created.reason}. Nothing outside the markers is ever rewritten.`),
     );
-    console.log('  Nothing outside the naso:start / naso:end markers is ever rewritten.');
   }
-  console.log('');
 
   const claude = state.claude ?? (await planClaudeLink(cwd, { track }));
   const claudeWritten = await writeClaudeLink(claude);
   done.claude = claudeWritten || claude.action === 'linked';
   if (claudeWritten) {
-    console.log(
-      claude.action === 'create'
-        ? '- Wrote CLAUDE.md with one `@AGENTS.md` line, so Claude Code sessions load the briefing.'
-        : '- Appended `@AGENTS.md` to CLAUDE.md, so Claude Code sessions load the briefing.',
-    );
+    console.log(ok(`CLAUDE.md: ${claude.action === 'create' ? 'wrote' : 'appended'} \`@AGENTS.md\`, so Claude Code loads the briefing`));
   } else if (claude.action === 'advise') {
-    console.log(`- Left CLAUDE.md alone. ${CLAUDE_ADVICE}`);
+    console.log(no(`CLAUDE.md: left alone. ${CLAUDE_ADVICE}`));
   } else {
-    console.log('- CLAUDE.md already names AGENTS.md; left as it is.');
+    console.log(ok('CLAUDE.md: already loads AGENTS.md'));
   }
-  console.log('');
 
   const vendored = await vendorTooling(cwd);
-  console.log(`- Copied ${vendored.length} files into ${NASO_DIR}/tooling/ in this repository.`);
-  console.log('  The pre-commit hook runs that copy, so nothing depends on the package staying put.');
-  console.log('');
+  console.log(ok(`${NASO_DIR}/tooling/: copied ${plural(vendored.length, 'file')}; the hook runs this copy, not the package`));
 
   await writeConfig(cwd, {
     version: state.version,
@@ -666,17 +734,18 @@ export async function install(cwd, { track, noHook, force, state }) {
     hook: decision.action !== 'skip',
     exclude: state.excluded,
   });
-  console.log(`- Wrote ${NASO_DIR}/config.json with the settings this run used.`);
-  console.log('');
+  console.log(ok(`${NASO_DIR}/config.json: wrote the settings this run used`));
 
   if (decision.action === 'install' || decision.action === 'reinstall' || decision.action === 'chain') {
     done.hook = true;
+    const reported = [];
     await installPreCommitHook(cwd, {
       action: decision.action === 'chain' ? 'chain' : 'install',
       allowTracked: Boolean(decision.allowTracked),
-      report: (line) => console.log(`  ${line}`),
+      report: (line) => reported.push(line),
     });
-    console.log('');
+    console.log(ok(`pre-commit hook: ${decision.action === 'chain' ? 'installed, running your existing hook first' : 'installed'} (${shown(cwd, state.hook?.path ?? path.join(cwd, '.git/hooks/pre-commit'))})`));
+    for (const line of reported.filter((line) => /could not|failed|warn/i.test(line))) console.log(`    ${line}`);
   } else {
     const why = {
       'no-hook': '--no-hook',
@@ -685,35 +754,31 @@ export async function install(cwd, { track, noHook, force, state }) {
       'tracked-dir': `core.hooksPath ${state.hook?.hooksPath} is tracked by git`,
       chosen: 'you chose to skip it',
     }[decision.reason] ?? decision.reason;
-    console.log(`- Skipped the pre-commit hook (${why}).`);
-    console.log(`  To run the gate by hand: node ${NASO_DIR}/tooling/validate.mjs --staged`);
-    console.log('');
+    console.log(no(`pre-commit hook: skipped (${why}). Run the gate by hand: node ${NASO_DIR}/tooling/validate.mjs --staged`));
   }
 
   if (!track) {
     console.log(
       excludedLocally && localExcludes.length === 0
-        ? `- Excluded nothing: ${LOCAL_EXCLUDE_PATTERNS.join(' and ')} are tracked in git already.`
+        ? ok(`git: excluded nothing; ${LOCAL_EXCLUDE_PATTERNS.join(' and ')} are tracked already`)
         : excludedLocally
-        ? `- Kept ${localExcludes.join(' and ')} out of git via .git/info/exclude (this machine only, never committed).`
-        : '- Could not update .git/info/exclude (no git repository here); those files are untracked.',
+        ? ok(`git: ${localExcludes.join(', ')} kept out via .git/info/exclude, on this machine only`)
+        : no('git: no repository here, so nothing was excluded; those files are untracked'),
     );
-    if (excludedLocally && localExcludes.length > 0 && !localExcludes.includes('AGENTS.md')) console.log(`  ${TRACKED_AGENTS_NOTE}`);
+    if (excludedLocally && localExcludes.length > 0 && !localExcludes.includes('AGENTS.md')) console.log(`    ${TRACKED_AGENTS_NOTE}`);
   } else {
-    console.log(`- Tracking ${NASO_DIR}/ and AGENTS.md in git, as --track asked. Commit both when ready.`);
+    console.log(ok(`git: ${NASO_DIR}/ and AGENTS.md are yours to commit (--track)`));
   }
-  console.log('');
 
   // Anything a previous attempt left behind goes now, while we are still the
   // process that created the mess. Only files NASO wrote are removed.
   const artifacts = await findArtifacts(cwd);
   if (artifacts.length > 0) {
     const { removed, failed } = await removeArtifacts(artifacts);
-    for (const artifact of removed) console.log(`- Removed leftover ${artifact.label}.`);
+    for (const artifact of removed) console.log(ok(`removed leftover ${artifact.label}`));
     for (const artifact of failed) {
-      console.log(`- Could not remove leftover ${artifact.label} (${artifact.error}); delete ${artifact.path} by hand.`);
+      console.log(no(`could not remove leftover ${artifact.label} (${artifact.error}); delete ${artifact.path} by hand`));
     }
-    if (removed.length + failed.length > 0) console.log('');
   }
 
   if (state.recordsDev) {
@@ -734,36 +799,48 @@ export async function install(cwd, { track, noHook, force, state }) {
     }
     if (failed) {
       const why = (failed.res.stderr || failed.res.stdout).trim().split('\n').slice(-3).join('\n    ');
-      console.log(`- Could not record naso-dev in devDependencies: \`${commandText(failed.command)}\` failed.`);
+      console.log(no(`devDependencies: could not record naso-dev; \`${commandText(failed.command)}\` failed`));
       if (why) console.log(`    ${why}`);
-      console.log(`  Everything else is written. Run it yourself: ${how}`);
+      console.log(`    Everything else is written. Run it yourself: ${how}`);
     } else {
       done.dev = true;
-      console.log(`- ${state.devDependency.action === 'move' ? 'Moved' : 'Added'} naso-dev to devDependencies with \`${how}\`.`);
+      console.log(ok(`devDependencies: ${state.devDependency.action === 'move' ? 'moved' : 'added'} naso-dev with \`${how}\``));
     }
-    console.log('');
   }
+  console.log('');
 
   console.log('## Verify');
   console.log('');
   const verification = await checkBriefing(cwd);
   printCheck(verification);
   console.log('');
-  console.log('Next:');
-  console.log('');
-  console.log(`  npx naso-dev briefing ${cwd}     re-check the briefing against the code`);
-  console.log(`  npx naso-dev guide ${cwd}          read the guide for one area`);
-  console.log(`  npx naso-dev doctor ${cwd}         confirm the install end to end`);
-  console.log(`  npx naso-dev refresh ${cwd}        after upgrading: re-vendor and re-stamp`);
-  console.log('');
-  console.log('## Hand this to your coding agent');
-  console.log('');
-  console.log(agentPrompt(cwd));
-  console.log('');
   console.log('## What you have now');
   console.log('');
   for (const line of benefits({ verification, track, done, state })) console.log(`- ${line}`);
   console.log('');
+
+  // From inside the repository a path adds nothing but width, and four copies of a long
+  // one wrapped the commands into a block nobody could paste from.
+  // Real paths: on macOS /var is a link to /private/var, and process.cwd() resolves it.
+  const real = (dir) => realpath(dir).catch(() => path.resolve(dir));
+  const here = (await real(process.cwd())) === (await real(cwd)) ? '' : ` ${cwd}`;
+  const commands = [
+    [`npx naso-dev briefing${here}`, 're-check the briefing against the code'],
+    [`npx naso-dev guide${here}`, 'the guide for one area'],
+    [`npx naso-dev doctor${here}`, 'confirm the install end to end'],
+    [`npx naso-dev refresh${here}`, 'after upgrading: re-copy the toolset and re-stamp'],
+  ];
+  const width = Math.max(...commands.map(([command]) => command.length)) + 3;
+  console.log('Later:');
+  console.log('');
+  for (const [command, why] of commands) console.log(`  ${command.padEnd(width)}${why}`);
+  console.log('');
+
+  // The prompt is last because it is the next thing to do: the agent finishes what NASO
+  // cannot derive, and a person copying it should not have to scroll back to find it.
+  console.log('## Last step: hand this to your coding agent');
+  console.log('');
+  console.log(agentPrompt(cwd, here));
 
   return verification.ok;
 }

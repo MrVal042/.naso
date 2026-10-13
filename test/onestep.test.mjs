@@ -55,7 +55,7 @@ test('--yes --save-dev records naso-dev with the package manager, after everythi
     assert.equal(res.code, 0, res.stdout + res.stderr);
     const calls = await read(dir, '.fake-bin/npm-calls.log');
     assert.equal(calls.trim(), `install --save-dev naso-dev@${await toolVersion()}`);
-    assert.match(res.stdout, /Added naso-dev to devDependencies with `npm install --save-dev naso-dev@/);
+    assert.match(res.stdout, /devDependencies: added naso-dev with `npm install --save-dev naso-dev@/);
     assert.ok(await exists(dir, 'AGENTS.md'));
   });
 });
@@ -107,7 +107,7 @@ test('the agent prompt asks for a checked correction inside the markers, not onl
   await withRepo(async ({ dir, git, bare }) => {
     await seedProject(dir, git);
     const res = await bare(['--yes']);
-    const prompt = res.stdout.slice(res.stdout.indexOf('## Hand this to your coding agent'));
+    const prompt = res.stdout.slice(res.stdout.indexOf('## Last step: hand this to your coding agent'));
     assert.doesNotMatch(prompt, /Do not propose changes to AGENTS\.md yet/);
     assert.match(prompt, /CONTRIBUTING/);
     assert.match(prompt, /only between <!-- naso:start --> and <!-- naso:end -->/);
@@ -121,7 +121,7 @@ test('setup ends by saying what the repository now has, from what was actually d
   await withRepo(async ({ dir, git, bare }) => {
     await seedProject(dir, git);
     const res = await bare(['--yes']);
-    const end = res.stdout.slice(res.stdout.indexOf('## What you have now'));
+    const end = res.stdout.slice(res.stdout.indexOf('## What you have now'), res.stdout.indexOf('## Last step'));
     assert.ok(res.stdout.includes('## What you have now'), res.stdout);
     assert.match(end, /path claims? checked against this repository/);
     assert.match(end, /Claude Code loads it through CLAUDE\.md/);
@@ -131,7 +131,7 @@ test('setup ends by saying what the repository now has, from what was actually d
   });
   await withRepo(async ({ dir, git, bare }) => {
     await seedProject(dir, git);
-    const end = (await bare(['--yes', '--no-hook', '--track'])).stdout.split('## What you have now')[1] ?? '';
+    const end = ((await bare(['--yes', '--no-hook', '--track'])).stdout.split('## What you have now')[1] ?? '').split('## Last step')[0];
     assert.doesNotMatch(end, /Every commit on this machine/);
     assert.match(end, /No pre-commit gate/);
     assert.match(end, /Commit AGENTS\.md and \.naso\/ and every teammate/);
@@ -144,9 +144,9 @@ test('a package manager that exits 0 without recording naso-dev is reported, not
     const env = await fakeNpm(dir, { edits: false });
     const res = await exec(process.execPath, [BIN, dir, '--yes', '--save-dev'], dir, env);
     assert.equal(res.code, 0, res.stdout + res.stderr);
-    assert.match(res.stdout, /Could not record naso-dev in devDependencies/);
+    assert.match(res.stdout, /devDependencies: could not record naso-dev/);
     assert.match(res.stdout, /package\.json has no devDependencies entry/);
-    assert.doesNotMatch(res.stdout.split('## What you have now')[1] ?? '', /devDependencies/);
+    assert.doesNotMatch((res.stdout.split('## What you have now')[1] ?? '').split('## Last step')[0], /devDependencies/);
   });
 });
 
@@ -163,4 +163,22 @@ test('the real prompt asks the dev dependency question last, defaulting to yes',
 
   const present = await answerRealQuestions({ hook: none, hasBlock: false, devDependency: { action: 'present', commands: [] } }, ['\r', '\r']);
   assert.doesNotMatch(present.frames, /devDependencies/);
+});
+
+test('setup finishes on the agent prompt, with short commands and no plan repeated', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    const out = res.stdout.trimEnd();
+    assert.ok(out.endsWith('--------------------------------------------------------------'), 'the prompt is the last thing printed');
+    assert.ok(out.indexOf('## What you have now') < out.indexOf('## Last step: hand this to your coding agent'));
+
+    const written = out.slice(out.indexOf('## Accepted — writing'));
+    assert.match(written, /✓ AGENTS\.md: wrote the NASO block/);
+    assert.equal((written.match(/`src\/` — /g) ?? []).length, 0, 'the areas were in the plan; they are not printed twice');
+    // Run from inside the repository, a command needs no path to be pasted back.
+    assert.match(written, /^ {2}npx naso-dev doctor\s{2,}/m);
+    assert.doesNotMatch(written, new RegExp(`npx naso-dev doctor ${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  });
 });

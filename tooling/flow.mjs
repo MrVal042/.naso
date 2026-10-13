@@ -34,7 +34,7 @@ import { pathExists, parseArgs, listOption, run, toolVersion, isInteractive, sup
 import { topLevelEntries, areasOf, dominantLanguage, splitNul, NASO_START, NASO_END } from './briefing.mjs';
 import { describeHook } from './install.mjs';
 import { NASO_DIR, isVendored, vendoredVersion } from './vendor.mjs';
-import { inspect, install, displayPlan, devDependencyPlan, HOOK_ACTIONS } from './setup.mjs';
+import { inspect, install, displayPlan, displayOverview, devDependencyPlan, HOOK_ACTIONS } from './setup.mjs';
 import { colorEnabled, createStyle } from './ui.mjs';
 import { confirm, select, isCancel, note, outro } from './prompt.mjs';
 
@@ -301,6 +301,7 @@ export function terminalPrompts(io = {}) {
         initialValue: 'accept',
         options: [
           { value: 'accept', label: 'Accept', hint: 'write exactly the files listed above' },
+          { value: 'details', label: 'Show details', hint: 'every file, what the briefing says, and why' },
           {
             value: 'reject',
             label: 'Reject',
@@ -514,10 +515,15 @@ Other commands:
   // unconvinced, so after two the useful move is to stop and offer help. Excluding an
   // area is not a rejection: it changes the plan, and the plan is shown again.
   let rejections = 0;
+  let detail = false;
 
   for (;;) {
     const plan = await inspect(cwd, choices);
-    await displayPlan(plan, cwd, style);
+    // A person at a terminal decides from the overview and asks for the rest; --yes prints
+    // the full plan, because nobody will be asked and the log is the only record.
+    if (options.yes || detail) await displayPlan(plan, cwd, style);
+    else await displayOverview(plan, cwd, style);
+    detail = false;
 
     if (plan.hookDecision.action === 'abort') {
       console.log(style.heading('Aborted'));
@@ -530,7 +536,7 @@ Other commands:
     if (options.yes) {
       console.log(style.dim('--yes: accepting the plan above.'));
       console.log('');
-      const ok = await install(cwd, { ...choices, state: plan });
+      const ok = await install(cwd, { ...choices, state: plan, style });
       if (!ok) process.exitCode = 1;
       return;
     }
@@ -546,9 +552,14 @@ Other commands:
     if (decision === 'accept') {
       console.log(style.dim('Accepted.'));
       console.log('');
-      const ok = await install(cwd, { ...choices, state: plan });
+      const ok = await install(cwd, { ...choices, state: plan, style });
       if (!ok) process.exitCode = 1;
       return;
+    }
+
+    if (decision === 'details') {
+      detail = true;
+      continue;
     }
 
     if (decision === 'exclude') {
