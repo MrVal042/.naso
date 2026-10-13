@@ -48,6 +48,7 @@ import {
   readJSONFile,
   detectPackageManager,
   SUPPORT_EMAIL,
+  nasoCommand,
 } from './lib.mjs';
 import {
   scanRepo,
@@ -139,7 +140,7 @@ is this repository's own. Your job is to make that true here.
    add or change must name the file it came from. If you cannot cite it, leave
    it out. Never open or print the contents of .env files, keys or other
    credentials; name them by path only.
-5. Run \`npx naso-dev briefing${here}\` and fix anything it reports.
+5. Run \`${nasoCommand()} briefing${here}\` and fix anything it reports.
 6. Do not commit. Show me the diff of AGENTS.md, and for each change say what
    was wrong or missing and which file proves it. Then list what you found
    that NASO should derive on its own, so it can be reported upstream.
@@ -825,10 +826,10 @@ export async function install(cwd, { track, noHook, force, state, style = plainS
   const real = (dir) => realpath(dir).catch(() => path.resolve(dir));
   const here = (await real(process.cwd())) === (await real(cwd)) ? '' : ` ${cwd}`;
   const commands = [
-    [`npx naso-dev briefing${here}`, 're-check the briefing against the code'],
-    [`npx naso-dev guide${here}`, 'the guide for one area'],
-    [`npx naso-dev doctor${here}`, 'confirm the install end to end'],
-    [`npx naso-dev refresh${here}`, 'after upgrading: re-copy the toolset and re-stamp'],
+    [`${nasoCommand()} briefing${here}`, 're-check the briefing against the code'],
+    [`${nasoCommand()} guide${here}`, 'the guide for one area'],
+    [`${nasoCommand()} doctor${here}`, 'confirm the install end to end'],
+    [`${nasoCommand()} refresh${here}`, 'after upgrading: re-copy the toolset and re-stamp'],
   ];
   const width = Math.max(...commands.map(([command]) => command.length)) + 3;
   console.log('Later:');
@@ -907,7 +908,7 @@ Usage:
   --dry-run            print the plan and stop
 
 Without --yes this prints the plan and writes nothing. To answer the questions and
-accept or reject interactively, run \`npx naso-dev\`.
+accept or reject interactively, run \`${nasoCommand()}\`.
 
 Support: ${SUPPORT_EMAIL}`);
     return;
@@ -953,7 +954,7 @@ Support: ${SUPPORT_EMAIL}`);
   console.log('## Not written');
   console.log('');
   console.log('  This script asks nothing. Pass --yes to write the plan above, --dry-run to');
-  console.log('  only print it, or run `npx naso-dev` to accept or reject it interactively.');
+  console.log(`  only print it, or run \`${nasoCommand()}\` to accept or reject it interactively.`);
   console.log('');
   process.exitCode = 2;
 }

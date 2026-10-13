@@ -2,7 +2,7 @@
 // Built entirely on Node.js core modules — no npm packages.
 
 import { access, readFile, readdir, constants } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { realpathSync, readFileSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
@@ -95,6 +95,88 @@ const LOCKFILE_MANAGERS = [
   ['package-lock.json', 'npm'],
   ['npm-shrinkwrap.json', 'npm'],
 ];
+
+// ---------------------------------------------------------------------------
+// How to run NASO itself, in this repository's package manager
+// ---------------------------------------------------------------------------
+
+let nasoTarget = null;
+
+/** The repository the printed commands are for; null means the working directory. */
+export function setNasoTarget(dir) {
+  nasoTarget = dir ? path.resolve(dir) : null;
+}
+
+const readSync = (file) => {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The package manager this repository uses, read synchronously, for printing commands.
+ *
+ * Same order as detectPackageManager — the packageManager field, then a lockfile — and then
+ * the manager that launched this process, from npm_config_user_agent (`pnpm dlx`, `bunx`
+ * and `yarn dlx` set it too). Synchronous and uncached on purpose: it is read where a
+ * command is printed, and the answer changes mid-run when setup records the dev dependency.
+ */
+function runnerFacts() {
+  const dir = nasoTarget ?? process.cwd();
+  let pkg = null;
+  try {
+    pkg = JSON.parse(readSync(path.join(dir, 'package.json')) ?? 'null');
+  } catch {
+    pkg = null;
+  }
+  const field = String(pkg?.packageManager ?? '');
+  let pm = KNOWN_PACKAGE_MANAGERS.find((name) => field.startsWith(`${name}@`)) ?? null;
+  if (!pm) pm = LOCKFILE_MANAGERS.find(([file]) => existsSync(path.join(dir, file)))?.[1] ?? null;
+  if (!pm) {
+    const agent = String(process.env.npm_config_user_agent ?? '').split('/')[0];
+    pm = KNOWN_PACKAGE_MANAGERS.includes(agent) ? agent : 'npm';
+  }
+  const installed = Boolean(pkg?.devDependencies?.['naso-dev'] || pkg?.dependencies?.['naso-dev']);
+  // Yarn 1 has no `dlx`. Berry announces itself with .yarnrc.yml or a yarn@2+ pin.
+  const berry = existsSync(path.join(dir, '.yarnrc.yml')) || /^yarn@(?:[2-9]|\d{2})/.test(field);
+  return { pm, installed, berry };
+}
+
+/**
+ * The command a person types to run NASO here: `npx naso-dev`, `pnpm exec naso-dev`...
+ *
+ * Installed, each manager runs the local copy with its own short form. Not installed, it
+ * needs the manager's one-off runner — and yarn 1 has none, so npx stands in, since a
+ * machine with yarn 1 has npm. A version (`latest`) always means fetching, so it is
+ * always the one-off form.
+ */
+export function nasoCommand({ version = null } = {}) {
+  const { pm, installed, berry } = runnerFacts();
+  const spec = version ? `naso-dev@${version}` : 'naso-dev';
+  const local = installed && !version;
+  switch (pm) {
+    case 'pnpm':
+      return local ? 'pnpm exec naso-dev' : `pnpm dlx ${spec}`;
+    case 'yarn':
+      return local ? 'yarn naso-dev' : berry ? `yarn dlx ${spec}` : `npx ${spec}`;
+    case 'bun':
+      return `bunx ${spec}`;
+    default:
+      return `npx ${spec}`;
+  }
+}
+
+/** The command that records the latest naso-dev as a dev dependency, in this manager. */
+export function nasoUpgradeCommand() {
+  const { pm } = runnerFacts();
+  return {
+    pnpm: 'pnpm add --save-dev naso-dev@latest',
+    yarn: 'yarn add --dev naso-dev@latest',
+    bun: 'bun add --dev naso-dev@latest',
+  }[pm] ?? 'npm install --save-dev naso-dev@latest';
+}
 
 /**
  * Which package manager CI installs with, as a last resort before guessing.

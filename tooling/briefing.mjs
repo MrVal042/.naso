@@ -43,6 +43,7 @@ import {
   toolVersion,
   banner,
   SUPPORT_EMAIL,
+  nasoCommand,
 } from './lib.mjs';
 import {
   withLock,
@@ -209,11 +210,11 @@ function usage() {
   console.log(`NASO briefing
 
 Usage:
-  npx naso-dev briefing [dir]                    check the briefing against the repo
-  npx naso-dev briefing [dir] check              same
-  npx naso-dev briefing [dir] create             write the NASO block into AGENTS.md
-  npx naso-dev briefing [dir] create --force     replace an existing naso:start/naso:end block
-  npx naso-dev briefing [dir] refresh            move the version stamp only
+  ${nasoCommand()} briefing [dir]                    check the briefing against the repo
+  ${nasoCommand()} briefing [dir] check              same
+  ${nasoCommand()} briefing [dir] create             write the NASO block into AGENTS.md
+  ${nasoCommand()} briefing [dir] create --force     replace an existing naso:start/naso:end block
+  ${nasoCommand()} briefing [dir] refresh            move the version stamp only
 
 Never rewrites anything outside <!-- naso:start --> and <!-- naso:end -->.
 

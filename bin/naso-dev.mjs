@@ -3,7 +3,8 @@
 
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { toolVersion, SUPPORT_EMAIL, pathExists } from '../tooling/lib.mjs';
+import { stat } from 'node:fs/promises';
+import { toolVersion, SUPPORT_EMAIL, pathExists, nasoCommand, setNasoTarget } from '../tooling/lib.mjs';
 
 const TOOL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'tooling');
 
@@ -19,10 +20,10 @@ const COMMANDS = {
 // that breaks them is a deprecation nobody can roll back, so they run exactly as
 // before and say one line about what replaced them.
 const RETIRED = {
-  init: { module: 'init.mjs', replacement: 'npx naso-dev' },
+  init: { module: 'init.mjs' },
   // `setup` was the plan-and-ask half of what the flow now does in one run, so it runs
   // the flow: same flags, same questions, same accept / reject loop.
-  setup: { module: 'flow.mjs', replacement: 'npx naso-dev' },
+  setup: { module: 'flow.mjs' },
 };
 
 async function usage() {
@@ -40,8 +41,30 @@ async function usage() {
   console.log('Every command accepts --help. Support: ' + SUPPORT_EMAIL);
 }
 
+/** Flags whose next argument is a value, not a directory. */
+const VALUE_FLAGS = new Set(['--exclude', '--hook-action', '--scope']);
+
+/**
+ * The repository a run is about: the last argument that is a directory, or the working
+ * directory. The last, because `guide src .` names an area first and the repository after.
+ * Every command NASO prints for that repository is spelled in its package manager.
+ */
+async function targetOf(args) {
+  let found = null;
+  for (let i = 0; i < args.length; i++) {
+    if (VALUE_FLAGS.has(args[i])) {
+      i++;
+      continue;
+    }
+    if (args[i].startsWith('-')) continue;
+    if ((await stat(args[i]).catch(() => null))?.isDirectory()) found = args[i];
+  }
+  return found;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
+  setNasoTarget(await targetOf(argv));
 
   // No arguments at all is the setup flow, not a help screen. `npx naso-dev` on its
   // own is the command the README tells people to type, and printing a list of
@@ -60,7 +83,7 @@ async function main() {
   const retired = RETIRED[command];
 
   if (retired) {
-    console.error(`naso-dev ${command}: deprecated — \`${retired.replacement}\` now does this and the setup in one run.`);
+    console.error(`naso-dev ${command}: deprecated — \`${nasoCommand()}\` now does this and the setup in one run.`);
     console.error(`naso-dev ${command} still works; this notice is the only change.\n`);
     const mod = await import(pathToFileURL(path.join(TOOL_DIR, retired.module)).href);
     await mod.main(argv.slice(1));

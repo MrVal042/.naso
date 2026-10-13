@@ -35,6 +35,8 @@ import {
   compareVersions,
   isMainModule,
   SUPPORT_EMAIL,
+  nasoCommand,
+  nasoUpgradeCommand,
 } from './lib.mjs';
 import { refreshBriefingStamp, AGENTS_FILE } from './briefing.mjs';
 import { installPreCommitHook, readHook, isNasoHook } from './install.mjs';
@@ -47,13 +49,13 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(`NASO refresh
 
 Usage:
-  npx naso-dev refresh [target-dir]
+  ${nasoCommand()} refresh [target-dir]
 
   Re-copies the toolset into ${NASO_DIR}/tooling/, moves the AGENTS.md version stamp
   forward, and reinstalls the pre-commit hook.
 
   Never rewrites AGENTS.md prose and never rewrites ${NASO_DIR}/config.json.
-  To regenerate the briefing itself: npx naso-dev briefing <dir> create --force
+  To regenerate the briefing itself: ${nasoCommand()} briefing <dir> create --force
 
 Support: ${SUPPORT_EMAIL}`);
     return;
@@ -77,7 +79,7 @@ Support: ${SUPPORT_EMAIL}`);
   if (!hadTooling && !hadBriefing) {
     console.log('This repository is not set up yet. Nothing to refresh.');
     console.log('');
-    console.log(`  npx naso-dev setup ${cwd}`);
+    console.log(`  ${nasoCommand()} setup ${cwd}`);
     console.log('');
     process.exitCode = 1;
     return;
@@ -95,13 +97,13 @@ Support: ${SUPPORT_EMAIL}`);
   // 2. The stamp. Forward only.
   if (!hadBriefing) {
     console.log(`--  No ${AGENTS_FILE} here, so there is no stamp to move.`);
-    console.log(`    The gate still works; run \`npx naso-dev setup ${cwd}\` for the briefing.`);
+    console.log(`    The gate still works; run \`${nasoCommand()} setup ${cwd}\` for the briefing.`);
   } else {
     const stamped = await refreshBriefingStamp(cwd, { current: version });
     if (!stamped.ok) {
       if (stamped.reason === 'unstamped') {
         console.log(`--  ${AGENTS_FILE} has no version stamp, so nothing to move.`);
-        console.log(`    \`npx naso-dev briefing ${cwd} create --force\` would write one.`);
+        console.log(`    \`${nasoCommand()} briefing ${cwd} create --force\` would write one.`);
       } else {
         console.log(`--  Could not read ${AGENTS_FILE}: ${stamped.reason}`);
         problems++;
@@ -111,7 +113,7 @@ Support: ${SUPPORT_EMAIL}`);
       // "already stamped" hid the one case where the tool, not the briefing, is behind.
       console.log(`--  ${AGENTS_FILE} is stamped ${stamped.previous}, newer than this tool (${version}).`);
       console.log('    Left it alone: the tool is what needs updating here, not the briefing.');
-      console.log('    Run `npm i -D naso-dev@latest`, or `npx naso-dev@latest refresh`, to catch up.');
+      console.log(`    Run \`${nasoUpgradeCommand()}\`, or \`${nasoCommand({ version: 'latest' })} refresh\`, to catch up.`);
     } else if (!stamped.changed) {
       console.log(`--  ${AGENTS_FILE} is already stamped ${version}.`);
     } else {
@@ -156,8 +158,8 @@ Support: ${SUPPORT_EMAIL}`);
   console.log(`Toolset version in this repository: ${(await vendoredVersion(cwd)) ?? version}`);
   console.log('');
   console.log('Next:');
-  console.log(`  npx naso-dev doctor ${cwd}       confirm the install end to end`);
-  console.log(`  npx naso-dev validate ${cwd}     run the full gate once, not just the staged one`);
+  console.log(`  ${nasoCommand()} doctor ${cwd}       confirm the install end to end`);
+  console.log(`  ${nasoCommand()} validate ${cwd}     run the full gate once, not just the staged one`);
   console.log('');
 
   if (problems > 0) process.exitCode = 1;

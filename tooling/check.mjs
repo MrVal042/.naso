@@ -13,6 +13,7 @@ import {
   coversUnit,
   escapeRegExp,
   section,
+  nasoCommand,
 } from './lib.mjs';
 import {
   AGENTS_FILE,
@@ -159,7 +160,7 @@ export async function checkBriefing(cwd) {
 export function printCheck(result) {
   if (result.reason === 'missing') {
     console.error(`naso-dev briefing: no ${AGENTS_FILE} in ${path.dirname(result.agentsPath)}.`);
-    console.error('  Run `npx naso-dev setup` against this repository first.');
+    console.error(`  Run \`${nasoCommand()} setup\` against this repository first.`);
     return;
   }
 
@@ -192,7 +193,7 @@ export function printCheck(result) {
   console.log(
     `${result.problems.length} problem(s). Every path the briefing claims must exist, every ` +
       'real area must be\nmentioned, and no placeholder marker may remain. ' +
-      'Regenerate with `npx naso-dev briefing create --force`.',
+      `Regenerate with \`${nasoCommand()} briefing create --force\`.`,
   );
 }
 

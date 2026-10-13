@@ -16,6 +16,7 @@ import {
   shellSingleQuote,
   toPosixPath,
   nasoDir,
+  nasoCommand,
 } from './lib.mjs';
 import { NASO_DIR, vendoredToolingDir, vendoredScriptPath } from './vendor.mjs';
 
@@ -134,7 +135,7 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=$(pwd)
 NASO_SCRIPT="$REPO_ROOT/${script}"
 
 if [ ! -f "$NASO_SCRIPT" ]; then
-  echo "naso-dev: $NASO_SCRIPT is missing - pre-commit checks skipped. Run: npx naso-dev refresh" >&2
+  echo "naso-dev: $NASO_SCRIPT is missing - pre-commit checks skipped. Run: ${nasoCommand()} refresh" >&2
   exit 0
 fi
 

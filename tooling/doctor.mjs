@@ -14,6 +14,7 @@ import {
   compareVersions,
   isMainModule,
   SUPPORT_EMAIL,
+  nasoCommand,
 } from './lib.mjs';
 import {
   scanRepo,
@@ -39,7 +40,7 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(`NASO doctor
 
 Usage:
-  npx naso-dev doctor [target-dir]
+  ${nasoCommand()} doctor [target-dir]
 
 No changes are made.
 
@@ -93,7 +94,7 @@ Support: ${SUPPORT_EMAIL}`);
   } else if (compareVersions(vendoredVersionText, version) > 0) {
     printRow('vendored toolset', WARN, `${vendoredVersionText} — newer than this tool (${version}); update naso-dev`);
   } else if (vendoredVersionText !== version) {
-    printRow('vendored toolset', WARN, `${vendoredVersionText} — behind ${version}; run \`npx naso-dev refresh\``);
+    printRow('vendored toolset', WARN, `${vendoredVersionText} — behind ${version}; run \`${nasoCommand()} refresh\``);
   } else {
     printRow('vendored toolset', OK, `${NASO_DIR}/tooling/ at ${vendoredVersionText}`);
   }
@@ -160,8 +161,8 @@ Support: ${SUPPORT_EMAIL}`);
 
   console.log('');
   console.log('If anything is FAIL or WARN:');
-  console.log(`  npx naso-dev refresh ${cwd}   re-copy the toolset, move the stamp, reinstall the hook`);
-  console.log(`  npx naso-dev doctor ${cwd}    run this again`);
+  console.log(`  ${nasoCommand()} refresh ${cwd}   re-copy the toolset, move the stamp, reinstall the hook`);
+  console.log(`  ${nasoCommand()} doctor ${cwd}    run this again`);
   console.log('');
 }
 

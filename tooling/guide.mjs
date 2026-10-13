@@ -34,6 +34,7 @@ import {
   compareVersions,
   isMainModule,
   SUPPORT_EMAIL,
+  nasoCommand,
 } from './lib.mjs';
 import {
   scanRepo,
@@ -225,9 +226,9 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(`NASO guide
 
 Usage:
-  npx naso-dev guide <area-or-prefix> [target-dir]   everything about one area
-  npx naso-dev guide --tour [target-dir]              walk the whole briefing
-  npx naso-dev guide --list [target-dir]              the areas that exist
+  ${nasoCommand()} guide <area-or-prefix> [target-dir]   everything about one area
+  ${nasoCommand()} guide --tour [target-dir]              walk the whole briefing
+  ${nasoCommand()} guide --list [target-dir]              the areas that exist
 
   --list    print the areas and stop
 
@@ -275,7 +276,7 @@ Support: ${SUPPORT_EMAIL}`);
     console.log('No AGENTS.md here yet.');
     console.log('');
     console.log('Run setup to generate one from this repository:');
-    console.log(`  npx naso-dev setup ${cwd}`);
+    console.log(`  ${nasoCommand()} setup ${cwd}`);
     console.log('');
     return;
   }
@@ -292,7 +293,7 @@ Support: ${SUPPORT_EMAIL}`);
     console.log(
       newer
         ? `AGENTS.md was written by a newer NASO (${stamped}); this tool is ${version}. Update naso-dev rather than downgrading the briefing.`
-        : `The tool is ${version}. Run \`npx naso-dev briefing ${cwd} refresh\` to move the stamp.`,
+        : `The tool is ${version}. Run \`${nasoCommand()} briefing ${cwd} refresh\` to move the stamp.`,
     );
   }
   console.log('');
@@ -327,7 +328,7 @@ function printAreaList(facts, briefing) {
     if (!covered) console.log(`           not mentioned in AGENTS.md yet`);
   }
   console.log('');
-  console.log('  Read one:  npx naso-dev guide src .');
+  console.log('  Read one:  ' + nasoCommand() + ' guide src .');
   console.log('');
 }
 
@@ -342,7 +343,7 @@ async function printArea(cwd, facts, briefing, wanted) {
     console.log(known.length > 0 ? 'These do exist:' : 'This repository has no top-level areas at all.');
     for (const line of known) console.log(line);
     console.log('');
-    console.log('  List them again:  npx naso-dev guide --list .');
+    console.log('  List them again:  ' + nasoCommand() + ' guide --list .');
     console.log('  Everything NASO could not name:');
     const unknown = facts.areas.filter((entry) => !entry.role);
     for (const entry of unknown) console.log(`    ${entry.name}/`);
@@ -441,7 +442,7 @@ async function printArea(cwd, facts, briefing, wanted) {
   console.log('## Read the code, not just the file list');
   console.log('');
   console.log('  AGENTS.md says what this area is for. It does not say what the code does.');
-  console.log('  For the orientation, walk the whole briefing:  npx naso-dev guide --tour .');
+  console.log('  For the orientation, walk the whole briefing:  ' + nasoCommand() + ' guide --tour .');
   console.log('');
 
   const check = await checkBriefing(cwd);
@@ -501,7 +502,7 @@ async function printNextSteps(cwd, facts, unknown) {
       body:
         'The pre-commit hook only checks staged files. A full run type-checks and tests ' +
         'everything, which is what CI will do.',
-      command: `npx naso-dev validate ${cwd}`,
+      command: `${nasoCommand()} validate ${cwd}`,
     });
   }
 
@@ -527,7 +528,7 @@ async function printNextSteps(cwd, facts, unknown) {
         'AGENTS.md is excluded locally, so only this machine has it. That is right for a ' +
         'repository you do not own. For one you do, commit it so the next agent on any ' +
         'machine gets it too.',
-      command: `npx naso-dev setup ${cwd} --track`,
+      command: `${nasoCommand()} setup ${cwd} --track`,
     });
   }
 
@@ -537,7 +538,7 @@ async function printNextSteps(cwd, facts, unknown) {
       'Nobody regenerates this file. When a commit adds an area, the hook appends one line ' +
       'for it and, if the file is tracked and clean, stages it with that commit. Everything ' +
       'else is ordinary code review.',
-    command: `npx naso-dev briefing ${cwd}`,
+    command: `${nasoCommand()} briefing ${cwd}`,
   });
 
   console.log('## Next steps');

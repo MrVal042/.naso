@@ -50,6 +50,20 @@ It belongs in `devDependencies` because nothing in your app imports it: a produc
 
 Why not set up from `npm i naso-dev` itself: npm 7 and later run a package's install script with its output hidden and no terminal to answer from, pnpm and bun do not run it unless the project allows it, and npm writes `package.json` after the script has run. An install script would also run on every `npm ci` in CI and on every teammate's machine. One `npx` command does the same job without any of that.
 
+### Your package manager, not just npx
+
+Every command NASO prints for you to run is spelled for the package manager this repository uses: its `packageManager` field, then its lockfile, then the manager that launched NASO, then npm.
+
+| Repository uses | naso-dev installed here | not installed |
+| --------------- | ----------------------- | ------------- |
+| npm             | `npx naso-dev`          | `npx naso-dev` |
+| pnpm            | `pnpm exec naso-dev`    | `pnpm dlx naso-dev` |
+| yarn 2+         | `yarn naso-dev`         | `yarn dlx naso-dev` |
+| yarn 1          | `yarn naso-dev`         | `npx naso-dev` (yarn 1 has no `dlx`) |
+| bun             | `bunx naso-dev`         | `bunx naso-dev` |
+
+The same goes for the dev dependency step, the upgrade hint `refresh` prints, and the message the pre-commit hook prints when its toolset is missing. The commands in AGENTS.md (`pnpm run lint`) already followed the repository's manager.
+
 ### When it finishes
 
 Setup ends with two things, in this order:
