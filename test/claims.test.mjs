@@ -354,3 +354,14 @@ test('no Prettier, no .prettierignore', async () => {
     await assert.rejects(read(dir, '.prettierignore'));
   });
 });
+
+test('the Scope section says what the hook checks, what it does not, and when it lets a commit through', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const scope = sectionOf(await read(dir, AGENTS), 'Scope').replace(/\s+/g, ' ');
+    assert.match(scope, /checks staged files for secret-shaped lines, scope, format and lint/);
+    assert.match(scope, /does not type-check, run tests or read the commit message/);
+    assert.match(scope, /If \.naso\/tooling\/ is missing it prints one line and lets the commit through/);
+  });
+});
