@@ -38,10 +38,10 @@ export const RUN_FLOW_SCRIPTED = `
     interactive: true,
     prompts: {
       questions: async (style, options, context) => {
-        log({ ask: 'questions', hook: context.hook.state, trackedDir: context.hook.trackedDir, hasBlock: context.hasBlock });
+        log({ ask: 'questions', hook: context.hook.state, trackedDir: context.hook.trackedDir, hasBlock: context.hasBlock, dev: context.devDependency?.action ?? null });
         return script.questions === null
           ? null
-          : { track: options.track, noHook: options.noHook, force: options.force, hookAction: options.hookAction, ...script.questions };
+          : { track: options.track, noHook: options.noHook, force: options.force, hookAction: options.hookAction, saveDev: options.saveDev, ...script.questions };
       },
       decide: async (style, info) => {
         const answer = decisions.length > 0 ? decisions.shift() : null;

@@ -36,13 +36,18 @@ Add `--why` for the long-form rationale before you decide.
 
 ### Adding it to a project
 
-`npx naso-dev` needs no install. To pin a version for the team, add it as a **dev dependency**:
+`npx naso-dev` is the whole install. When the repository has a `package.json`, the questions include one more: **Add naso-dev to devDependencies?** Yes runs your package manager (`npm install --save-dev`, `pnpm add --save-dev`, `yarn add --dev` or `bun add --dev`) as the last step, after everything else is written, so teammates get the same version from an ordinary install. If someone already ran `npm i naso-dev` and it landed in `dependencies`, the question offers to move it instead. From a script, pass `--save-dev`; `--yes` alone never runs the package manager.
 
-```bash
-npm i -D naso-dev     # pnpm add -D naso-dev · yarn add -D naso-dev · bun add -d naso-dev
-```
+It belongs in `devDependencies` because nothing in your app imports it: a production install (`npm ci --omit=dev`) and your app's build leave it out. The pre-commit hook does not need it installed at all: it runs the copy in `.naso/tooling/`.
 
-It is a development tool. Nothing in your app imports it, so it belongs in `devDependencies`, where a production install (`npm ci --omit=dev`) and your app's build leave it out. The pre-commit hook does not need it installed at all: it runs the copy in `.naso/tooling/`.
+Why not set up from `npm i naso-dev` itself: npm 7 and later run a package's install script with its output hidden and no terminal to answer from, pnpm and bun do not run it unless the project allows it, and npm writes `package.json` after the script has run. An install script would also run on every `npm ci` in CI and on every teammate's machine. One `npx` command does the same job without any of that.
+
+### When it finishes
+
+Setup ends with two things:
+
+- **A prompt for your coding agent.** It asks the agent to read the rules this repository already wrote down (CONTRIBUTING, CODEOWNERS, review templates, CI, docs), check every claim in the NASO block against them, and correct the block. Every change must cite the file that proves it and stay between the markers. The agent runs `npx naso-dev briefing` before reporting, never opens credential files, and does not commit: you get a diff to review.
+- **What you have now.** One line per thing the run actually did: how many path claims were checked, whether Claude Code loads the briefing, what the hook checks on this machine, whether naso-dev was recorded in `devDependencies`, and whether anything reached git history. Nothing that was skipped or failed is listed.
 
 ### Running it from a script
 
@@ -91,6 +96,7 @@ All commands accept `--help`. `init` and `setup` are retired but still run; both
 - `--no-hook` — do not install the pre-commit hook.
 - `--hook-action <install|chain|skip|abort>` — what to do when `.git/hooks/pre-commit` already exists and NASO did not write it, or when `core.hooksPath` points at a directory git tracks (husky's `.husky/`). `chain` moves the existing hook, unchanged, to `pre-commit.pre-naso` and NASO's hook runs it first. The default is `skip`: NASO never overwrites a hook it did not write, and never writes into a tracked hooks directory unless you choose to. In a terminal this is asked as a question instead.
 - `--exclude <prefix>` — keep an area out of the briefing. Repeatable. Saved to `.naso/config.json`.
+- `--save-dev` — record naso-dev in `devDependencies` with this repository's package manager, as the last step. Asked as a question in a terminal; from a script, `--yes` alone never runs the package manager.
 - `--yes`, `-y` — accept without prompting (CI and scripts).
 - `--dry-run` — print the plan and stop. Writes nothing.
 - `--force` — replace an existing `naso:start` / `naso:end` block. On a repository NASO already set up, `npx naso-dev --force` re-runs setup and regenerates the block; without it the run only reports what is installed. It never touches anything outside the markers.

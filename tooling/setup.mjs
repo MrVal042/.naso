@@ -45,6 +45,8 @@ import {
   nasoDir,
   plainStyle,
   isMainModule,
+  readJSONFile,
+  detectPackageManager,
   SUPPORT_EMAIL,
 } from './lib.mjs';
 import {
@@ -105,35 +107,73 @@ const wrap = (text, width = 74) => {
 /**
  * The prompt to hand to the user's own coding agent after setup.
  *
- * Deliberately read-only. The first thing an agent does with a new AGENTS.md is
- * act on it — restructure, expand, "improve" — and the result is a briefing
- * nobody verified. Asking for an assessment first costs one turn and finds out
- * whether the briefing is any good before anything depends on it.
+ * It asks for a correction, not a free rewrite. NASO derives the block from file lists,
+ * manifests and history; the rules people wrote down (CONTRIBUTING, CODEOWNERS, review
+ * templates, CI, docs) are where it is most often incomplete, and an agent with the whole
+ * repository open is the cheapest way to close that gap. Three limits keep the result
+ * trustworthy: every change cites a file it read, edits stay between the markers, and the
+ * checker runs before anything is reported — an agent "improving" a briefing without
+ * evidence produces exactly the confident fiction NASO exists to replace.
  */
 function agentPrompt(cwd) {
   return `Copy everything between the lines below and paste it into your coding agent.
 
 --------------------------------------------------------------
-Read AGENTS.md in this repository (${cwd}).
+Read AGENTS.md in this repository (${cwd}). NASO generated the part between
+<!-- naso:start --> and <!-- naso:end --> from file lists, manifests and git
+history. Its aim: every path is real, every count is a count, and every rule
+is this repository's own. Your job is to make that true here.
 
-Then, without creating, editing or deleting any file, and without running any
-command that changes the repository, tell me:
-
-1. What this repository is, in three sentences, and which parts of that came
-   from AGENTS.md rather than from your own reading of the code.
-2. What AGENTS.md tells you that you would not have found quickly on your own.
-   Be concrete: name the sections.
-3. Where AGENTS.md is incomplete, ambiguous, or wrong. Check its path claims
-   against the filesystem before you say they are wrong.
-4. What it changes about how you would work in this repository day to day —
-   which questions you skip, which files you open first, which mistakes become
-   impossible to make silently.
-5. What you still cannot tell from AGENTS.md, and where in the code you would
-   have to look to find out.
-
-Do not propose changes to AGENTS.md yet. I want to see your reading of it first.
+1. Read the rules this repository already wrote down: README, CONTRIBUTING,
+   CODEOWNERS, pull or merge request templates, CI configuration, commit hooks
+   and lint config, and any docs on architecture, folder structure or decisions.
+2. Check every claim in the NASO block against those files and the code: paths,
+   counts, commands, the commit format, the gate, and what the hook enforces.
+3. Correct what is wrong and add what is missing that an agent would otherwise
+   get wrong: framework rules, generated files that must not be edited by hand,
+   import boundaries, protected paths, which commands only check and which
+   rewrite files, and which document wins when two disagree. Prefer a link to
+   the file that states a rule over copying the rule.
+4. Edit only between <!-- naso:start --> and <!-- naso:end -->. Every line you
+   add or change must name the file it came from. If you cannot cite it, leave
+   it out. Never open or print the contents of .env files, keys or other
+   credentials; name them by path only.
+5. Run \`npx naso-dev briefing ${cwd}\` and fix anything it reports.
+6. Do not commit. Show me the diff of AGENTS.md, and for each change say what
+   was wrong or missing and which file proves it. Then list what you found
+   that NASO should derive on its own, so it can be reported upstream.
 --------------------------------------------------------------`;
 }
+
+/**
+ * Recording naso-dev as a dev dependency, with the repository's own package manager.
+ *
+ * `npm i naso-dev` lands in "dependencies", where a production install and an app's build
+ * pull it in. A postinstall script cannot fix that or run setup: npm 7+ hides its output
+ * and gives it no terminal, pnpm and bun do not run it at all by default, and npm writes
+ * package.json after it. So setup does it, as one more line in the plan the person accepts.
+ * yarn and bun keep an entry in "dependencies" when asked to add it as dev, so it is
+ * removed first; npm and pnpm move it in one step. Null when there is no package.json.
+ */
+export function devDependencyPlan(pkg, pm, version) {
+  if (!pkg) return null;
+  if (pkg.devDependencies?.['naso-dev']) return { action: 'present', commands: [] };
+  const spec = `naso-dev@${version}`;
+  const add = {
+    npm: ['npm', ['install', '--save-dev', spec]],
+    pnpm: ['pnpm', ['add', '--save-dev', spec]],
+    yarn: ['yarn', ['add', '--dev', spec]],
+    bun: ['bun', ['add', '--dev', spec]],
+  }[pm] ?? ['npm', ['install', '--save-dev', spec]];
+  const inDependencies = Boolean(pkg.dependencies?.['naso-dev']);
+  const commands = inDependencies && (pm === 'yarn' || pm === 'bun') ? [[pm, ['remove', 'naso-dev']], add] : [add];
+  return { action: inDependencies ? 'move' : 'add', pm, commands };
+}
+
+const commandText = ([bin, args]) => [bin, ...args].join(' ');
+
+/** The lockfile a package manager writes, for the plan's list of files. */
+const LOCKFILE_OF = { npm: 'package-lock.json', pnpm: 'pnpm-lock.yaml', yarn: 'yarn.lock', bun: 'bun.lock' };
 
 /** Lines in a text as an editor counts them: a trailing newline does not start one. */
 export function lineCount(text) {
@@ -273,7 +313,7 @@ const TRACKED_AGENTS_NOTE =
  * The scan is the expensive part and it is what both a rejection and an accept
  * are decided on, so it is done up front and reused for the whole flow.
  */
-export async function inspect(cwd, { track, noHook, exclude, force = false, hookAction = null }) {
+export async function inspect(cwd, { track, noHook, exclude, force = false, hookAction = null, saveDev = false }) {
   const config = await readConfig(cwd);
 
   // Saved exclusions survive the run, and a --exclude flag adds to them. The union is
@@ -451,7 +491,24 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     });
   }
 
-  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, localExcludes, claude };
+  const devDependency = devDependencyPlan(facts.pkg, facts.packageManager?.name ?? 'npm', version);
+  const recordsDev = Boolean(saveDev && devDependency && devDependency.action !== 'present');
+  if (recordsDev) {
+    const how = devDependency.commands.map(commandText).join(' && ');
+    plans.push({
+      target: 'naso-dev to devDependencies',
+      verb: devDependency.action === 'move' ? 'Move' : 'Add',
+      detail:
+        (devDependency.action === 'move'
+          ? 'It is in "dependencies", where a production install and the app\'s build pick it up. '
+          : 'Teammates get the same version from an ordinary install, and production installs leave it out. ') +
+        `Runs \`${how}\` last, after everything else is written. This is the only step that uses the network.`,
+    });
+    writes.push({ path: 'package.json', change: 'devDependencies', lines: 1, note: `by ${devDependency.pm}` });
+    writes.push({ path: LOCKFILE_OF[devDependency.pm] ?? 'package-lock.json', change: 'update', lines: 0, note: `by ${devDependency.pm}, with node_modules/` });
+  }
+
+  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, localExcludes, claude, devDependency, recordsDev };
 }
 
 /** Step 2's screen. Printed identically on every pass, so a second read is comparable. */
@@ -537,6 +594,7 @@ export async function displayPlan(state, cwd, style = plainStyle) {
 
 /** Step 3. */
 export async function install(cwd, { track, noHook, force, state }) {
+  const done = { hook: false, claude: false, dev: false };
   console.log('## Accepted — writing');
   console.log('');
 
@@ -581,7 +639,9 @@ export async function install(cwd, { track, noHook, force, state }) {
   console.log('');
 
   const claude = state.claude ?? (await planClaudeLink(cwd, { track }));
-  if (await writeClaudeLink(claude)) {
+  const claudeWritten = await writeClaudeLink(claude);
+  done.claude = claudeWritten || claude.action === 'linked';
+  if (claudeWritten) {
     console.log(
       claude.action === 'create'
         ? '- Wrote CLAUDE.md with one `@AGENTS.md` line, so Claude Code sessions load the briefing.'
@@ -610,6 +670,7 @@ export async function install(cwd, { track, noHook, force, state }) {
   console.log('');
 
   if (decision.action === 'install' || decision.action === 'reinstall' || decision.action === 'chain') {
+    done.hook = true;
     await installPreCommitHook(cwd, {
       action: decision.action === 'chain' ? 'chain' : 'install',
       allowTracked: Boolean(decision.allowTracked),
@@ -655,6 +716,34 @@ export async function install(cwd, { track, noHook, force, state }) {
     if (removed.length + failed.length > 0) console.log('');
   }
 
+  if (state.recordsDev) {
+    // Last, so a failed install leaves a finished setup rather than a half-written one.
+    let failed = null;
+    for (const command of state.devDependency.commands) {
+      const res = await run(command[0], command[1], { cwd });
+      if (!res.ok) {
+        failed = { command, res };
+        break;
+      }
+    }
+    const how = state.devDependency.commands.map(commandText).join(' && ');
+    // An exit code of 0 is the package manager's claim; package.json is the fact.
+    const after = failed ? null : await readJSONFile(path.join(cwd, 'package.json'));
+    if (!failed && !after?.devDependencies?.['naso-dev']) {
+      failed = { command: state.devDependency.commands.at(-1), res: { stderr: 'it exited 0, but package.json has no devDependencies entry for naso-dev' } };
+    }
+    if (failed) {
+      const why = (failed.res.stderr || failed.res.stdout).trim().split('\n').slice(-3).join('\n    ');
+      console.log(`- Could not record naso-dev in devDependencies: \`${commandText(failed.command)}\` failed.`);
+      if (why) console.log(`    ${why}`);
+      console.log(`  Everything else is written. Run it yourself: ${how}`);
+    } else {
+      done.dev = true;
+      console.log(`- ${state.devDependency.action === 'move' ? 'Moved' : 'Added'} naso-dev to devDependencies with \`${how}\`.`);
+    }
+    console.log('');
+  }
+
   console.log('## Verify');
   console.log('');
   const verification = await checkBriefing(cwd);
@@ -670,8 +759,49 @@ export async function install(cwd, { track, noHook, force, state }) {
   console.log('## Hand this to your coding agent');
   console.log('');
   console.log(agentPrompt(cwd));
+  console.log('');
+  console.log('## What you have now');
+  console.log('');
+  for (const line of benefits({ verification, track, done, state })) console.log(`- ${line}`);
+  console.log('');
 
   return verification.ok;
+}
+
+/**
+ * What this run gave the repository, one line per thing that actually happened.
+ *
+ * Built from the outcome, not the plan: a skipped hook is not described as a gate, and a
+ * failed install is not described as a dev dependency. A list of benefits the run did not
+ * deliver would be the last thing on screen and the first thing proven wrong.
+ */
+function benefits({ verification, track, done, state }) {
+  const lines = [];
+  const claims = verification.tokens?.length ?? 0;
+  if (verification.ok) {
+    lines.push(
+      `A briefing every coding agent that reads AGENTS.md starts from, with ${plural(claims, 'path claim')} ` +
+        'checked against this repository rather than written from memory.',
+    );
+  }
+  if (done.claude) lines.push('Claude Code loads it through CLAUDE.md, so a session starts with it instead of rediscovering the repository.');
+  if (done.hook) {
+    lines.push(
+      'Every commit on this machine is checked before it lands: secret-shaped lines, files outside NASO_SCOPE, ' +
+        'format and lint on staged files, and a briefing line for any new top-level area.',
+    );
+    lines.push(`The gate runs from ${NASO_DIR}/tooling/ with no network and no package install.`);
+  } else {
+    lines.push(`No pre-commit gate. Run it by hand: node ${NASO_DIR}/tooling/validate.mjs --staged`);
+  }
+  if (done.dev) lines.push('naso-dev is in devDependencies: teammates get this version from an ordinary install, and production installs leave it out.');
+  lines.push(
+    track
+      ? `Commit AGENTS.md and ${NASO_DIR}/ and every teammate gets the same briefing and the same gate (the hook itself is per machine).`
+      : `Nothing reached git history: AGENTS.md and ${NASO_DIR}/ stay on this machine until you choose --track.`,
+  );
+  void state;
+  return lines;
 }
 
 /**
@@ -693,6 +823,7 @@ Usage:
   --track              commit ${NASO_DIR}/ and AGENTS.md instead of excluding them locally
   --no-hook            do not install the pre-commit hook
   --hook-action <a>    install | chain | skip | abort, for a hook NASO did not write
+  --save-dev           record naso-dev in devDependencies with the package manager
   --exclude <prefix>   keep an area out of the briefing; repeatable, saved to config.json
   --force              replace an existing naso:start / naso:end block, and nothing else
   --yes                accept the plan and write it
@@ -714,6 +845,7 @@ Support: ${SUPPORT_EMAIL}`);
     dryRun: flags.has('dry-run'),
     exclude: listOption(lists, 'exclude'),
     hookAction: values.get('hook-action') ?? null,
+    saveDev: flags.has('save-dev'),
   };
 
   if (!(await pathExists(cwd))) {

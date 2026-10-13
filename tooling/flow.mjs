@@ -30,11 +30,11 @@
 
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { pathExists, parseArgs, listOption, run, toolVersion, isInteractive, supportTemplate, SUPPORT_EMAIL } from './lib.mjs';
+import { pathExists, parseArgs, listOption, run, toolVersion, isInteractive, supportTemplate, readJSONFile, detectPackageManager, SUPPORT_EMAIL } from './lib.mjs';
 import { topLevelEntries, areasOf, dominantLanguage, splitNul, NASO_START, NASO_END } from './briefing.mjs';
 import { describeHook } from './install.mjs';
 import { NASO_DIR, isVendored, vendoredVersion } from './vendor.mjs';
-import { inspect, install, displayPlan, HOOK_ACTIONS } from './setup.mjs';
+import { inspect, install, displayPlan, devDependencyPlan, HOOK_ACTIONS } from './setup.mjs';
 import { colorEnabled, createStyle } from './ui.mjs';
 import { confirm, select, isCancel, note, outro } from './prompt.mjs';
 
@@ -262,7 +262,26 @@ async function ask(style, options, context, io = {}) {
     force = replace;
   }
 
-  return { track, noHook, force, hookAction };
+  // Asked last and only when there is something to record. "No" is the default nowhere
+  // else in this flow either way: a person who ran `npx naso-dev` to set up a repository
+  // wants it to stay set up for the next person, which is what the dev dependency does.
+  let saveDev = options.saveDev;
+  const dev = context.devDependency;
+  if (!saveDev && dev && dev.action !== 'present') {
+    const record = await confirm({
+      message:
+        dev.action === 'move'
+          ? `naso-dev is in dependencies, where production installs pick it up. Move it to devDependencies with ${dev.pm}?`
+          : `Add naso-dev to devDependencies with ${dev.pm}, so teammates get the same version?`,
+      initialValue: true,
+      style,
+      ...io,
+    });
+    if (isCancel(record)) return null;
+    saveDev = record;
+  }
+
+  return { track, noHook, force, hookAction, saveDev };
 }
 
 /**
@@ -367,6 +386,8 @@ Options:
   --force            replace an existing naso:start / naso:end block, and nothing else
   --hook-action <a>  install | chain | skip | abort, for a hook NASO did not write
                      or a core.hooksPath directory git tracks (default: skip)
+  --save-dev         record naso-dev in devDependencies with this repository's
+                     package manager (asked when there is a terminal)
   --yes              accept the plan without asking; for CI, scripts and agents
   --dry-run          print the plan and stop
   --why              the long-form rationale for doing this at all
@@ -393,6 +414,7 @@ Other commands:
     dryRun: flags.has('dry-run'),
     exclude: listOption(lists, 'exclude'),
     hookAction: values.get('hook-action') ?? null,
+    saveDev: flags.has('save-dev'),
   };
 
   if (options.hookAction !== null && !HOOK_ACTIONS.includes(options.hookAction)) {
@@ -478,7 +500,9 @@ Other commands:
   }
 
   if (!options.yes) {
-    const answered = await prompts.questions(style, options, { hook: state.hook, hasBlock: state.hasBlock });
+    const pkg = await readJSONFile(path.join(cwd, 'package.json'));
+    const devDependency = devDependencyPlan(pkg, (await detectPackageManager(cwd, pkg)).name, version);
+    const answered = await prompts.questions(style, options, { hook: state.hook, hasBlock: state.hasBlock, devDependency });
     if (answered === null) {
       prompts.done(style.warn('Cancelled. Nothing was written.'));
       return;
