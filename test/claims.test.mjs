@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { readdir } from 'node:fs/promises';
-import { parseGitlabJobs, parseWorkflowJobs } from '../tooling/briefing.mjs';
+import { parseGitlabJobs, parseWorkflowJobs, diffCheckPaths } from '../tooling/briefing.mjs';
 import { AGENTS, withRepo, put, read, sectionOf } from './helpers.mjs';
 
 const GITLAB_CI = `include:
@@ -290,6 +290,18 @@ test('a codegen script CI does not check is still marked generated, with no CI c
     assert.match(boundaries, /\*\*Generated files\.\*\* `src\/gql\.ts` is written by `npm run gen`; regenerate it, never edit it by hand\.\n/);
     assert.doesNotMatch(boundaries, /CI fails/);
   });
+});
+
+test('a diff check followed by a shell fallback keeps only its paths', () => {
+  assert.deepEqual(
+    diffCheckPaths("git diff --exit-code src/api/schema.d.ts || { echo 'schema.d.ts is stale; run npm run api:types'; exit 1; }"),
+    ['src/api/schema.d.ts'],
+  );
+  const jobs = parseGitlabJobs(
+    "api:\n  script:\n    - npm run api:types\n    - git diff --exit-code src/api/schema.d.ts || { echo 'stale; run npm run api:types'; exit 1; }\n",
+  );
+  assert.deepEqual(jobs[0].commands, ['npm run api:types']);
+  assert.deepEqual(jobs[0].diffChecks, ['src/api/schema.d.ts']);
 });
 
 test('the vendored toolset is invisible to the repository\'s ESLint and Prettier', async () => {

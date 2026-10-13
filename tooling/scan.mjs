@@ -1110,14 +1110,56 @@ export function collapseSteps(labels) {
  * on its own as a check, and run locally it rewrote the generated file and checked nothing.
  */
 export function diffCheckPaths(line) {
-  const match = String(line).trim().match(/^git\s+diff\b(.*)$/);
+  const match = splitShell(line)[0]?.trim().match(/^git\s+diff\b(.*)$/);
   if (!match || !/--exit-code\b/.test(match[1])) return null;
   return match[1].split(/\s+/).filter((word) => word && !word.startsWith('-'));
 }
 
+/**
+ * A shell line split on `&&`, `||`, `;` and `|`, outside quotes.
+ *
+ * `git diff --exit-code x || { echo 'stale; run y'; exit 1; }` split on every `;` tore the
+ * echo apart, and the briefing printed half a shell command that failed when run.
+ */
+export function splitShell(line) {
+  const parts = [];
+  let current = '';
+  let quote = null;
+  const text = String(line);
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      current += c;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      current += c;
+      continue;
+    }
+    const two = text.slice(i, i + 2);
+    if (two === '&&' || two === '||') {
+      parts.push(current);
+      current = '';
+      i++;
+      continue;
+    }
+    if (c === ';' || c === '|') {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += c;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
 /** Split a CI line into its commands, keeping diff checks apart from invocations. */
 function noteCiLine(job, value) {
-  for (const segment of String(value).split(/&&|;/)) {
+  for (const segment of splitShell(value)) {
+    if (/^[{}]|^(?:echo|exit|printf|true|false)\b/.test(segment)) continue;
     const paths = diffCheckPaths(segment);
     if (paths) job.diffChecks.push(...paths);
     else job.commands.push(...extractInvocations(segment));
