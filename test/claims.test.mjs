@@ -6,6 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { readdir } from 'node:fs/promises';
 import { parseGitlabJobs, parseWorkflowJobs } from '../tooling/briefing.mjs';
 import { AGENTS, withRepo, put, read, sectionOf } from './helpers.mjs';
 
@@ -288,5 +289,34 @@ test('a codegen script CI does not check is still marked generated, with no CI c
     const boundaries = sectionOf(await read(dir, AGENTS), 'Boundaries');
     assert.match(boundaries, /\*\*Generated files\.\*\* `src\/gql\.ts` is written by `npm run gen`; regenerate it, never edit it by hand\.\n/);
     assert.doesNotMatch(boundaries, /CI fails/);
+  });
+});
+
+test('the vendored toolset is invisible to the repository\'s ESLint and Prettier', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    await put(dir, '.prettierrc', '{}\n');
+    await put(dir, '.prettierignore', 'coverage/\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'chore: SCRUM-4: prettier');
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    for (const file of (await readdir(`${dir}/.naso/tooling`)).filter((f) => f.endsWith('.mjs'))) {
+      const head = (await read(dir, `.naso/tooling/${file}`)).split('\n').slice(0, 2).join('\n');
+      assert.match(head, /^(?:#!.*\n)?\/\* eslint-disable \*\/ \/\/ vendored by naso-dev/, `${file} must opt out of the repository's lint`);
+    }
+    assert.equal(await read(dir, '.prettierignore'), 'coverage/\n.naso/\n');
+    assert.match(res.stdout, /\.prettierignore\s+append 1 line/);
+    // A second run adds nothing.
+    assert.equal((await bare(['--yes', '--force'])).code, 0);
+    assert.equal(await read(dir, '.prettierignore'), 'coverage/\n.naso/\n');
+  });
+});
+
+test('no Prettier, no .prettierignore', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    await assert.rejects(read(dir, '.prettierignore'));
   });
 });

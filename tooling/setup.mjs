@@ -35,7 +35,7 @@
 // of this file runs with no node_modules anywhere near it.
 
 import path from 'node:path';
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath, writeFile } from 'node:fs/promises';
 import {
   pathExists,
   parseArgs,
@@ -85,6 +85,7 @@ import {
   configuredExclusions,
   vendorTooling,
   vendorSources,
+  vendoredText,
   writeConfig,
   renderConfig,
 } from './vendor.mjs';
@@ -173,6 +174,17 @@ export function devDependencyPlan(pkg, pm, version) {
 }
 
 const commandText = ([bin, args]) => [bin, ...args].join(' ');
+
+/** Whether this repository uses Prettier and its .prettierignore lacks .naso/; null when nothing to do. */
+async function planPrettierIgnore(cwd, facts) {
+  const deps = facts.conventions?.deps ?? {};
+  const usesPrettier = Boolean(facts.conventions?.prettierConfig || deps.prettier || facts.pkg?.prettier);
+  if (!usesPrettier) return null;
+  const file = path.join(cwd, '.prettierignore');
+  const text = await readFile(file, 'utf8').catch(() => null);
+  const covered = (text ?? '').split('\n').some((line) => /^\/?\.naso(?:\/\**)?$/.test(line.trim()));
+  return covered ? null : { file, exists: text !== null, text: text ?? '' };
+}
 
 /** The lockfile a package manager writes, for the plan's list of files. */
 const LOCKFILE_OF = { npm: 'package-lock.json', pnpm: 'pnpm-lock.yaml', yarn: 'yarn.lock', bun: 'bun.lock' };
@@ -460,7 +472,7 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     writes.push({
       path: rel,
       change: (await pathExists(path.join(cwd, rel))) ? 'replace' : 'new',
-      lines: lineCount(await readFile(source, 'utf8')),
+      lines: lineCount(vendoredText(source, await readFile(source, 'utf8'))),
     });
   }
   const versionRel = `${NASO_DIR}/tooling/VERSION`;
@@ -493,6 +505,21 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     });
   }
 
+  // Prettier reads .gitignore and .prettierignore, never .git/info/exclude, so a local
+  // .naso/ is still formatted-checked by `prettier --check .` and fails it. One line in
+  // .prettierignore is the only switch Prettier has.
+  const prettierIgnore = await planPrettierIgnore(cwd, facts);
+  if (prettierIgnore) {
+    plans.push({
+      target: '.prettierignore',
+      verb: prettierIgnore.exists ? 'Append' : 'Write',
+      detail:
+        `One line, ${NASO_DIR}/, so \`prettier --check\` leaves the copied toolset alone. Prettier does not ` +
+        'read .git/info/exclude, and the scripts are formatted for this project, not yours.',
+    });
+    writes.push({ path: '.prettierignore', change: prettierIgnore.exists ? 'append' : 'new', lines: 1 });
+  }
+
   const devDependency = devDependencyPlan(facts.pkg, facts.packageManager?.name ?? 'npm', version);
   const recordsDev = Boolean(saveDev && devDependency && devDependency.action !== 'present');
   if (recordsDev) {
@@ -511,7 +538,7 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     writes.push({ path: LOCKFILE_OF[devDependency.pm] ?? 'package-lock.json', change: 'by-pm', lines: 0, note: `by ${devDependency.pm}, with node_modules/` });
   }
 
-  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, localExcludes, claude, devDependency, recordsDev, track };
+  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, localExcludes, claude, devDependency, recordsDev, track, prettierIgnore };
 }
 
 /**
@@ -736,6 +763,12 @@ export async function install(cwd, { track, noHook, force, state, style = plainS
     exclude: state.excluded,
   });
   console.log(ok(`${NASO_DIR}/config.json: wrote the settings this run used`));
+
+  if (state.prettierIgnore) {
+    const { file, text } = state.prettierIgnore;
+    await writeFile(file, `${text}${text && !text.endsWith('\n') ? '\n' : ''}${NASO_DIR}/\n`, 'utf8');
+    console.log(ok(`.prettierignore: added ${NASO_DIR}/, so prettier --check leaves the toolset alone`));
+  }
 
   if (decision.action === 'install' || decision.action === 'reinstall' || decision.action === 'chain') {
     done.hook = true;

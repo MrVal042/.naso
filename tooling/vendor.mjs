@@ -16,7 +16,7 @@
 // belong to the package, not to the repository, and a repository that grew its own copy
 // of them would end up with two versions of `naso-dev` in one tree.
 
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathExists, readJSONFile, run, nasoDir } from './lib.mjs';
 
@@ -121,13 +121,34 @@ export async function isVendored(repoRoot) {
  * ceremony: they are ours, they live in a directory only NASO writes, and an out-of-date
  * copy is exactly the thing `refresh` exists to fix.
  */
+/** The first line of every vendored script: the repository's linter has no say over it. */
+export const VENDOR_HEADER = '/* eslint-disable */ // vendored by naso-dev; linted where it is developed, not here';
+
+/**
+ * A source file as it lands in a repository.
+ *
+ * The copy lives inside someone else's repository, so their ESLint reads it, with their
+ * rules: one team's `no-console` failed `npm run lint` on every NASO script, and with
+ * --track the pre-commit hook then refused to commit NASO's own files. A disable comment
+ * on line 1 (after a shebang) works under flat and legacy configs alike and needs no edit
+ * to the repository's config. Prettier has no in-file switch; see `.prettierignore` in setup.
+ */
+export function vendoredText(source, text) {
+  if (!source.endsWith('.mjs')) return text;
+  const shebang = text.startsWith('#!') ? text.slice(0, text.indexOf('\n') + 1) : '';
+  const rest = text.slice(shebang.length);
+  if (rest.startsWith(`${VENDOR_HEADER}\n`)) return text;
+  return `${shebang}${VENDOR_HEADER}\n${rest}`;
+}
+
 export async function vendorTooling(repoRoot, { version } = {}) {
   const sources = await vendorSources();
   const targetDir = vendoredToolingDir(repoRoot);
   await mkdir(targetDir, { recursive: true });
 
   for (const source of sources) {
-    await copyFile(source, path.join(targetDir, path.basename(source)));
+    const text = await readFile(source, 'utf8');
+    await writeFile(path.join(targetDir, path.basename(source)), vendoredText(source, text), 'utf8');
   }
 
   const stamped = version ?? (await readFile(path.join(nasoDir(), 'VERSION'), 'utf8')).trim();
