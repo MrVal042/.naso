@@ -309,3 +309,13 @@ test('the briefing carries no rules it cannot ground in the repository', async (
     assert.match(text, /`npm run lint`/, 'the closing note names the command this repository declares');
   });
 });
+
+test('guide does not call a one-paragraph section empty', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const res = await script('guide');
+    const done = res.stdout.slice(res.stdout.indexOf('  When Done'));
+    assert.doesNotMatch(done.split('\n').slice(0, 4).join('\n'), /nothing under this heading/);
+  });
+});

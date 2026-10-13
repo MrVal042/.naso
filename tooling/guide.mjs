@@ -100,7 +100,7 @@ function printWalkthrough(briefing) {
 
     console.log(`  ${heading}`);
     if (section.note) console.log(`      why: ${section.note}`);
-    if (section.bodyLines <= 2) {
+    if (section.bodyLines === 0) {
       console.log('      note: nothing under this heading. Empty is the one thing the briefing');
       console.log('            was rebuilt to avoid — check it is meant to be empty.');
     }
