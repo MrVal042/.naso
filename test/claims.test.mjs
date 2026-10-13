@@ -304,6 +304,20 @@ test('a diff check followed by a shell fallback keeps only its paths', () => {
   assert.deepEqual(jobs[0].diffChecks, ['src/api/schema.d.ts']);
 });
 
+test('with an unread include:, scripts outside the jobs NASO read are not called "not run by CI"', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    await put(dir, 'package.json', JSON.stringify({ name: 'customer-app', scripts: { lint: 'eslint .', test: 'jest', typecheck: 'tsc --noEmit' }, devDependencies: { typescript: '6.0.3' } }));
+    await put(dir, '.gitlab-ci.yml', 'include:\n  - component: example.com/ci/react-native@1.0.0\n\nformat:\n  script:\n    - npx prettier --check .\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'chore: SCRUM-3: ci');
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.doesNotMatch(text, /Declared but not run by CI/);
+    assert.match(text, /Not in the jobs NASO could read; the included configuration may run them: `npm run lint`/);
+  });
+});
+
 test('the vendored toolset is invisible to the repository\'s ESLint and Prettier', async () => {
   await withRepo(async ({ dir, git, bare }) => {
     await seedCustomerApp(dir, git);

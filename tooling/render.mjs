@@ -952,7 +952,14 @@ function renderCiGate(facts, rewriters) {
   const covered = new Set(gate.rawSteps ?? []);
   const others = validation.filter((command) => !covered.has(command.script));
   if (others.length > 0) {
-    lines.push(`Declared but not run by CI: ${others.map((command) => `\`${command.command}\``).join(', ')}.`);
+    const listed = others.map((command) => `\`${command.command}\``).join(', ');
+    // An include NASO could not read may well run these. "Not run" would be a claim about
+    // configuration nobody here has seen.
+    lines.push(
+      gate.external
+        ? `Not in the jobs NASO could read; the included configuration may run them: ${listed}.`
+        : `Declared but not run by CI: ${listed}.`,
+    );
   }
   if (rewriters) lines.push(rewriters);
   return lines.join('\n\n');
