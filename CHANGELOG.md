@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (1.2.0)
+## 1.2.0
 
 The generated briefing changes shape, so this is a minor release.
 
