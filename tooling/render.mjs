@@ -718,7 +718,9 @@ function subjectShape(history) {
 function renderWhenDone(facts) {
   const commands = facts.gate?.command
     ? [facts.gate.command]
-    : facts.validation.map((command) => command.command);
+    : facts.gate?.ciFile
+      ? ciCommands(facts.gate)
+      : facts.validation.map((command) => command.command);
   if (commands.length === 0) return null;
   return (
     `Say which of ${commands.map((command) => `\`${command}\``).join(', ')} ran and what it ` +
@@ -803,12 +805,16 @@ export function countProvenance(facts) {
  */
 export function renderValidation(facts) {
   const { gate, validation } = facts;
+  const rewriters = rewriterNote(facts);
+
+  if (gate?.ciFile && !gate.command) return renderCiGate(facts, rewriters);
 
   if (!gate || !gate.command) {
-    if (validation.length === 0) return null;
+    if (validation.length === 0) return rewriters ? `### Validation commands\n\n${rewriters}` : null;
     return (
       `### Validation commands\n\nThis repository names no single gate. These are the ` +
-      `commands it declares:\n\n\`\`\`bash\n${validation.map((c) => c.command).join('\n')}\n\`\`\``
+      `commands it declares:\n\n\`\`\`bash\n${validation.map((c) => c.command).join('\n')}\n\`\`\`` +
+      (rewriters ? `\n\n${rewriters}` : '')
     );
   }
 
@@ -852,7 +858,57 @@ export function renderValidation(facts) {
         .join(', ')}.`,
     );
   }
+  if (rewriters) lines.push(rewriters);
 
+  return lines.join('\n\n');
+}
+
+/** "`npm run format` rewrites files" — said once, so nobody runs it as a check. */
+function rewriterNote(facts) {
+  const rewriters = facts.rewriters ?? [];
+  if (rewriters.length === 0) return null;
+  return rewriters
+    .map((entry) => `\`${entry.command}\` rewrites files (\`${entry.body}\`); it is not a check.`)
+    .join(' ');
+}
+
+/** The commands CI runs, in order, as one list a reader can paste. */
+function ciCommands(gate) {
+  return [...new Set(gate.jobs.flatMap((job) => job.commands))];
+}
+
+/**
+ * CI is the gate, and no one local command reproduces it.
+ *
+ * A GitLab pipeline of one-check jobs, or a workflow job that runs its commands itself.
+ * Saying "this repository names no single gate" there was false: CI is the gate, it is
+ * just not one command. So the jobs are named with what each runs, and the commands are
+ * listed once to run by hand.
+ */
+function renderCiGate(facts, rewriters) {
+  const { gate, validation } = facts;
+  const lines = ['### Validation commands\n'];
+  const jobs = gate.jobs
+    .map((job) => `${job.name} (${job.commands.map((command) => `\`${command}\``).join(', ')})`)
+    .join(', ');
+  lines.push(`CI is the gate: \`${gate.ciFile}\` runs ${plural(gate.jobs.length, 'job')}: ${jobs}.`);
+  if (gate.external) {
+    lines.push(
+      `It also includes configuration from outside this repository (\`include:\`), which NASO ` +
+        'did not read; those jobs run in CI and are not listed here.',
+    );
+  }
+  lines.push(
+    `No single local command runs all of it. To run the same checks here:\n\n` +
+      `\`\`\`bash\n${ciCommands(gate).join('\n')}\n\`\`\``,
+  );
+
+  const covered = new Set(gate.rawSteps ?? []);
+  const others = validation.filter((command) => !covered.has(command.script));
+  if (others.length > 0) {
+    lines.push(`Declared but not run by CI: ${others.map((command) => `\`${command.command}\``).join(', ')}.`);
+  }
+  if (rewriters) lines.push(rewriters);
   return lines.join('\n\n');
 }
 

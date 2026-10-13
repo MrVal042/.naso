@@ -5,6 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { parseGitlabJobs } from '../tooling/briefing.mjs';
 import { AGENTS, withRepo, put, read, sectionOf } from './helpers.mjs';
 
 const GITLAB_CI = `include:
@@ -120,5 +121,54 @@ test('a history that rarely uses a scope is not told to add one', async () => {
     const commits = sectionOf(await read(dir, AGENTS), 'Commit Standard');
     assert.match(commits, /`type: summary`/);
     assert.doesNotMatch(commits, /follow `type\(scope\): summary`/);
+  });
+});
+
+test('parseGitlabJobs reads list, inline and multi-line scripts and skips templates and keywords', () => {
+  const jobs = parseGitlabJobs(GITLAB_CI);
+  assert.deepEqual(
+    jobs.map((job) => [job.name, job.commands]),
+    [
+      ['lint', ['npm run lint']],
+      ['typecheck', ['npm run typecheck']],
+      ['test', ['npm run test -- --ci']],
+      ['format', ['npm run format:check']],
+      ['api-types', ['npm run api-types']],
+    ],
+  );
+});
+
+test('.gitlab-ci.yml is the gate, and the briefing does not say the repository names none', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.doesNotMatch(text, /names no single gate/);
+    assert.match(text, /CI is the gate: `\.gitlab-ci\.yml` runs 5 jobs/);
+    assert.match(text, /lint \(`npm run lint`\)/);
+    assert.match(text, /api-types \(`npm run api-types`\)/);
+    assert.match(text, /includes configuration from outside this repository/);
+  });
+});
+
+test('a script that rewrites files is not listed as a validation command', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    const commands = text.match(/```bash\n([\s\S]*?)```/)?.[1] ?? '';
+    assert.doesNotMatch(commands, /npm run format\n/);
+    assert.match(commands, /npm run format:check/);
+    assert.match(text, /`npm run format` rewrites files \(`prettier --write \.`\); it is not a check/);
+    assert.doesNotMatch(sectionOf(text, 'When Done'), /`npm run format`/);
+  });
+});
+
+test('briefing check passes on the customer-app fixture', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedCustomerApp(dir, git, SCRUM_HISTORY);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const check = await script('briefing');
+    assert.equal(check.code, 0, check.stdout + check.stderr);
   });
 });

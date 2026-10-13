@@ -1162,6 +1162,79 @@ export function pickGateJob(jobs) {
   return pool.reduce((best, entry) => (entry.commands.length > best.commands.length ? entry : best));
 }
 
+/** Top-level keys in .gitlab-ci.yml that configure the pipeline rather than name a job. */
+const GITLAB_KEYWORDS = new Set([
+  'stages', 'variables', 'default', 'include', 'workflow', 'image', 'services', 'cache',
+  'before_script', 'after_script', 'types',
+]);
+
+/**
+ * The jobs in a .gitlab-ci.yml, with the commands each one's `script:` runs.
+ *
+ * Same contract as `parseWorkflowJobs`, and hand-rolled for the same reason. A GitLab job
+ * is any top-level key that is not a keyword and does not start with a dot (a dot is a
+ * template other jobs `extends`). Only `script:` is read: `before_script:` is setup such as
+ * `npm ci`, and a gate listed with its install step reads as a check that installs things.
+ * The inline, list and `- |` block forms are understood; a job written some other way
+ * yields no commands and is left out, never guessed at.
+ */
+export function parseGitlabJobs(text) {
+  const jobs = [];
+  let job = null;
+  let scriptIndent = -1;
+  let blockIndent = -1;
+
+  const note = (value) => {
+    if (job) job.commands.push(...extractInvocations(value));
+  };
+
+  for (const raw of String(text).split('\n')) {
+    if (raw.trim() === '' || raw.trim().startsWith('#')) continue;
+    const indent = raw.length - raw.trimStart().length;
+
+    if (indent === 0) {
+      const key = raw.match(/^([^\s#][^:]*):/)?.[1]?.trim().replace(/^["']|["']$/g, '');
+      job = key && !key.startsWith('.') && !GITLAB_KEYWORDS.has(key) ? { name: key, label: key, commands: [] } : null;
+      if (job) jobs.push(job);
+      scriptIndent = -1;
+      blockIndent = -1;
+      continue;
+    }
+    if (!job) continue;
+
+    if (blockIndent >= 0) {
+      if (indent > blockIndent) {
+        note(raw);
+        continue;
+      }
+      blockIndent = -1;
+    }
+
+    if (scriptIndent >= 0) {
+      if (indent > scriptIndent || (indent === scriptIndent && raw.trimStart().startsWith('-'))) {
+        const item = raw.trimStart().replace(/^-\s*/, '');
+        if (/^[|>][-+]?\s*$/.test(item)) blockIndent = indent;
+        else note(item.replace(/^["']|["']$/g, ''));
+        continue;
+      }
+      scriptIndent = -1;
+    }
+
+    const script = raw.match(/^(\s+)script:\s*(.*?)\s*$/);
+    if (!script) continue;
+    const value = script[2];
+    if (value === '') {
+      scriptIndent = script[1].length;
+    } else if (value.startsWith('[')) {
+      for (const item of value.replace(/^\[|\]$/g, '').split(',')) note(item.trim().replace(/^["']|["']$/g, ''));
+    } else {
+      note(value.replace(/^["']|["']$/g, ''));
+    }
+  }
+
+  return jobs.filter((entry) => entry.commands.length > 0);
+}
+
 /** Every workflow file, as [{ file, text }]. Sorted, so the choice is deterministic. */
 async function readWorkflows(cwd) {
   const dir = path.join(cwd, '.github', 'workflows');
@@ -1276,6 +1349,9 @@ export async function detectGate(cwd, pkg, pm = 'npm') {
     managerMismatch: false,
     enforcement: [],
     others: [],
+    ciFile: null,
+    jobs: [],
+    external: false,
   };
 
   for (const workflow of await readWorkflows(cwd)) {
@@ -1299,6 +1375,8 @@ export async function detectGate(cwd, pkg, pm = 'npm') {
       command: sole ? pmRunText(pm, sole) : null,
       script: sole,
       authority: `\`${workflow.file}\`, the ${job.label || job.name} job`,
+      ciFile: workflow.file,
+      jobs: [{ name: job.label || job.name, commands: job.commands }],
       steps: collapseSteps(expansion.steps),
       rawSteps: expansion.steps,
       commands: expansion.commands,
@@ -1308,6 +1386,32 @@ export async function detectGate(cwd, pkg, pm = 'npm') {
       managersUsed: used,
       managerMismatch: used.some((manager) => manager !== pm),
       enforcement: enforcementScripts(scripts, expansion.steps),
+    };
+  }
+
+  // GitLab runs a pipeline of jobs, one check each, rather than one job that runs them
+  // all. There is then no single local command that is the gate, and the briefing lists
+  // the jobs instead. Reading only .github/ told a GitLab repository it named no gate.
+  const gitlab = await readFile(path.join(cwd, '.gitlab-ci.yml'), 'utf8').catch(() => null);
+  const gitlabJobs = gitlab === null ? [] : parseGitlabJobs(gitlab);
+  if (gitlabJobs.length > 0) {
+    const commands = [...new Set(gitlabJobs.flatMap((job) => job.commands))];
+    const steps = commands.map((command) => labelForInvocation(command, scripts));
+    const used = [...new Set(commands.map((c) => c.split(/\s+/)[0]))].filter(Boolean);
+    return {
+      ...empty,
+      authority: '`.gitlab-ci.yml`',
+      ciFile: '.gitlab-ci.yml',
+      jobs: gitlabJobs.map((job) => ({ name: job.name, commands: job.commands })),
+      // An `include:` pulls jobs from another project or file, which this scan cannot
+      // see. Said in the briefing so the job list is not read as the whole pipeline.
+      external: /^include:/m.test(gitlab),
+      steps: collapseSteps(steps),
+      rawSteps: steps,
+      commands,
+      managersUsed: used,
+      managerMismatch: used.some((manager) => /^(?:npm|pnpm|yarn|bun)$/.test(manager) && manager !== pm),
+      enforcement: enforcementScripts(scripts, steps),
     };
   }
 
@@ -1350,6 +1454,23 @@ function enforcementScripts(scripts, gateSteps) {
  * with no package-lock.json that command installs a second dependency tree instead of
  * checking anything.
  */
+/** A script body that changes files instead of reporting on them. */
+const REWRITES = /--write\b|--fix\b|(?:^|\s)-w(?:\s|$)/;
+
+/**
+ * Scripts named like checks that rewrite files instead: `format: prettier --write .`.
+ *
+ * Kept out of the validation list. An agent told to "run the validation commands" that
+ * runs one of these reformats the repository and reports a pass, which is the opposite of
+ * finding out whether the code was already right.
+ */
+export function detectRewritingScripts(pkg, pm = 'npm') {
+  const scripts = pkg?.scripts ?? {};
+  return ['lint', 'format']
+    .filter((name) => typeof scripts[name] === 'string' && REWRITES.test(scripts[name]))
+    .map((name) => ({ script: name, command: pmRunText(pm, name), body: scripts[name] }));
+}
+
 export async function detectValidationCommands(cwd, pkg, pm = 'npm') {
   const commands = [];
   const scripts = pkg?.scripts ?? {};
@@ -1361,11 +1482,12 @@ export async function detectValidationCommands(cwd, pkg, pm = 'npm') {
     ['typecheck', 'Type check'],
     ['test', 'Tests'],
     ['verify', 'Full verification'],
+    ['format:check', 'Format check'],
     ['format', 'Format'],
     ['build', 'Build'],
   ];
   for (const [name, label] of ORDER) {
-    if (typeof scripts[name] === 'string') {
+    if (typeof scripts[name] === 'string' && !REWRITES.test(scripts[name])) {
       commands.push({ label, command: pmRunText(pm, name), script: name });
     }
   }
@@ -1524,6 +1646,7 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
     ignoredPatterns: await readIgnorePatterns(cwd),
     tests: detectTestCoverage(files, pkg, packageManager.name, conventions.runner),
     validation: await detectValidationCommands(cwd, pkg, packageManager.name),
+    rewriters: detectRewritingScripts(pkg, packageManager.name),
     gate: await detectGate(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),
     manifestEntryPoints: manifestEntryPoints(pkg),
