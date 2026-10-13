@@ -205,6 +205,17 @@ test('a TypeScript repository with no "type" field is not called CommonJS throug
   });
 });
 
+test('Where To Look First names the contributing guide and a folder-structure doc', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.match(text, /- `CONTRIBUTING\.md` —/);
+    assert.match(text, /- `docs\/folder-structure\.md` —/);
+    assert.doesNotMatch(text, /- `docs\/release\.md` —/);
+  });
+});
+
 test('briefing check passes on the customer-app fixture', async () => {
   await withRepo(async ({ dir, git, bare, script }) => {
     await seedCustomerApp(dir, git, SCRUM_HISTORY);

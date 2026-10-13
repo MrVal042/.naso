@@ -372,6 +372,9 @@ export function lineForUnit(unit, facts) {
   return `- \`${unit}\` — ${describeUnit(unit)}; new in this commit.`;
 }
 
+/** A doc that describes where code lives, named the way such docs usually are. */
+const LAYOUT_DOC = /^docs?\/(?:architecture|folder-structure|folders|structure|layout|overview|codebase)\.md$/i;
+
 /** Paths a new agent should open first, all verified to exist. */
 function renderLookFirst(facts) {
   const lines = [];
@@ -389,6 +392,10 @@ function renderLookFirst(facts) {
   }
 
   push('README.md', 'the project in its own words; check it before assuming anything below');
+  push('CONTRIBUTING.md', 'how this project expects changes to be made; it outranks this file');
+  for (const doc of facts.files.filter((file) => LAYOUT_DOC.test(file)).slice(0, 2)) {
+    push(doc, 'the map of the code in the project\'s own words');
+  }
   push('package.json', 'scripts, dependencies and the runtime the project declares');
 
   for (const entry of facts.entries.filter((e) => !e.isDir && e.entryPoint)) {
