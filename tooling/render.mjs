@@ -409,12 +409,16 @@ function renderConventions(facts) {
   const { conventions, packageManager } = facts;
   const lines = [];
 
-  const mix = languageMix(facts.files).slice(0, 4);
+  // AGENTS.md is left out here as it is everywhere else the header says it is, and the
+  // total is every file with an extension: summing only the four shown made a number
+  // nobody could reproduce.
+  const all = languageMix(facts.files.filter((file) => file !== 'AGENTS.md'));
+  const mix = all.slice(0, 4);
   if (mix.length > 0) {
-    const total = mix.reduce((sum, item) => sum + item.count, 0);
+    const total = all.reduce((sum, item) => sum + item.count, 0);
     lines.push(
       `Language mix: ${mix.map((item) => `${item.label} ${item.count}`).join(', ')}` +
-        ` (of ${total} files with a known extension).`,
+        ` (of ${total} files with an extension).`,
     );
   }
 
@@ -608,9 +612,10 @@ async function renderBoundaries(facts) {
   const declared = conventions.aliases?.declared ?? [];
   if (declared.length > 0) {
     lines.push(
-      `**Import aliases.** ${declared.map((entry) => `${entry.alias} → ${entry.targets.join(', ')}`).join('; ')}. ` +
-        'An import that uses a bare relative path where an alias exists is the one mistake ' +
-        'TypeScript will not catch for you.',
+      // The mapping only. Whether this repository prefers the alias over a relative path is
+      // a rule in its docs or its lint config, and NASO reads neither; "a relative import is
+      // the one mistake TypeScript will not catch" was a rule nobody here had written.
+      `**Import aliases.** ${declared.map((entry) => `${entry.alias} → ${entry.targets.join(', ')}`).join('; ')}.`,
     );
     if (conventions.aliases.files.length > 1) {
       const missing = conventions.aliases.divergent;

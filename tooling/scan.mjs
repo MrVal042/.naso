@@ -465,7 +465,9 @@ async function detectConventions(cwd, files, pkg) {
     : files.some((f) => f.endsWith('.mjs')) && !files.some((f) => f.endsWith('.cjs'))
       ? 'ES modules (.mjs, no "type" field)'
       : pkg
-        ? 'CommonJS by default (no "type": "module")'
+        ? has('typescript')
+          ? typescriptModuleLine(files)
+          : 'CommonJS by default (no "type": "module")'
         : null;
 
   // A repository is rarely one module system. `.mjs` beside `plugins/*.cjs` is two, and
@@ -524,6 +526,23 @@ async function detectConventions(cwd, files, pkg) {
     baseUrl: tsconfig?.compilerOptions?.baseUrl ?? null,
     eslintIgnores: eslintConfig?.ignorePatterns ?? null,
   };
+}
+
+/**
+ * The module line for TypeScript with no "type" field.
+ *
+ * "CommonJS by default" is true of the `.js` config files beside package.json and false of
+ * the `.ts` source, which is written with `import` and compiled by tsc, Babel or Metro.
+ * Read as a statement about the whole repository it sent agents to write `require`.
+ */
+function typescriptModuleLine(files) {
+  const rootJs = files.filter((file) => !file.includes('/') && file.endsWith('.js'));
+  return (
+    // Not backticked: the checker reads `.js` and `import` as paths that must exist.
+    '.js files are CommonJS (no "type": "module")' +
+    (rootJs.length > 0 ? `, which covers ${rootJs.map((file) => `\`${file}\``).join(', ')}` : '') +
+    '; TypeScript source is compiled by its toolchain and uses import syntax whatever this says'
+  );
 }
 
 async function firstExistingFile(cwd, candidates) {

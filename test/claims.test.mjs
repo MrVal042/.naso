@@ -5,6 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { parseGitlabJobs } from '../tooling/briefing.mjs';
 import { AGENTS, withRepo, put, read, sectionOf } from './helpers.mjs';
 
@@ -161,6 +162,46 @@ test('a script that rewrites files is not listed as a validation command', async
     assert.match(commands, /npm run format:check/);
     assert.match(text, /`npm run format` rewrites files \(`prettier --write \.`\); it is not a check/);
     assert.doesNotMatch(sectionOf(text, 'When Done'), /`npm run format`/);
+  });
+});
+
+test('the alias line states the mapping and claims no rule NASO never read', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.match(sectionOf(text, 'Boundaries'), /\*\*Import aliases\.\*\* @ → src\.\n/);
+    assert.doesNotMatch(text, /the one mistake/);
+  });
+});
+
+test('the language mix leaves out AGENTS.md and its total is every file with an extension', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes', '--track'])).code, 0);
+    await git('add', '-A');
+    await git('commit', '-qm', 'chore: SCRUM-2: briefing');
+    assert.equal((await bare(['--yes', '--force', '--track'])).code, 0);
+    const text = await read(dir, AGENTS);
+    const mix = text.match(/Language mix[^\n]*/)?.[0] ?? '';
+    const tracked = (await git('ls-files')).stdout.split('\n').filter(Boolean);
+    assert.ok(tracked.includes(AGENTS), 'AGENTS.md is in the index, so leaving it out is a choice');
+    const counted = tracked.filter((file) => file !== AGENTS);
+    const markdown = counted.filter((file) => file.endsWith('.md')).length;
+    assert.match(mix, new RegExp(`Markdown ${markdown}\\b`), mix);
+    // .gitignore has no extension by path.extname, so it is the one file not counted.
+    const withExtension = counted.filter((file) => path.extname(file) !== '').length;
+    assert.match(mix, new RegExp(`of ${withExtension} files with an extension`), mix);
+  });
+});
+
+test('a TypeScript repository with no "type" field is not called CommonJS throughout', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    assert.doesNotMatch(text, /Modules: CommonJS by default/);
+    assert.match(text, /Modules: \.js files are CommonJS \(no "type": "module"\), which covers `eslint\.config\.js`, `metro\.config\.js`; TypeScript source is compiled by its toolchain/);
   });
 });
 
