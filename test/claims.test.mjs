@@ -226,6 +226,17 @@ test('Apple signing files are listed as credentials, not as ignored build output
   });
 });
 
+test('the briefing says the hook is local to the machine that ran setup', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    assert.match(
+      sectionOf(await read(dir, AGENTS), 'Scope'),
+      /The hook runs only where setup installed it[^\n]*CI does not run it/,
+    );
+  });
+});
+
 test('briefing check passes on the customer-app fixture', async () => {
   await withRepo(async ({ dir, git, bare, script }) => {
     await seedCustomerApp(dir, git, SCRUM_HISTORY);

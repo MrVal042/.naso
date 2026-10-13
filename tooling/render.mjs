@@ -995,7 +995,11 @@ staged paths outside them, and refuses them with \`NASO_SCOPE_STRICT=1\`:
 
 \`\`\`bash
 export NASO_SCOPE=path/to/area,other/area
-\`\`\``);
+\`\`\`
+
+The hook runs only where setup installed it, from .git/hooks on that machine; CI does not run it,
+and a fresh clone has none until setup runs there. Every rule below that names the hook holds on
+that machine only.`);
 
   const boundaries = await renderBoundaries(facts);
   if (boundaries) parts.push(`## Boundaries\n\n${boundaries.join('\n')}`);
