@@ -686,9 +686,14 @@ function renderCommitStandard(facts) {
 
   if (history.count >= HISTORY_MINIMUM && history.conventional / history.count >= 0.6) {
     lines.push(
-      `- Subjects follow \`type(scope): summary\` in ${history.conventional} of the last ` +
-        `${history.count} commits. Types used: ${history.types.join(', ')}.`,
+      `- Subjects follow \`${subjectShape(history)}\` in ${history.conventional} of the last ` +
+        `${history.count} non-merge commits. Types used: ${history.types.join(', ')}.`,
     );
+    // A scope used now and then is allowed, not expected. Saying `type(scope)` for a
+    // history that almost never has one taught agents to invent scopes.
+    if (history.scoped > 0 && history.scoped / history.conventional < 0.6) {
+      lines.push(`  ${history.scoped} of them add a scope: \`type(scope): …\`.`);
+    }
   }
   if (history.count >= HISTORY_MINIMUM && history.coAuthored === 0) {
     lines.push(
@@ -699,6 +704,14 @@ function renderCommitStandard(facts) {
   lines.push('- Do not bypass the pre-commit hook. Fix what it reports and commit again.');
   lines.push(`- ${commitStandardRule8(facts).replace(/^8\. /, '').replace(/\n {3}/g, '\n  ')}`);
   return lines;
+}
+
+/** The subject form most of the history uses: scope and ticket key only when most have one. */
+function subjectShape(history) {
+  const most = (n) => n / history.conventional >= 0.6;
+  const head = most(history.scoped) ? 'type(scope)' : 'type';
+  const ticket = most(history.ticketed) && history.ticketKey ? `${history.ticketKey}-n: ` : '';
+  return `${head}: ${ticket}summary`;
 }
 
 /** The closing note, naming the commands this repository declares; null when it names none. */

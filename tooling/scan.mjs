@@ -1542,7 +1542,10 @@ const HISTORY_DEPTH = 50;
 /** Fewer commits than this is not a habit, and the standard says nothing about style. */
 export const HISTORY_MINIMUM = 5;
 
-const CONVENTIONAL_SUBJECT = /^([a-z]+)(?:\([^)]+\))?!?: \S/;
+// Type, optional scope, then an optional ticket key: `feat: SCRUM-12: x` is a different
+// convention from `feat(auth): x`, and stating one where the history uses the other gets
+// commits rejected by whatever push rule enforces it.
+const CONVENTIONAL_SUBJECT = /^([a-z]+)(\([^)]+\))?!?: (?:([A-Z][A-Z0-9]+)-\d+:? )?\S/;
 
 /**
  * What the repository's own recent history says about how commits are written.
@@ -1558,7 +1561,7 @@ export async function readCommitHistory(cwd) {
     ['log', `-${HISTORY_DEPTH}`, '--no-merges', '--format=%s%x1f%(trailers:key=Co-authored-by,valueonly)%x1e'],
     { cwd },
   );
-  if (!res.ok) return { count: 0, conventional: 0, types: [], coAuthored: 0 };
+  if (!res.ok) return { count: 0, conventional: 0, scoped: 0, ticketed: 0, ticketKey: null, types: [], coAuthored: 0 };
   const commits = res.stdout
     .split('\x1e')
     .map((record) => record.trim())
@@ -1569,18 +1572,30 @@ export async function readCommitHistory(cwd) {
     });
 
   const counts = new Map();
+  const keys = new Map();
   let conventional = 0;
+  let scoped = 0;
+  let ticketed = 0;
   for (const { subject } of commits) {
     const match = CONVENTIONAL_SUBJECT.exec(subject);
     if (!match) continue;
     conventional += 1;
     counts.set(match[1], (counts.get(match[1]) ?? 0) + 1);
+    if (match[2]) scoped += 1;
+    if (match[3]) {
+      ticketed += 1;
+      keys.set(match[3], (keys.get(match[3]) ?? 0) + 1);
+    }
   }
-  const types = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([type]) => type);
+  const byCount = (map) => [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name]) => name);
+  const types = byCount(counts);
 
   return {
     count: commits.length,
     conventional,
+    scoped,
+    ticketed,
+    ticketKey: byCount(keys)[0] ?? null,
     types,
     coAuthored: commits.filter((commit) => commit.coAuthored).length,
   };

@@ -285,7 +285,8 @@ test('the commit standard is read from history: conventional subjects are stated
     await commitAll(git, dir, ['feat: a', 'fix(api): b', 'fix: c', 'docs: d', 'chore: e', 'test: f']);
     assert.equal((await bare(['--yes'])).code, 0);
     const text = await read(dir, AGENTS);
-    assert.match(text, /`type\(scope\): summary`/);
+    // One of six has a scope, so the form stated is the one the other five use.
+    assert.match(text, /`type: summary`/);
     assert.match(text, /fix, chore, docs, feat, test/);
     assert.match(text, /No commit in the last \d+ carries a `Co-Authored-By:` trailer/);
   });
