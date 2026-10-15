@@ -33,6 +33,8 @@ import { readFile } from 'node:fs/promises';
 import { pathExists, parseArgs, listOption, run, toolVersion, isInteractive, supportTemplate, readJSONFile, detectPackageManager, SUPPORT_EMAIL, nasoCommand } from './lib.mjs';
 import { topLevelEntries, areasOf, dominantLanguage, splitNul, NASO_START, NASO_END } from './briefing.mjs';
 import { describeHook } from './install.mjs';
+import { detectStack } from './stack.mjs';
+import { parseIgnorePatterns } from './scan.mjs';
 import { NASO_DIR, isVendored, vendoredVersion } from './vendor.mjs';
 import { inspect, install, displayPlan, displayOverview, devDependencyPlan, HOOK_ACTIONS } from './setup.mjs';
 import { colorEnabled, createStyle } from './ui.mjs';
@@ -119,6 +121,11 @@ async function describeRepository(cwd) {
     files: files.length,
     areas: areasOf(entries).map((entry) => entry.name),
     language: dominantLanguage(files),
+    stack: (
+      await detectStack(cwd, files, {
+        ignore: parseIgnorePatterns(await readFile(path.join(cwd, '.gitignore'), 'utf8').catch(() => '')).all,
+      })
+    ).short,
   };
 }
 
@@ -456,6 +463,7 @@ Other commands:
         `${repo.areas.length} top-level ${repo.areas.length === 1 ? 'directory' : 'directories'}` +
           `${repo.areas.length ? ` (${repo.areas.slice(0, 8).join(', ')}${repo.areas.length > 8 ? ', …' : ''})` : ''}`,
       ]),
+      ...labelled(style.dim, 'Stack', [repo.stack]),
       ...(repo.language
         ? labelled(style.dim, 'Language', [`${repo.language.label}, ${repo.language.count} of ${repo.files} files`])
         : []),

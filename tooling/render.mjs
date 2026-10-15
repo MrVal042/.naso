@@ -987,6 +987,10 @@ export async function renderBriefing(facts, { version, now }) {
 > Maintained through normal code review. NASO never regenerates this file
 > wholesale; the pre-commit hook appends at most one line per genuinely new area.`);
 
+  // What the repository is, before where things are in it: "an Expo mobile app" or "a Go
+  // API service" changes how every path below is read, and it is one line.
+  if (facts.stack?.summary) parts.push(`**What this is.** ${facts.stack.summary}`);
+
   const dirs = facts.areas;
   const rootFiles = renderRootFiles(facts.entries, facts);
   const structure = [];
@@ -1019,6 +1023,11 @@ export async function renderBriefing(facts, { version, now }) {
         `Read from the directory layout under \`${facts.featureMap.dir}/\`.\n\n` +
         `| Feature | Lives in | Notes |\n| --- | --- | --- |\n${rows.join('\n')}${more}`,
     );
+  }
+
+  // Only rules this repository confirmed; a stack with none gets no heading.
+  if (facts.stack?.rules?.length > 0) {
+    parts.push(`## Stack Rules\n\n${facts.stack.rules.map((rule) => `- ${rule}`).join('\n')}`);
   }
 
   const conventions = renderConventions(facts);

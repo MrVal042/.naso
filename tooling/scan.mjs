@@ -8,6 +8,7 @@ import {
   readdir,
 } from 'node:fs/promises';
 import path from 'node:path';
+import { detectStack } from './stack.mjs';
 import {
   pathExists,
   readJSONFile,
@@ -1773,6 +1774,10 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
     validation: await detectValidationCommands(cwd, pkg, packageManager.name),
     rewriters: detectRewritingScripts(pkg, packageManager.name),
     contributing: await readContributing(cwd, files),
+    stack: await detectStack(cwd, files, {
+      ignore: (await readIgnorePatterns(cwd))?.all ?? [],
+      pm: packageManager.name,
+    }),
     generated: generatedOutputs(pkg, files, packageManager.name),
     gate: await detectGate(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),

@@ -85,6 +85,16 @@ npx naso-dev --yes
 
 The two commands this replaces still work, print one deprecation line naming `npx naso-dev`, and are no longer listed in `--help`. Existing scripts and CI jobs calling them keep working.
 
+## What the briefing says the repository is
+
+The briefing opens with one line, **What this is**, read from the manifests the repository has, in any ecosystem: package.json, pyproject.toml and requirements files, go.mod, Cargo.toml, Gemfile, pom.xml and Gradle, composer.json, pubspec.yaml. Every manifest counts, not only the root one, so a monorepo names each package by its own:
+
+> A pnpm monorepo (`pnpm-workspace.yaml`) of 2 packages: `apps/web/` is a Next.js web app; `services/api/` is a NestJS API service.
+
+Frameworks it names: Expo, React Native, Next.js, Nuxt, SvelteKit, Remix, Astro, Angular, Electron, NestJS, Fastify, Hono, Express, Vite, Django, FastAPI, Flask, Rails, Laravel, Symfony, Spring Boot, Flutter, and Go and Rust services and CLIs by their libraries. With none of those, the kind comes from the manifest itself: package.json `"bin"` is a command-line tool, `"exports"` or `"main"` a library, `src/main.rs` a Rust program. A repository with no manifest is told so, and no stack is named.
+
+**Stack Rules** follows, only when there are any. Every rule is checked against this repository before it is written: "every file under `src/app/` is a route" needs that folder and the router dependency; "ios/ and android/ are generated" needs `.gitignore` to ignore them; "`db/schema.rb` is generated" needs the file. A rule from one stack never appears in another's briefing. The table is in `tooling/stack.mjs`, one row per framework; adding a row changes no other.
+
 ## What gets installed
 
 | Path                        | Purpose                                                                                          |
