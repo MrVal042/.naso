@@ -64,7 +64,7 @@ test('decide writes into the folder the repository already uses, with the next n
   });
 });
 
-test('the briefing tells every agent how to use decisions, and lists them in a block that stays current', async () => {
+test('AGENTS.md carries the rules and one link; the list lives in the decisions index, one line per record', async () => {
   await withRepo(async ({ dir, git, bare, script }) => {
     await seedProject(dir, git);
     await put(dir, 'docs/decisions/0001-use-rest.md', '# 0001. Use REST\n\n- Status: accepted\n- Date: 2026-10-01\n- Source: kickoff meeting\n- Applies to: src/\n');
@@ -72,26 +72,45 @@ test('the briefing tells every agent how to use decisions, and lists them in a b
     await put(dir, 'docs/decisions/0003-soap.md', '# 0003. Use SOAP\n\n- Status: rejected\n- Date: 2026-09-01\n- Source: kickoff meeting\n');
     await git('add', '-A');
     await git('commit', '-qm', 'decisions');
+    assert.equal((await naso(dir, ['decisions', 'sync'])).code, 0);
     assert.equal((await bare(['--yes', '--track'])).code, 0);
 
     const section = sectionOf(await read(dir, AGENTS), 'Decisions');
-    assert.match(section, /Before proposing an approach, read the accepted decisions below/);
+    assert.match(section, /The list is `docs\/decisions\/README\.md`: one line per decision, linked to its record\./);
+    assert.match(section, /Before proposing an approach, read the accepted decisions in it/);
     assert.match(section, /`npx naso-dev decide --title/);
     assert.match(section, /Never accept, reject or supersede a decision yourself/);
-    assert.match(section, /^- \[0001 Use REST\]\(docs\/decisions\/0001-use-rest\.md\) — applies to src\/ — kickoff meeting$/m);
-    assert.match(section, /Proposed, not binding until a person accepts:\n- \[0002 Try GraphQL\]/);
-    assert.match(section, /1 rejected or superseded, not listed\./);
+    assert.doesNotMatch(section, /0001|Use REST|naso:decisions/, 'no decision is listed in AGENTS.md');
+    assert.ok(section.trim().split('\n').length <= 8, 'the section stays the same size however many decisions there are');
     assert.equal((await script('briefing')).code, 0);
 
-    // Accepting updates the block in place, and nothing else in AGENTS.md.
-    const before = await read(dir, AGENTS);
+    const index = await read(dir, 'docs/decisions/README.md');
+    assert.match(index, /^## Accepted\n- \[0001 Use REST\]\(0001-use-rest\.md\) — applies to src\/ — kickoff meeting$/m);
+    assert.match(index, /^## Proposed, not binding until a person accepts\n- \[0002 Try GraphQL\]\(0002-graphql\.md\) — Slack thread$/m);
+    assert.match(index, /^## Rejected or superseded\n- \[0003 Use SOAP\]\(0003-soap\.md\) — rejected$/m);
+
+    // Accepting rewrites the record and the list between the markers, nothing else.
+    const agentsBefore = await read(dir, AGENTS);
+    await put(dir, 'docs/decisions/README.md', `${index}\nNotes the team wrote under the list.\n`);
     const res = await naso(dir, ['decisions', 'accept', '0002']);
     assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /Updated docs\/decisions\/README\.md\./);
     assert.match(await read(dir, 'docs/decisions/0002-graphql.md'), /^- Status: accepted$/m);
-    const after = await read(dir, AGENTS);
-    assert.match(sectionOf(after, 'Decisions'), /^- \[0002 Try GraphQL\]\(docs\/decisions\/0002-graphql\.md\) — Slack thread$/m);
-    const outside = (text) => text.replace(/<!-- naso:decisions:start -->[\s\S]*<!-- naso:decisions:end -->/, '');
-    assert.equal(outside(after), outside(before));
+    const after = await read(dir, 'docs/decisions/README.md');
+    assert.match(after, /^## Accepted\n- \[0001 Use REST\][^\n]*\n- \[0002 Try GraphQL\]\(0002-graphql\.md\) — Slack thread$/m);
+    assert.match(after, /Notes the team wrote under the list\.\n$/);
+    assert.equal(await read(dir, AGENTS), agentsBefore, 'AGENTS.md does not change when a decision does');
+  });
+});
+
+test('with no decisions yet, AGENTS.md names no folder that is not there', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const section = sectionOf(await read(dir, AGENTS), 'Decisions');
+    assert.match(section, /No decision is recorded yet; the first one creates the list/);
+    assert.doesNotMatch(section, /docs\//);
+    assert.equal((await script('briefing')).code, 0);
   });
 });
 
@@ -133,6 +152,7 @@ test('the audit lists records that no longer hold, and changes nothing', async (
     assert.match(out, /WARN\s+0003\s+proposed 283 days ago and never accepted or rejected/);
     assert.match(out, /ERROR\s+0004\s+no status/);
     assert.match(out, /WARN\s+0005\s+review was due 2026-06-01/);
+    assert.match(out, /WARN\s+----\s+the list in docs\/decisions\/README\.md is missing\. Run: npx naso-dev decisions sync/);
     assert.deepEqual(await readdir(`${dir}/docs/decisions`), before, 'the audit deletes nothing');
   });
   await withRepo(async ({ dir, git }) => {
@@ -140,13 +160,14 @@ test('the audit lists records that no longer hold, and changes nothing', async (
     await put(dir, 'docs/decisions/0001-a.md', '# 0001. A\n\n- Status: accepted\n- Date: 2026-10-01\n- Source: kickoff\n');
     await git('add', '-A');
     await git('commit', '-qm', 'decisions');
+    assert.equal((await naso(dir, ['decisions', 'sync'])).code, 0);
     const res = await naso(dir, ['decisions', 'audit', '--today', '2026-10-15']);
     assert.equal(res.code, 0, res.stdout);
     assert.match(res.stdout, /1 decision, no findings\./);
   });
 });
 
-test('the hook refuses a decision record with no status, and syncs the block for a valid one', async () => {
+test('the hook refuses a decision record with no status, and refreshes the list for a valid one', async () => {
   await withRepo(async ({ dir, git, bare }) => {
     await seedProject(dir, git);
     assert.equal((await bare(['--yes', '--track'])).code, 0);
@@ -163,13 +184,14 @@ test('the hook refuses a decision record with no status, and syncs the block for
     await git('add', 'docs/decisions/0001-bad.md');
     const good = await exec(process.execPath, [`${dir}/.naso/tooling/validate.mjs`, dir, '--staged'], dir);
     assert.equal(good.code, 0, good.stdout);
-    assert.match(await read(dir, AGENTS), /- \[0001 Good now\]\(docs\/decisions\/0001-bad\.md\)/);
+    assert.match(await read(dir, 'docs/decisions/README.md'), /- \[0001 Good now\]\(0001-bad\.md\)/);
     const staged = (await git('diff', '--cached', '--name-only')).stdout;
-    assert.match(staged, /AGENTS\.md/, 'the refreshed list rides along with the commit');
+    assert.match(staged, /docs\/decisions\/README\.md/, 'the refreshed list rides along with the commit');
+    assert.doesNotMatch(await read(dir, AGENTS), /Good now/, 'no decision is listed in AGENTS.md');
   });
 });
 
-test('the first decision creating docs/ still gets its area line: the list is refreshed after the area notes', async () => {
+test('the first decision creating docs/ still gets its area line', async () => {
   await withRepo(async ({ dir, git, bare }) => {
     await seedProject(dir, git);
     assert.equal((await bare(['--yes', '--track'])).code, 0);
@@ -182,6 +204,6 @@ test('the first decision creating docs/ still gets its area line: the list is re
     const text = await read(dir, AGENTS);
     const auto = text.slice(text.indexOf('<!-- naso:auto:start -->'), text.indexOf('<!-- naso:auto:end -->'));
     assert.match(auto, /`docs\/`/, 'docs/ is a new area and gets its line');
-    assert.match(text, /- \[0001 Use REST\]\(docs\/decisions\/0001-use-rest\.md\)/);
+    assert.match(await read(dir, 'docs/decisions/README.md'), /- \[0001 Use REST\]\(0001-use-rest\.md\)/);
   });
 });

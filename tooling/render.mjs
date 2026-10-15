@@ -28,7 +28,7 @@ import {
   roleFor,
   plural,
 } from './scan.mjs';
-import { renderDecisionIndex } from './decisions.mjs';
+import { indexFileOf } from './decisions.mjs';
 
 // ---------------------------------------------------------------------------
 // Rendering
@@ -817,31 +817,34 @@ function subjectShape(history) {
 }
 
 /**
- * Decisions: how an agent uses them, and the list, between markers the commands refresh.
+ * Decisions: how an agent uses them, and one link to the list.
  *
  * The rules are what make decisions survive a new session, account or agent: read them
  * before proposing, record new ones as they are made, and leave accepting to people. The
- * list itself is the only part of the NASO block that changes after setup, so it lives
- * between its own markers and nothing else is rewritten.
+ * list itself is the decisions folder's README.md, one line per decision linked to its
+ * record, so this section is the same few lines whether a team has made three decisions
+ * or three hundred.
  */
 function renderDecisions(facts) {
   const decisions = facts.decisions ?? { dir: 'docs/decisions', exists: false, records: [] };
-  // No path for a folder that is not there yet: any mention of `docs/` counts as describing
-  // that area, and the checker would then stop reporting an undescribed docs/ forever.
-  const where = decisions.exists
-    ? `\`${decisions.dir}/\`, one file each`
-    : 'a decisions folder, one file each (the first one recorded creates it under docs)';
+  const index = indexFileOf(decisions.dir);
+  // No path for a list that is not there yet: a backticked path is a claim it exists, and
+  // any mention of docs/ would count as describing a docs/ area the checker should report.
+  const lead = 'Decisions the team already made are recorded one per file, with who decided and where.';
+  const where = decisions.indexExists
+    ? `${lead} The list is \`${index}\`: one line per decision, linked to its record.`
+    : decisions.records.length > 0
+      ? `${lead} The list will be ${index}, one line per decision linked to its record, once \`${nasoCommand()} decisions sync\` writes it.`
+      : `${lead} No decision is recorded yet; the first one creates the list beside it.`;
   return [
     '## Decisions',
     '',
-    `Decisions the team already made live in ${where}, with who decided and where: a meeting, ticket, email or doc.`,
+    where,
     '',
-    '- Before proposing an approach, read the accepted decisions below that apply to the paths you are changing, and follow them. Do not reopen one unless the person asks to.',
+    '- Before proposing an approach, read the accepted decisions in it that apply to the paths you are changing, and follow them. Do not reopen one unless the person asks to.',
     `- When the person decides something in a session, record it so the next session, account or agent starts from it: \`${nasoCommand()} decide --title "…" --source "…" --decision "…"\`. It is written as proposed.`,
     '- Never accept, reject or supersede a decision yourself; ask the person. A proposed decision is not binding.',
     `- \`${nasoCommand()} decisions audit\` lists records that no longer hold. It changes nothing.`,
-    '',
-    renderDecisionIndex(decisions),
   ].join('\n');
 }
 

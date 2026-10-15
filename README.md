@@ -107,7 +107,7 @@ These work the same in any repository, and say nothing where the file is absent:
 
 ## Decisions: say it once
 
-A decision made in a meeting, a ticket, an email or a chat is lost to the next AI session, the next account and the next agent unless it is written where all of them look. NASO keeps them as files in the repository, one per decision, and lists them in AGENTS.md.
+A decision made in a meeting, a ticket, an email or a chat is lost to the next AI session, the next account and the next agent unless it is written where all of them look. NASO keeps each one in its own file, lists them all in the decisions folder's `README.md` (one line per decision, linked to its record), and gives AGENTS.md only the rules and one link to that list, so AGENTS.md stays the same size however many decisions a team makes.
 
 ```bash
 npx naso-dev decide --title "Use REST for the customer API" \
@@ -123,7 +123,7 @@ npx naso-dev decisions audit           # what no longer holds; changes nothing
 - **Agents propose, people accept.** `decide` writes `proposed`; only `accept` makes a decision binding, and the briefing tells agents never to run it themselves.
 - **Every record has a source**, by reference: "PO email, 2026-10-14", not the email.
 - **Nothing is deleted.** The audit reports contradictions, missing sources, scopes that are gone, unsettled proposals and passed review dates; a person supersedes or rejects.
-- **Every agent sees the current list.** It sits between `<!-- naso:decisions:start -->` and `<!-- naso:decisions:end -->` in AGENTS.md and is refreshed by these commands and by the pre-commit hook, so Claude Code, Codex, Cursor or Copilot start from the same decisions in a new session, on a new account or on another machine.
+- **One list, one link.** The list sits between `<!-- naso:decisions:start -->` and `<!-- naso:decisions:end -->` in the decisions folder's `README.md`, accepted first, then proposed, then rejected or superseded; anything the team writes around the markers is kept. These commands and the pre-commit hook refresh it, and the hook stages it with the records. AGENTS.md links to it and tells every agent to read it before proposing an approach, so Claude Code, Codex, Cursor or Copilot start from the same decisions in a new session, on a new account or on another machine.
 
 ## What gets installed
 

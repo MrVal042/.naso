@@ -57,7 +57,7 @@ import {
 } from './lib.mjs';
 import { withLock } from './lock.mjs';
 import { scanRepo, lineForUnit } from './briefing.mjs';
-import { decisionsDir, parseDecision, syncDecisionIndex } from './decisions.mjs';
+import { decisionsDir, parseDecision, syncDecisionIndex, indexFileOf } from './decisions.mjs';
 
 const PRETTIER_CONFIG_CANDIDATES = [
   '.prettierrc',
@@ -619,11 +619,18 @@ async function checkDecisionRecords(cwd, stagedFiles, { append }) {
   record('Decision records', 'pass', `${records.length} staged`);
   if (!append) return;
 
-  const staging = await shouldStageBriefing(cwd);
-  if ((await syncDecisionIndex(cwd)) === 'updated' && staging.stage) {
-    await run('git', ['add', '--', AGENTS_FILE], { cwd });
-    console.log(`  Refreshed the decisions list in ${AGENTS_FILE} and staged it with this commit.`);
+  // The list is part of the records being committed, so it is staged with them — unless
+  // somebody has their own unstaged edits in it, which are not this hook's to commit.
+  const index = indexFileOf(dir);
+  const dirty = (await run('git', ['diff', '--quiet', '--', index], { cwd })).code !== 0;
+  const { outcome } = await syncDecisionIndex(cwd);
+  if (!['created', 'updated', 'appended'].includes(outcome)) return;
+  if (dirty) {
+    console.log(`  Refreshed ${index}; left it unstaged, because it already had edits of yours.`);
+    return;
   }
+  await run('git', ['add', '--', index], { cwd });
+  console.log(`  Refreshed ${index} and staged it with this commit.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -730,8 +737,6 @@ async function runStaged(cwd, pkg, pm, { append, prefixes, strictScope }) {
   } else {
     record('AGENTS.md update', 'skip', '--no-append');
   }
-  // After the area notes, not before: a refreshed list links docs/decisions/…, and read
-  // first it would count as describing a docs/ area this commit introduces.
   await checkDecisionRecords(cwd, stagedFiles, { append });
 
   printSummary();

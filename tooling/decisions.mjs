@@ -3,8 +3,10 @@
 // A decision made in a meeting, a ticket, an email or a chat is lost to the next AI session,
 // the next account and the next agent unless it is written where all of them look. So it is
 // a file, one per decision, in the folder the repository already uses for decision records
-// (else docs/decisions/), and AGENTS.md carries a list of them between two markers that
-// `decide`, `decisions` and the pre-commit hook keep current.
+// (else docs/decisions/). The folder's README.md is the list: one line per decision, linked
+// to its record, between two markers that `decide`, `decisions` and the pre-commit hook keep
+// current. AGENTS.md holds the rules and one link to that list, so it stays the same size
+// however many decisions a team makes.
 //
 // Three rules hold throughout:
 //   - Every record says where it was decided. A decision with no source is a guess.
@@ -132,56 +134,84 @@ export async function readDecisions(cwd) {
       if (text !== null) records.push(parseDecision(`${dir}/${name}`, text));
     }
   }
-  return { dir, exists, records: records.sort((a, b) => a.id.localeCompare(b.id)) };
+  const indexExists = await pathExists(path.join(cwd, indexFileOf(dir)));
+  return { dir, exists, indexExists, records: records.sort((a, b) => a.id.localeCompare(b.id)) };
 }
 
 // ---------------------------------------------------------------------------
-// The list in AGENTS.md
+// The list: README.md in the decisions folder
 // ---------------------------------------------------------------------------
 
+/** The index file for a decisions folder. */
+export const indexFileOf = (dir) => `${dir}/README.md`;
+
 const indexLine = (record) =>
-  `- [${record.id} ${record.title}](${record.file})` +
+  `- [${record.id} ${record.title}](${path.basename(record.file)})` +
   (record.applies.length > 0 ? ` — applies to ${record.applies.join(', ')}` : '') +
   (record.source ? ` — ${record.source}` : '');
 
-/** The block between the decisions markers: accepted first, then proposed, then a count. */
+const closedLine = (record) =>
+  `- [${record.id} ${record.title}](${path.basename(record.file)}) — ` +
+  (record.supersededBy ? `superseded by ${record.supersededBy}` : record.status ?? 'no status');
+
+/**
+ * The list between the markers: accepted, then proposed, then the closed ones.
+ *
+ * Every record gets a line, closed ones included: this file, not AGENTS.md, is where the
+ * history is read, and a superseded decision is the answer to "didn't we decide this?".
+ */
 export function renderDecisionIndex({ records }) {
   const accepted = records.filter((record) => record.status === 'accepted');
   const proposed = records.filter((record) => record.status === 'proposed');
-  const closed = records.length - accepted.length - proposed.length;
-  const lines = [];
-  if (records.length === 0) lines.push('No decisions recorded yet.');
-  if (accepted.length > 0) lines.push('Accepted:', ...accepted.map(indexLine));
-  if (proposed.length > 0) lines.push('', 'Proposed, not binding until a person accepts:', ...proposed.map(indexLine));
-  if (closed > 0) lines.push('', `${closed} rejected or superseded, not listed.`);
-  return `${DECISIONS_START}\n${lines.join('\n').replace(/^\n/, '')}\n${DECISIONS_END}`;
+  const closed = records.filter((record) => !accepted.includes(record) && !proposed.includes(record));
+  const sections = [];
+  if (records.length === 0) sections.push('No decisions recorded yet.');
+  if (accepted.length > 0) sections.push(['## Accepted', ...accepted.map(indexLine)].join('\n'));
+  if (proposed.length > 0) sections.push(['## Proposed, not binding until a person accepts', ...proposed.map(indexLine)].join('\n'));
+  if (closed.length > 0) sections.push(['## Rejected or superseded', ...closed.map(closedLine)].join('\n'));
+  return `${DECISIONS_START}\n${sections.join('\n\n')}\n${DECISIONS_END}`;
 }
 
+const INDEX_INTRO =
+  '# Decisions\n\n' +
+  'One file per decision, each with who decided and where. Agents propose with `naso-dev decide`; ' +
+  'a person accepts with `naso-dev decisions accept <id>`. NASO keeps the list between the markers ' +
+  'below; write anything else around them.\n\n';
+
 /**
- * Rewrite the list between the markers in AGENTS.md, and nothing else.
+ * Rewrite the list in the decisions folder's README.md, and nothing outside its markers.
  *
- * Returns 'updated', 'current', 'no-markers' or 'no-briefing'. A briefing written before
- * decisions existed has no markers, and NASO does not add them to prose it no longer owns.
+ * Returns `{ outcome, file }`: 'created' (a new README.md), 'updated', 'current', 'appended'
+ * (an existing README.md had no markers, so the list went at its end) or 'none' (no records).
  */
 export async function syncDecisionIndex(cwd) {
-  const agentsPath = path.join(cwd, 'AGENTS.md');
-  if (!(await pathExists(agentsPath))) return 'no-briefing';
-  const block = renderDecisionIndex(await readDecisions(cwd));
+  const decisions = await readDecisions(cwd);
+  const file = indexFileOf(decisions.dir);
+  if (decisions.records.length === 0) return { outcome: 'none', file };
+  const full = path.join(cwd, file);
+  const block = renderDecisionIndex(decisions);
   const outcome = await withLock(
     cwd,
     async () => {
-      const text = await readFile(agentsPath, 'utf8');
+      const text = await readFile(full, 'utf8').catch(() => null);
+      if (text === null) {
+        await writeFile(full, `${INDEX_INTRO}${block}\n`, 'utf8');
+        return 'created';
+      }
       const start = text.indexOf(DECISIONS_START);
       const end = text.indexOf(DECISIONS_END);
-      if (start === -1 || end === -1 || end < start) return 'no-markers';
+      if (start === -1 || end === -1 || end < start) {
+        await writeFile(full, `${text}${text.endsWith('\n') ? '' : '\n'}\n${block}\n`, 'utf8');
+        return 'appended';
+      }
       const next = text.slice(0, start) + block + text.slice(end + DECISIONS_END.length);
       if (next === text) return 'current';
-      await writeFile(agentsPath, next, 'utf8');
+      await writeFile(full, next, 'utf8');
       return 'updated';
     },
-    { reason: 'refresh the decisions list in AGENTS.md' },
+    { reason: `refresh the decisions list in ${file}` },
   );
-  return outcome.ok ? outcome.value : 'locked';
+  return { outcome: outcome.ok ? outcome.value : 'locked', file };
 }
 
 // ---------------------------------------------------------------------------
@@ -308,13 +338,12 @@ export async function auditDecisions(cwd, { on = today() } = {}) {
     }
   }
 
-  const agents = await readFile(path.join(cwd, 'AGENTS.md'), 'utf8').catch(() => null);
-  if (agents?.includes(DECISIONS_START)) {
-    const start = agents.indexOf(DECISIONS_START);
-    const current = agents.slice(start, agents.indexOf(DECISIONS_END) + DECISIONS_END.length);
-    if (current !== renderDecisionIndex({ records })) {
-      add('warn', '----', `the list in AGENTS.md is out of date. Run: ${nasoCommand()} decisions sync`);
-    }
+  const { dir } = await decisionsDir(cwd);
+  const index = await readFile(path.join(cwd, indexFileOf(dir)), 'utf8').catch(() => null);
+  const start = index?.indexOf(DECISIONS_START) ?? -1;
+  const current = start === -1 ? null : index.slice(start, index.indexOf(DECISIONS_END) + DECISIONS_END.length);
+  if (records.length > 0 && current !== renderDecisionIndex({ records })) {
+    add('warn', '----', `the list in ${indexFileOf(dir)} is ${current === null ? 'missing' : 'out of date'}. Run: ${nasoCommand()} decisions sync`);
   }
 
   const order = { error: 0, warn: 1 };
@@ -328,11 +357,11 @@ export async function auditDecisions(cwd, { on = today() } = {}) {
 const listOf = (value) => (value ? String(value).split(',').map((item) => item.trim()).filter(Boolean) : []);
 
 async function reportSync(cwd) {
-  const outcome = await syncDecisionIndex(cwd);
-  if (outcome === 'updated') console.log('Updated the decisions list in AGENTS.md.');
-  if (outcome === 'no-markers') {
-    console.log(`AGENTS.md has no decisions list yet. ${nasoCommand()} --force regenerates the NASO block with one.`);
-  }
+  const { outcome, file } = await syncDecisionIndex(cwd);
+  if (outcome === 'created') console.log(`Wrote the list of decisions: ${file}.`);
+  if (outcome === 'updated') console.log(`Updated ${file}.`);
+  if (outcome === 'appended') console.log(`Added the list of decisions at the end of ${file}, between NASO markers.`);
+  if (outcome === 'locked') console.log(`${file} is locked by another writer; run ${nasoCommand()} decisions sync after.`);
 }
 
 /** `naso-dev decide`: record a decision, proposed unless a person passes --accept. */
@@ -396,7 +425,7 @@ export async function main(argv = process.argv.slice(2)) {
   ${nasoCommand()} decisions reject <id>        a person rejects one
   ${nasoCommand()} decisions supersede <id> --by <newer-id>
   ${nasoCommand()} decisions audit              records that no longer hold; changes nothing
-  ${nasoCommand()} decisions sync               refresh the list in AGENTS.md
+  ${nasoCommand()} decisions sync               refresh the list in the decisions folder's README.md
   ${nasoCommand()} decide --help                record a new one`);
     return;
   }
