@@ -33,6 +33,8 @@ every commit with a message nobody can act on.
 | `bin` entry      | `bin/naso-dev.mjs` dispatches a command name to one of the modules below. It is the only thing npm puts on your `PATH`.                                          |
 | `briefing.mjs`   | The `briefing` command: creates, re-stamps and checks the `naso:start` / `naso:end` block. Re-exports the three below, so it is the one import for every other module. |
 | `scan.mjs`       | Reads the repository into facts: areas, entry points and what they import, conventions, tests, the gate, commit history. Writes nothing.                             |
+| `stack.mjs`      | What the repository is, in any ecosystem, from its manifests: the framework and kind, or what the manifest implies, and the stack rules this repository confirms. One table row per framework. |
+| `repo-rules.mjs` | Rules the repository's people wrote down: CODEOWNERS, lines that say which document wins, and the source map with each folder's purpose from the docs. |
 | `render.mjs`     | Turns those facts into the briefing block. Every sentence is a count, a config value or a path the scan read.                                                        |
 | `check.mjs`      | Checks the NASO block against disk: every claimed path exists, every area is named, no placeholder remains. Text outside the markers is the owner's and is not checked. |
 | `flow.mjs`       | `npx naso-dev` with no command: reads the repository, asks, shows the plan, then accept, reject or exclude an area. Not vendored.                                    |
@@ -46,8 +48,8 @@ every commit with a message nobody can act on.
 | `prompt.mjs`     | The setup's questions (confirm, select) on Node's own readline. Arrow keys or j/k move, Enter answers, Ctrl+C or Escape cancels. Not vendored. |
 | `ui.mjs`         | Whether to colour, and the ANSI codes that do it. Not vendored; vendored modules take a no-op style instead.                                                         |
 | `init.mjs`       | The retired `init` command: reads and explains, writes nothing. Still runs for scripts that call it.                                                                 |
-| `lib.mjs`        | Shared helpers: argv parsing, running commands, NUL-delimited git output, path classification, output formatting.                                                  |
-| `vendor.mjs`     | Copies this directory into a target repository and reads/writes `.naso/config.json`.                                                                               |
+| `lib.mjs`        | Shared helpers: argv parsing, running commands, NUL-delimited git output, path classification, output formatting, the documented branch pattern, and how to spell `naso-dev` in this repository's package manager. |
+| `vendor.mjs`     | Copies this directory into a target repository, each script with an `eslint-disable` first line, and reads/writes `.naso/config.json`.                              |
 
 ## Design rules these files follow
 
