@@ -11,6 +11,7 @@ import path from 'node:path';
 import { detectStack } from './stack.mjs';
 import { readCodeowners, readPrecedence, readSourceMap } from './repo-rules.mjs';
 import { documentedBranchPattern } from './lib.mjs';
+import { readDecisions } from './decisions.mjs';
 import {
   pathExists,
   readJSONFile,
@@ -1787,6 +1788,7 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
     precedence: await readPrecedence(cwd, files, { start: NASO_START, end: NASO_END }),
     sourceMap: await readSourceMap(cwd, files),
     branchPattern: await documentedBranchPattern(cwd),
+    decisions: await readDecisions(cwd),
     stack: await detectStack(cwd, files, {
       ignore: (await readIgnorePatterns(cwd))?.all ?? [],
       pm: packageManager.name,

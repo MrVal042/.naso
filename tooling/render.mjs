@@ -11,6 +11,7 @@ import {
   run,
   pmRunText,
   section,
+  nasoCommand,
 } from './lib.mjs';
 import {
   AUTO_END,
@@ -27,6 +28,7 @@ import {
   roleFor,
   plural,
 } from './scan.mjs';
+import { renderDecisionIndex } from './decisions.mjs';
 
 // ---------------------------------------------------------------------------
 // Rendering
@@ -814,6 +816,35 @@ function subjectShape(history) {
   return `${head}: ${ticket}summary`;
 }
 
+/**
+ * Decisions: how an agent uses them, and the list, between markers the commands refresh.
+ *
+ * The rules are what make decisions survive a new session, account or agent: read them
+ * before proposing, record new ones as they are made, and leave accepting to people. The
+ * list itself is the only part of the NASO block that changes after setup, so it lives
+ * between its own markers and nothing else is rewritten.
+ */
+function renderDecisions(facts) {
+  const decisions = facts.decisions ?? { dir: 'docs/decisions', exists: false, records: [] };
+  // No path for a folder that is not there yet: any mention of `docs/` counts as describing
+  // that area, and the checker would then stop reporting an undescribed docs/ forever.
+  const where = decisions.exists
+    ? `\`${decisions.dir}/\`, one file each`
+    : 'a decisions folder, one file each (the first one recorded creates it under docs)';
+  return [
+    '## Decisions',
+    '',
+    `Decisions the team already made live in ${where}, with who decided and where: a meeting, ticket, email or doc.`,
+    '',
+    '- Before proposing an approach, read the accepted decisions below that apply to the paths you are changing, and follow them. Do not reopen one unless the person asks to.',
+    `- When the person decides something in a session, record it so the next session, account or agent starts from it: \`${nasoCommand()} decide --title "…" --source "…" --decision "…"\`. It is written as proposed.`,
+    '- Never accept, reject or supersede a decision yourself; ask the person. A proposed decision is not binding.',
+    `- \`${nasoCommand()} decisions audit\` lists records that no longer hold. It changes nothing.`,
+    '',
+    renderDecisionIndex(decisions),
+  ].join('\n');
+}
+
 /** The closing note, naming the commands this repository declares; null when it names none. */
 function renderWhenDone(facts) {
   const commands = facts.gate?.command
@@ -1064,6 +1095,8 @@ export async function renderBriefing(facts, { version, now }) {
     ...(facts.precedence ?? []).map((entry) => `- \`${entry.file}\` line ${entry.line}: “${entry.text}”`),
   ];
   parts.push(`## Which Document Wins\n\n${wins.join('\n')}`);
+
+  parts.push(renderDecisions(facts));
 
   const dirs = facts.areas;
   const rootFiles = renderRootFiles(facts.entries, facts);

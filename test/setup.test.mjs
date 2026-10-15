@@ -1,6 +1,7 @@
 // The setup flow: the plan, the questions, what it writes, hooks, local excludes and CLAUDE.md.
 
 import test from 'node:test';
+import { vendorSources } from '../tooling/vendor.mjs';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import { mkdtemp, rm, writeFile, readFile, readdir, chmod } from 'node:fs/promises';
@@ -537,13 +538,13 @@ test('the overview lists every destination with exact line counts before the onl
     const beforeQuestion = res.stdout.slice(0, res.stdout.indexOf('@@{"ask":"decide"'));
     const planned = plannedWrites(beforeQuestion);
     // The toolset is one row in the overview: sixteen lines of .mjs names tell a person
-    // deciding nothing that "18 files, N lines, the hook runs this copy" does not.
+    // deciding nothing that "N files, M lines, the hook runs this copy" does not.
     const vendored = (await readdir(path.join(dir, '.naso', 'tooling'))).map((f) => `.naso/tooling/${f}`);
-    assert.equal(vendored.length, 18);
+    assert.equal(vendored.length, (await vendorSources()).length + 1, 'every source, plus VERSION');
     let toolingLines = 0;
     for (const file of vendored) toolingLines += linesIn(await read(dir, file));
     assert.deepEqual(planned.get('.naso/tooling/'), { change: 'new', lines: toolingLines });
-    assert.match(beforeQuestion, /\.naso\/tooling\/\s+new, \d+ lines\s+\(18 files/);
+    assert.match(beforeQuestion, new RegExp(`\\.naso/tooling/\\s+new, \\d+ lines\\s+\\(${vendored.length} files`));
 
     for (const [file, row] of planned) {
       if (row.change === 'append' || file.endsWith('/')) continue;

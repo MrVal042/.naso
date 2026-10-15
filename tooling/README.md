@@ -35,6 +35,7 @@ every commit with a message nobody can act on.
 | `scan.mjs`       | Reads the repository into facts: areas, entry points and what they import, conventions, tests, the gate, commit history. Writes nothing.                             |
 | `stack.mjs`      | What the repository is, in any ecosystem, from its manifests: the framework and kind, or what the manifest implies, and the stack rules this repository confirms. One table row per framework. |
 | `repo-rules.mjs` | Rules the repository's people wrote down: CODEOWNERS, lines that say which document wins, and the source map with each folder's purpose from the docs. |
+| `decisions.mjs`  | Decision records: `decide`, `decisions` (list, accept, reject, supersede, audit, sync), and the list between the decisions markers in AGENTS.md. |
 | `render.mjs`     | Turns those facts into the briefing block. Every sentence is a count, a config value or a path the scan read.                                                        |
 | `check.mjs`      | Checks the NASO block against disk: every claimed path exists, every area is named, no placeholder remains. Text outside the markers is the owner's and is not checked. |
 | `flow.mjs`       | `npx naso-dev` with no command: reads the repository, asks, shows the plan, then accept, reject or exclude an area. Not vendored.                                    |

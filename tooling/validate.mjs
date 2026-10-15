@@ -57,6 +57,7 @@ import {
 } from './lib.mjs';
 import { withLock } from './lock.mjs';
 import { scanRepo, lineForUnit } from './briefing.mjs';
+import { decisionsDir, parseDecision, syncDecisionIndex } from './decisions.mjs';
 
 const PRETTIER_CONFIG_CANDIDATES = [
   '.prettierrc',
@@ -589,6 +590,42 @@ async function appendBriefingNotes(cwd) {
   record('AGENTS.md update', 'pass', `${appended.length} line(s) appended`);
 }
 
+/**
+ * Staged decision records: refuse one that cannot be read as a decision, and refresh the
+ * list in AGENTS.md so it lands in the same commit.
+ *
+ * Only structure blocks a commit — a record with no status or title is not a decision yet.
+ * Everything that may simply be stale (no source, an old proposal) is the audit's job,
+ * because a hook that refused those would refuse every commit in a repository with old
+ * ADRs.
+ */
+async function checkDecisionRecords(cwd, stagedFiles, { append }) {
+  const { dir } = await decisionsDir(cwd);
+  const records = stagedFiles.filter((file) => file.startsWith(`${dir}/`) && /\.md$/i.test(file) && !/\/(?:readme|index|template)[^/]*$/i.test(file));
+  if (records.length === 0) return;
+
+  const problems = [];
+  for (const file of records) {
+    const text = await readFile(path.join(cwd, file), 'utf8').catch(() => null);
+    if (text === null) continue;
+    const record = parseDecision(file, text);
+    if (!record.status) problems.push(`${record.id}: no status`);
+    if (!/^#\s+\S/m.test(text)) problems.push(`${record.id}: no title`);
+  }
+  if (problems.length > 0) {
+    record('Decision records', 'fail', problems.join('; '));
+    return;
+  }
+  record('Decision records', 'pass', `${records.length} staged`);
+  if (!append) return;
+
+  const staging = await shouldStageBriefing(cwd);
+  if ((await syncDecisionIndex(cwd)) === 'updated' && staging.stage) {
+    await run('git', ['add', '--', AGENTS_FILE], { cwd });
+    console.log(`  Refreshed the decisions list in ${AGENTS_FILE} and staged it with this commit.`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Modes
 // ---------------------------------------------------------------------------
@@ -693,6 +730,9 @@ async function runStaged(cwd, pkg, pm, { append, prefixes, strictScope }) {
   } else {
     record('AGENTS.md update', 'skip', '--no-append');
   }
+  // After the area notes, not before: a refreshed list links docs/decisions/…, and read
+  // first it would count as describing a docs/ area this commit introduces.
+  await checkDecisionRecords(cwd, stagedFiles, { append });
 
   printSummary();
 }

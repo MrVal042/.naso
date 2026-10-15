@@ -137,6 +137,9 @@ is this repository's own. Your job is to make that true here.
    import boundaries, protected paths, which commands only check and which
    rewrite files, and which document wins when two disagree. Prefer a link to
    the file that states a rule over copying the rule.
+   Decisions the team already made but never recorded (in docs, CONTRIBUTING,
+   the README): propose each one with \`${nasoCommand()} decide\`, citing the
+   file as --source. Never accept one yourself.
 4. Edit only between <!-- naso:start --> and <!-- naso:end -->. Every line you
    add or change must name the file it came from. If you cannot cite it, leave
    it out. Never open or print the contents of .env files, keys or other

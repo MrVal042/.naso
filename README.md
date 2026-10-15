@@ -105,6 +105,26 @@ These work the same in any repository, and say nothing where the file is absent:
 - **Branch names** follow the template the contributing guide writes down (`<type>/<KEY>-<n>-<slug>`), and the hook warns on any other branch. With no template, the hook only checks for a `prefix/name` shape.
 - **Generated files** name the script that writes them and the source it reads.
 
+## Decisions: say it once
+
+A decision made in a meeting, a ticket, an email or a chat is lost to the next AI session, the next account and the next agent unless it is written where all of them look. NASO keeps them as files in the repository, one per decision, and lists them in AGENTS.md.
+
+```bash
+npx naso-dev decide --title "Use REST for the customer API" \
+  --decision "The app calls only REST endpoints of customer-api." \
+  --source "PO email, 2026-10-14" --by "product owner" --applies src/api/
+npx naso-dev decisions                 # list
+npx naso-dev decisions accept 0004     # a person accepts it
+npx naso-dev decisions supersede 0001 --by 0004
+npx naso-dev decisions audit           # what no longer holds; changes nothing
+```
+
+- **Where:** the folder the repository already uses for decision records (`docs/adr/`, `docs/decisions/`, an `.adr-dir`…), else `docs/decisions/`. Nygard and MADR records are read as they are.
+- **Agents propose, people accept.** `decide` writes `proposed`; only `accept` makes a decision binding, and the briefing tells agents never to run it themselves.
+- **Every record has a source**, by reference: "PO email, 2026-10-14", not the email.
+- **Nothing is deleted.** The audit reports contradictions, missing sources, scopes that are gone, unsettled proposals and passed review dates; a person supersedes or rejects.
+- **Every agent sees the current list.** It sits between `<!-- naso:decisions:start -->` and `<!-- naso:decisions:end -->` in AGENTS.md and is refreshed by these commands and by the pre-commit hook, so Claude Code, Codex, Cursor or Copilot start from the same decisions in a new session, on a new account or on another machine.
+
 ## What gets installed
 
 | Path                        | Purpose                                                                                          |
@@ -131,6 +151,8 @@ The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplev
 | `npx naso-dev guide --list [target]`                                | The areas that exist, with their file counts. Unknown areas are an error, not an empty screen.                   |
 | `npx naso-dev guide --tour [target]`                                | The read-through: every section of the briefing in reading order, plus the consistency check.                    |
 | `npx naso-dev validate [target] [--staged] [--scope a,b] [--strict]` | The pre-commit gate, and the full CI run without `--staged`.                                                     |
+| `npx naso-dev decide --title … --source … --decision …`           | Record a decision the team made, as proposed, with where it was made. |
+| `npx naso-dev decisions [accept\|reject\|supersede\|audit\|sync]` | List, settle or audit the recorded decisions. The audit changes nothing. |
 | `npx naso-dev doctor [target]`                                      | Environment and install diagnostics: Node, git, hook, vendored copy, briefing consistency, the Claude Code link, leftovers. |
 
 All commands accept `--help`. `init` and `setup` are retired but still run; both are covered by the test suite.

@@ -14,6 +14,8 @@ const COMMANDS = {
   guide: { module: 'guide.mjs', blurb: 'Guide for one area, or --tour for a read-through of the whole briefing' },
   validate: { module: 'validate.mjs', blurb: 'Pre-commit gate: secrets, scope, format, lint, briefing' },
   doctor: { module: 'doctor.mjs', blurb: 'Diagnose the environment and the install' },
+  decide: { module: 'decisions.mjs', fn: 'decideMain', blurb: 'Record a decision the team made, with where it was made' },
+  decisions: { module: 'decisions.mjs', blurb: 'List, accept, reject, supersede or audit recorded decisions' },
 };
 
 // Retired, still functional. Scripts in the wild call these, and a deprecation
@@ -124,7 +126,7 @@ async function main() {
   }
 
   const mod = await import(pathToFileURL(path.join(TOOL_DIR, entry.module)).href);
-  await mod.main(argv.slice(1));
+  await mod[entry.fn ?? 'main'](argv.slice(1));
 }
 
 main().catch((err) => {

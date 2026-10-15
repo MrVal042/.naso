@@ -460,6 +460,8 @@ const BOOLEAN_FLAGS = new Set([
   'no-append',
   'list',
   'tour',
+  'save-dev',
+  'accept',
 ]);
 
 /** Single-letter spellings, mapped to the long flag they stand for. */
@@ -591,7 +593,10 @@ export function isNoisyDir(name) {
 export function coversUnit(briefingText, unit) {
   if (!briefingText || !unit) return false;
   const needle = escapeRegExp(unit);
-  return new RegExp(`(^|[^A-Za-z0-9_./-])${needle}`, 'i').test(briefingText);
+  // The decisions list links records under docs/decisions/; a link to one record does not
+  // describe the docs/ area, and counting it would hide a new area from the hook for good.
+  const text = briefingText.replace(/<!-- naso:decisions:start -->[\s\S]*?<!-- naso:decisions:end -->/g, '');
+  return new RegExp(`(^|[^A-Za-z0-9_./-])${needle}`, 'i').test(text);
 }
 
 /** Escape a string for literal use inside a RegExp. */

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased (1.3.0)
+
+### Added
+
+- **Decisions survive sessions, accounts and agents.** `naso-dev decide --title … --source … --decision …` records a decision the team made, one file each, in the folder the repository already uses for decision records (else docs/decisions/). `--source` is required: the meeting, ticket, email or doc, by reference. Records are written as proposed; a person accepts them with `naso-dev decisions accept <id>`, rejects them, or supersedes one with a newer one. Nygard and MADR records are read as they are.
+- **AGENTS.md tells every agent how to use them.** A Decisions section says: read the accepted decisions that apply before proposing an approach, do not reopen one unless asked, record new ones as proposed, never accept one yourself. The list of decisions sits between its own markers and is refreshed by `decide`, `decisions` and the pre-commit hook, so a new session starts from the current list without regenerating anything else.
+- **`naso-dev decisions audit`** lists records that no longer hold and changes nothing: contradictions (an accepted decision another one supersedes), a missing status, no source, a scope that is gone, a proposal nobody settled in 14 days, a review date passed, a list in AGENTS.md that is out of date. It exits 1 on contradictions.
+- **The hook refuses a staged decision record with no status or title**, and refreshes the list in the same commit.
+- **The agent prompt asks for unrecorded decisions** found in the docs to be proposed, citing the file.
+
+### Fixed
+
+- `--save-dev` and `--accept` are switches: `--save-dev ./repo` no longer takes the directory as its value.
+
 ## 1.2.0
 
 The generated briefing changes shape, so this is a minor release.
