@@ -78,6 +78,7 @@ export async function scanWarnings(facts) {
 
   warnings.push(...(await detectVersionContradictions(facts)));
   warnings.push(...trackedSecretWarnings(facts));
+  warnings.push(...(await ignoredCredentialWarnings(facts)));
   warnings.push(...trackedJunkWarnings(facts));
 
   return warnings;
@@ -157,8 +158,56 @@ async function detectVersionContradictions(facts) {
  * before the pattern existed or with `git add -f`, and it will not show up in a later
  * `git status` — which is why it is worth saying out loud at all.
  */
+/** Patterns that name key material whatever file they are in. */
+const KEY_MATERIAL = /(keystore|jks|\.env|\.pem|\.p12|\.p8\b|\.pfx|\.key|\.crt|\.cer|\.mobileprovision|\.netrc|id_rsa|id_ed25519)/i;
+const CODE_FILE = /\.(?:[cm]?[jt]sx?|py|go|rb|java|kt|swift|dart|rs|php|cs)$/i;
+
+/**
+ * Whether a path looks like it holds a credential.
+ *
+ * A template (`.env.example`) holds the names, not the values, and a source file called
+ * `tokens.ts` is design tokens far more often than API tokens; warning about both taught
+ * people to skim past the warning. A source file still counts when its name is key
+ * material (`id_rsa.ts` is odd enough to look at).
+ */
+export function isCredentialFile(file) {
+  const base = file.slice(file.lastIndexOf('/') + 1);
+  if (/\.(?:example|sample|template|dist|defaults?)$/i.test(base)) return false;
+  if (CODE_FILE.test(base)) return KEY_MATERIAL.test(base);
+  return CREDENTIAL_PATTERN.test(file);
+}
+
+/**
+ * Credential-shaped files that git ignores and this machine has: `.env.production`.
+ *
+ * Shown on the setup screen by name, never written into AGENTS.md. The names are a fact
+ * about this checkout, and a briefing that is committed would tell every teammate their
+ * machine has files it may not. Contents are never read. `--directory` keeps an ignored
+ * node_modules/ to one line instead of a walk through every package in it.
+ */
+async function ignoredCredentialWarnings(facts) {
+  if (facts.fileSource !== 'git') return [];
+  const res = await run('git', ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], { cwd: facts.cwd });
+  if (!res.ok) return [];
+  const present = res.stdout
+    .split('\0')
+    .filter((file) => file && !file.endsWith('/') && isCredentialFile(file));
+  if (present.length === 0) return [];
+  return [
+    {
+      id: 'ignored-credentials',
+      where: 'setup',
+      headline:
+        `${plural(present.length, 'credential-shaped file')} ${present.length === 1 ? 'exists' : 'exist'} on this machine ` +
+        `and git ignores ${present.length === 1 ? 'it' : 'them'}: ${someOf(present)}`,
+      detail: 'Names only, contents not read. Kept out of AGENTS.md: they are this machine\'s, not the repository\'s.',
+      paths: present,
+    },
+  ];
+}
+
 function trackedSecretWarnings(facts) {
-  const secrets = facts.files.filter((file) => CREDENTIAL_PATTERN.test(file));
+  const secrets = facts.files.filter((file) => isCredentialFile(file));
   if (secrets.length === 0) return [];
 
   const ignored = facts.ignoredPatterns?.credentials ?? [];

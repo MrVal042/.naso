@@ -36,6 +36,8 @@ The generated briefing changes shape, so this is a minor release.
 - **`guide` no longer calls a one-paragraph section empty.**
 - **Scripts that rewrite files are not validation commands.** `format: prettier --write .` was listed beside `format:check`. Scripts passing `--write`, `--fix` or `-w` are named as rewriting files instead.
 - **Three claims the scan could not back are gone.** "A bare relative import is the one mistake TypeScript will not catch" is replaced by the alias mapping alone. The language mix no longer counts AGENTS.md, and its total is every file with an extension, not the four shown. A TypeScript repository with no `"type"` field is no longer "CommonJS by default"; the line says that applies to its root `.js` files.
+- **Credential warnings name real key files, not design tokens or templates.** `src/theme/tokens.ts` and `.env.example` were reported as credential-shaped. Templates are skipped, and a source file counts only when its name is key material.
+- **Ignored credential files on this machine are shown at setup, by name.** `.env.production` that git ignores is listed on the setup screen, contents never read, and kept out of AGENTS.md: it is a fact about one machine, and a committed briefing would claim it for every teammate.
 - **`*.p8` and `*.mobileprovision` are credentials**, not ignored build output.
 - **The briefing says the hook runs only where setup installed it**, and that CI does not run it.
 

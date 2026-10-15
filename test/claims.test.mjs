@@ -399,3 +399,34 @@ test('root-anchored ignore patterns are listed before generic ones', async () =>
     assert.match(ignored, /Nothing under \/ios, \/android, node_modules\//);
   });
 });
+
+test('ignored credential files on this machine are shown at setup by name, and never written into AGENTS.md', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    await put(dir, '.env.development', 'never-read\n');
+    await put(dir, '.env.production', 'never-read\n');
+    await put(dir, 'node_modules/pkg/.env', 'not ours\n');
+    const res = await bare(['--yes']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /2 credential-shaped files exist on this machine and git ignores them: \.env\.development, \.env\.production/);
+    assert.doesNotMatch(res.stdout, /never-read/, 'names only, never contents');
+    assert.doesNotMatch(res.stdout, /node_modules\/pkg\/\.env/);
+    const text = await read(dir, AGENTS);
+    assert.doesNotMatch(text, /\.env\.development|\.env\.production/, 'a committed briefing makes no claim about one machine');
+  });
+});
+
+test('design tokens and example env files are not credential warnings; real key files are', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedCustomerApp(dir, git);
+    await put(dir, 'src/theme/tokens.ts', 'export const space = 4;\n');
+    await put(dir, '.env.example', 'API_URL=\n');
+    await put(dir, 'certs/dev.pem', 'not a real key\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'chore: SCRUM-6: files');
+    const res = await bare(['--dry-run']);
+    const warning = res.stdout.match(/credential-shaped files? (?:is|are) tracked[^\n]*\n[^\n]*/)?.[0] ?? '';
+    assert.match(warning, /certs\/dev\.pem/);
+    assert.doesNotMatch(warning, /tokens\.ts|\.env\.example/);
+  });
+});
