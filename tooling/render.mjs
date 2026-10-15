@@ -625,11 +625,24 @@ async function renderBoundaries(facts) {
       `**Generated files.** ${generated
         .map(
           (entry) =>
-            `\`${entry.path}\` is written by \`${entry.command}\`; regenerate it, never edit it by hand.` +
+            `\`${entry.path}\` is written by \`${entry.command}\`${entry.from ? ` from \`${entry.from}\`` : ''}; regenerate it, never edit it by hand.` +
             (guarded.has(entry.path) ? ' CI fails if it changes.' : ''),
         )
         .join(' ')}`,
     );
+  }
+
+  const owners = facts.codeowners;
+  if (owners && (owners.entries.length > 0 || owners.fallback)) {
+    const shown = owners.entries.slice(0, 10).map((entry) => `${entry.pattern} → ${entry.owners.join(', ')}`);
+    if (owners.entries.length > 10) shown.push(`${owners.entries.length - 10} more`);
+    if (owners.fallback) shown.push(`everything else → ${owners.fallback.join(', ')}`);
+    const unmatched = owners.unmatched.length > 0
+      ? ` ${owners.unmatched.slice(0, 5).join(', ')} ${owners.unmatched.length === 1 ? 'matches' : 'match'} no tracked file yet.`
+      : '';
+    // Patterns are not backticked: a CODEOWNERS pattern is a glob or a prefix, not a claim
+    // that a path exists, and the unmatched ones are exactly the paths that do not.
+    lines.push(`**Owners.** \`${owners.path}\` asks for these reviewers: ${shown.join('; ')}.${unmatched}`);
   }
 
   const declared = conventions.aliases?.declared ?? [];
@@ -715,6 +728,9 @@ function renderCommitStandard(facts) {
   const history = facts.history ?? { count: 0 };
   const lines = [];
 
+  if (facts.branchPattern) {
+    lines.push(`- Branch names follow \`${facts.branchPattern.text}\` (\`${facts.branchPattern.source}\`); the hook warns on any other.`);
+  }
   if (facts.contributing?.commits) {
     lines.push(`- \`${facts.contributing.path}\` writes the commit rules down; where it and this count differ, it wins.`);
   }
@@ -991,6 +1007,15 @@ export async function renderBriefing(facts, { version, now }) {
   // API service" changes how every path below is read, and it is one line.
   if (facts.stack?.summary) parts.push(`**What this is.** ${facts.stack.summary}`);
 
+  // Said first, because every later section is read in its light. The default is NASO's
+  // own position — it derived this block, people wrote the rest — and the quoted lines are
+  // the repository's, with file and line so a reader can check them.
+  const wins = [
+    'Where this block and a file people wrote disagree, the file wins: NASO derived this block from the repository, and they wrote theirs on purpose.',
+    ...(facts.precedence ?? []).map((entry) => `- \`${entry.file}\` line ${entry.line}: “${entry.text}”`),
+  ];
+  parts.push(`## Which Document Wins\n\n${wins.join('\n')}`);
+
   const dirs = facts.areas;
   const rootFiles = renderRootFiles(facts.entries, facts);
   const structure = [];
@@ -1006,6 +1031,25 @@ export async function renderBriefing(facts, { version, now }) {
   const lookFirst = renderLookFirst(facts);
   if (lookFirst) {
     parts.push(`### Where To Look First\n\n${lookFirst.join('\n')}`);
+  }
+
+  const map = facts.sourceMap;
+  if (map) {
+    const rows = map.rows.map(
+      (row) =>
+        `| \`${row.dir}\` | ${plural(row.files, 'file')} | ${row.purpose ? `${row.purpose.text} (\`${row.purpose.doc}\`)` : 'no doc describes it'} |`,
+    );
+    const notes = [
+      ...(map.more > 0 ? [`${map.more} further folders are not listed.`] : []),
+      ...map.shared.map(([a, b]) => `Two folders share a name: \`${a}\` and \`${b}\`. Check which one a change belongs in.`),
+      // Not backticked: these are the folders that do not exist.
+      ...map.stale.map((entry) => `\`${entry.doc}\` names ${entry.dir}, which is not in the repository.`),
+    ];
+    parts.push(
+      `## Source Map\n\nEvery folder under \`${map.root}/\`, with what the repository's own docs say it is for.\n\n` +
+        `| Folder | Files | What it is for |\n| --- | --- | --- |\n${rows.join('\n')}` +
+        (notes.length > 0 ? `\n\n${notes.join('\n')}` : ''),
+    );
   }
 
   if (facts.featureMap) {

@@ -97,6 +97,43 @@ const LOCKFILE_MANAGERS = [
 ];
 
 // ---------------------------------------------------------------------------
+// The branch-name convention the repository wrote down
+// ---------------------------------------------------------------------------
+
+const CONTRIBUTING_FILES = ['CONTRIBUTING.md', '.github/CONTRIBUTING.md', 'docs/CONTRIBUTING.md'];
+
+/**
+ * The branch pattern a contributing guide states, as `{ source, text, regex }`, or null.
+ *
+ * Read from a backticked template with placeholders on a line about branches:
+ * `<type>/<KEY>-<n>-<slug>`. Each `<placeholder>` matches one or more characters other than
+ * a slash; everything else is literal. A guide with examples only and no template gives
+ * nothing, because an example does not say which of its parts are fixed. The gate used to
+ * accept any `x/y`, which passed every branch a team's own rule would have rejected.
+ */
+export async function documentedBranchPattern(cwd) {
+  for (const source of CONTRIBUTING_FILES) {
+    const text = await readFile(path.join(cwd, source), 'utf8').catch(() => null);
+    if (text === null) continue;
+    let heading = '';
+    for (const line of text.split('\n')) {
+      if (/^#+\s/.test(line)) heading = line;
+      if (!/branch/i.test(line) && !/branch/i.test(heading)) continue;
+      for (const match of line.matchAll(/`([^`\s]*<[^`\s]+>[^`\s]*)`/g)) {
+        const template = match[1];
+        if (!template.includes('/')) continue;
+        const pattern = template
+          .split(/(<[^>]+>)/)
+          .map((part) => (/^<[^>]+>$/.test(part) ? '[^/\\s]+' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+          .join('');
+        return { source, text: template, regex: new RegExp(`^${pattern}$`) };
+      }
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // How to run NASO itself, in this repository's package manager
 // ---------------------------------------------------------------------------
 

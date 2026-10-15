@@ -95,6 +95,16 @@ Frameworks it names: Expo, React Native, Next.js, Nuxt, SvelteKit, Remix, Astro,
 
 **Stack Rules** follows, only when there are any. Every rule is checked against this repository before it is written: "every file under `src/app/` is a route" needs that folder and the router dependency; "ios/ and android/ are generated" needs `.gitignore` to ignore them; "`db/schema.rb` is generated" needs the file. A rule from one stack never appears in another's briefing. The table is in `tooling/stack.mjs`, one row per framework; adding a row changes no other.
 
+## Rules the repository already wrote down
+
+These work the same in any repository, and say nothing where the file is absent:
+
+- **Which Document Wins** comes first. A file people wrote wins over the NASO block, and every line in `CLAUDE.md`, `AGENTS.md` (outside the block), `CONTRIBUTING.md` or `README.md` that says which source wins is quoted with its file and line.
+- **Owners** lists CODEOWNERS paths with their reviewers, and names plain paths that match no tracked file yet.
+- **Source Map** lists every folder under the source root with its file count and the purpose the repository's own docs give it, cited. A folder no doc describes says so. Folders sharing a name at two depths (`src/auth/` and `src/features/auth/`) and folders a doc names that no longer exist are flagged.
+- **Branch names** follow the template the contributing guide writes down (`<type>/<KEY>-<n>-<slug>`), and the hook warns on any other branch. With no template, the hook only checks for a `prefix/name` shape.
+- **Generated files** name the script that writes them and the source it reads.
+
 ## What gets installed
 
 | Path                        | Purpose                                                                                          |

@@ -53,6 +53,7 @@ import {
   isMainModule,
   SUPPORT_EMAIL,
   nasoCommand,
+  documentedBranchPattern,
 } from './lib.mjs';
 import { withLock } from './lock.mjs';
 import { scanRepo, lineForUnit } from './briefing.mjs';
@@ -350,8 +351,17 @@ async function checkBranchName(cwd) {
     return;
   }
   const branch = branchRes.stdout.trim();
+  // The repository's own rule, when its contributing guide writes one down; the generic
+  // prefix/slug shape only when it does not. Either way a warning, never a refusal.
+  const documented = await documentedBranchPattern(cwd);
   if (branch === 'HEAD') {
     record('Branch naming', 'skip', 'detached HEAD');
+  } else if (documented) {
+    if (/^(main|master|develop|dev|trunk)$/.test(branch) || documented.regex.test(branch)) {
+      record('Branch naming', 'pass', `${branch} (${documented.source})`);
+    } else {
+      record('Branch naming', 'warn', `${branch} does not follow ${documented.text} (${documented.source}); not blocking`);
+    }
   } else if (BRANCH_NAME_PATTERN.test(branch)) {
     record('Branch naming', 'pass', branch);
   } else {

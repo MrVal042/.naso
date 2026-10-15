@@ -272,7 +272,7 @@ test('codegen is run with its diff, never alone, and the generated file is marke
     assert.doesNotMatch(commands, /^npm run api-types$/m, 'run alone it rewrites the file and checks nothing');
     assert.match(
       sectionOf(text, 'Boundaries'),
-      /\*\*Generated files\.\*\* `src\/api\/schema\.d\.ts` is written by `npm run api-types`; regenerate it, never edit it by hand\. CI fails if it changes\./,
+      /\*\*Generated files\.\*\* `src\/api\/schema\.d\.ts` is written by `npm run api-types` from `openapi\.yaml`; regenerate it, never edit it by hand\. CI fails if it changes\./,
     );
     assert.equal((await script('briefing')).code, 0);
   });

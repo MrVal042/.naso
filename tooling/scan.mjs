@@ -9,6 +9,8 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import { detectStack } from './stack.mjs';
+import { readCodeowners, readPrecedence, readSourceMap } from './repo-rules.mjs';
+import { documentedBranchPattern } from './lib.mjs';
 import {
   pathExists,
   readJSONFile,
@@ -1558,9 +1560,16 @@ export function generatedOutputs(pkg, files, pm = 'npm') {
       ...[...body.matchAll(OUTPUT_FLAG)].map((match) => match[2]),
       ...[...body.matchAll(REDIRECT)].map((match) => match[1]),
     ].map((target) => target.replace(/^\.\//, ''));
+    // The source is any other tracked file the script names: `openapi.yaml` in
+    // `openapi-typescript openapi.yaml -o src/api/schema.d.ts`. Editing the output is the
+    // mistake; changing the source and regenerating is the fix, so the line names both.
+    const inputs = body
+      .split(/\s+/)
+      .map((word) => word.replace(/^['"]|['"]$/g, '').replace(/^\.\//, ''))
+      .filter((word) => tracked.has(word) && !targets.includes(word));
     for (const target of targets) {
       if (tracked.has(target) && !out.some((entry) => entry.path === target)) {
-        out.push({ path: target, script: name, command: pmRunText(pm, name) });
+        out.push({ path: target, script: name, command: pmRunText(pm, name), from: inputs[0] ?? null });
       }
     }
   }
@@ -1774,6 +1783,10 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
     validation: await detectValidationCommands(cwd, pkg, packageManager.name),
     rewriters: detectRewritingScripts(pkg, packageManager.name),
     contributing: await readContributing(cwd, files),
+    codeowners: await readCodeowners(cwd, files),
+    precedence: await readPrecedence(cwd, files, { start: NASO_START, end: NASO_END }),
+    sourceMap: await readSourceMap(cwd, files),
+    branchPattern: await documentedBranchPattern(cwd),
     stack: await detectStack(cwd, files, {
       ignore: (await readIgnorePatterns(cwd))?.all ?? [],
       pm: packageManager.name,
