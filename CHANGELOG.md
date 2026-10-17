@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The README's install command records naso-dev as a dev dependency.** Quick Start said `npx naso-dev`, which leaves the devDependencies step to a question that is easy to miss. It now says `npx naso-dev@latest --save-dev`, and the script example `npx naso-dev --yes --save-dev`, so naso-dev never ships in an app's production dependencies or build. The README also says plainly that `npm i naso-dev` only installs the package: it runs no setup and asks no questions.
+- **The README shows what a run looks like.** A new "What you will see" section walks through a first run in four steps, with the terminal output of each: what NASO found, the questions, the plan, and what it wrote.
+
 ## 1.3.0
 
 ### Added

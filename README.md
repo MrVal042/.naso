@@ -19,14 +19,16 @@ An AI coding agent starts every session knowing nothing about your repository. W
 One command, once per repository:
 
 ```bash
-npx naso-dev
+npx naso-dev@latest --save-dev
 ```
+
+`--save-dev` records naso-dev in your project's `devDependencies`, never `dependencies`: it is a development tool, so production installs and your app's build leave it out. In a repository without a `package.json` the flag does nothing. `@latest` makes npx fetch the current release instead of reusing an older copy it cached.
 
 It works like a guided installer. In order:
 
 1. **Reads** the repository and shows what it found: branch, files, areas, language.
 2. **Asks** what the plan depends on: commit the files or keep them local; the pre-commit hook, and what to do about a hook NASO did not write; whether to replace an existing NASO block; whether to record naso-dev in `devDependencies`.
-3. **Shows the plan** as an overview: what the briefing covers, what must pass, any warning, and one row per file it would write with its exact line count (the 16-file toolset is one row).
+3. **Shows the plan** as an overview: what the briefing covers, what must pass, any warning, and one row per file it would write with its exact line count (the whole toolset is one row).
 4. **Asks once:** *Write these files and install the hook?* Accept, Show details, Reject, or Exclude an area.
 5. **Installs**, one ✓ line per step, verifies the briefing against the repository, and says what you have now.
 6. **Ends with a prompt for your coding agent**, which finishes the job: it checks the briefing against the rules your repository already wrote down and corrects it.
@@ -42,9 +44,115 @@ Arrow keys (or j/k) move between answers, Enter picks one, and y or n answers a 
 
 Add `--why` for the long-form rationale before you decide.
 
+### What you will see
+
+A first run in a NestJS API with a `package.json`, shortened. Your branch, counts and CI will differ.
+
+**1. It reads the repository.** npx asks once to download naso-dev, then NASO says what it found and what it is about to do. Nothing has been written yet.
+
+```text
+$ npx naso-dev@latest --save-dev
+Need to install the following packages:
+naso-dev@1.3.0
+Ok to proceed? (y) y
+
+NASO 1.3.0  /path/to/acme-api
+
+## This repository
+
+Branch            feature/bootstrap
+Files             136 tracked in the git index
+Areas             4 top-level directories (docs, openapi, src, test)
+Stack             A NestJS API service
+Language          TypeScript, 106 of 136 files
+
+What this does    reads this repository, writes an AGENTS.md briefing
+                  that says what every area is for and what must pass before
+                  work counts as done, then copies a small toolset into .naso/
+                  and installs a pre-commit gate to keep the briefing true.
+
+Before you accept nothing at all is written. Answering no leaves this
+                  repository exactly as it is, and that is a valid outcome.
+```
+
+**2. It asks what the plan depends on.** Enter takes the default.
+
+```text
+◇  Questions
+   Answer with Enter to accept the default. Nothing is written until you accept the plan.
+
+◇  Commit AGENTS.md and .naso/ to git? (No keeps them local to this machine.)
+   Yes
+
+◇  Install the pre-commit gate?
+   Yes
+```
+
+If `AGENTS.md` already has a NASO block, it also asks whether to replace it. Everything outside the markers is kept either way. Because `--save-dev` was passed, it does not ask about `devDependencies`.
+
+**3. It shows the plan and asks once.** Every file it would write, with its line count. `package.json` changes last, through your own package manager.
+
+```text
+The plan for acme-api  nothing is written until you accept
+
+  The briefing covers 4 areas: docs/, openapi/, src/, test/ from 136 files on feature/bootstrap.
+  What must pass: .gitlab-ci.yml (3 CI jobs)
+
+## Files this writes
+
+  AGENTS.md                new, 152 lines   (the briefing)
+  CLAUDE.md                new, 1 line      (makes Claude Code load the briefing)
+  .naso/tooling/           new, 9909 lines  (19 files; the hook runs this copy)
+  .naso/config.json        new, 8 lines     (the choices you made here)
+  .git/hooks/pre-commit    new, 47 lines    (the gate, on this machine)
+  .prettierignore          append 1 line
+  package.json             changed  (devDependencies, by npm, last)
+  package-lock.json        changed  (by npm, with node_modules/)
+
+  Last, `npm install --save-dev naso-dev@1.3.0`, the only step that uses the network.
+
+◆  Write these files and install the hook?
+   ● Accept (write exactly the files listed above)
+   ○ Show details
+   ○ Reject
+   ○ Exclude an area
+```
+
+**4. It writes, checks, and hands over to your coding agent.**
+
+```text
+## Accepted - writing
+
+✓ AGENTS.md: wrote the NASO block, 152 lines
+✓ CLAUDE.md: wrote `@AGENTS.md`, so Claude Code loads the briefing
+✓ .naso/tooling/: copied 19 files; the hook runs this copy, not the package
+✓ .naso/config.json: wrote the settings this run used
+✓ .prettierignore: added .naso/, so prettier --check leaves the toolset alone
+✓ pre-commit hook: installed (.git/hooks/pre-commit)
+✓ git: .naso/ and AGENTS.md are yours to commit (--track)
+✓ devDependencies: added naso-dev with `npm install --save-dev naso-dev@1.3.0`
+
+## Verify
+
+Briefing is consistent with the repository: 38 path claim(s) verified, 4 top-level area(s) covered, no placeholders left.
+
+## What you have now
+
+- A briefing every coding agent that reads AGENTS.md starts from, with 38 path claims checked against this repository.
+- Claude Code loads it through CLAUDE.md.
+- Every commit on this machine is checked before it lands: secret-shaped lines, files outside NASO_SCOPE, format and lint on staged files, and a briefing line for any new top-level area.
+- naso-dev is in devDependencies: teammates get this version from an ordinary install, and production installs leave it out.
+
+## Last step: hand this to your coding agent
+```
+
+It ends with a prompt to paste into your coding agent. The agent checks every claim in the NASO block against the rules your repository already wrote down, corrects it between the markers, cites a file for every change, and gives you a diff to review without committing.
+
 ### Adding it to a project
 
-`npx naso-dev` is the whole install. When the repository has a `package.json`, the questions include one more: **Add naso-dev to devDependencies?** Yes runs your package manager (`npm install --save-dev`, `pnpm add --save-dev`, `yarn add --dev` or `bun add --dev`) as the last step, after everything else is written, so teammates get the same version from an ordinary install. If someone already ran `npm i naso-dev` and it landed in `dependencies`, the question offers to move it instead. From a script, pass `--save-dev`; `--yes` alone never runs the package manager.
+`npx naso-dev --save-dev` is the whole install. With `--save-dev`, NASO runs your package manager (`npm install --save-dev`, `pnpm add --save-dev`, `yarn add --dev` or `bun add --dev`) as the last step, after everything else is written, so teammates get the same version from an ordinary install. If someone already ran `npm i naso-dev` and it landed in `dependencies`, it moves it to `devDependencies`. Without the flag, a terminal run asks **Add naso-dev to devDependencies?** (default yes); `--yes` alone never runs the package manager.
+
+Installing the package is not setup. `npm i naso-dev` runs nothing and asks nothing: there is no install script, so no questions, no `AGENTS.md`, no hook. It only adds the package, and without `-D` it adds it to `dependencies`. If you install it yourself, always do it as a dev dependency (`npm i -D naso-dev`, `pnpm add -D naso-dev`, `yarn add -D naso-dev` or `bun add -d naso-dev`), then run `npx naso-dev --save-dev` to set up.
 
 It belongs in `devDependencies` because nothing in your app imports it: a production install (`npm ci --omit=dev`) and your app's build leave it out. The pre-commit hook does not need it installed at all: it runs the copy in `.naso/tooling/`.
 
@@ -78,7 +186,7 @@ Setup ends with two things, in this order:
 With no terminal — piped, in CI, or run by an agent — it prints the plan, writes nothing, and exits **2**, so a script can tell "not done" from "done". `--dry-run` prints the same plan and exits 0. To accept the plan you just read, add `--yes`:
 
 ```bash
-npx naso-dev --yes
+npx naso-dev --yes --save-dev
 ```
 
 ### `init` and `setup`
