@@ -13,9 +13,10 @@
 //   an agent added a section to, is theirs; a version bump is not a licence to throw that
 //   away. If the content needs regenerating, that is `briefing create --force`.
 //
-//   It never rewrites `.naso/config.json`. That file records decisions a human made about
-//   this repository — which areas stay out of the briefing, local or tracked mode. An
-//   upgrade is not a reason to re-ask those questions.
+//   It never rewrites the settings in `.naso/config.json`. That file records decisions a
+//   human made about this repository — which areas stay out of the briefing, local or
+//   tracked mode. An upgrade is not a reason to re-ask those questions. The one key it
+//   removes is `generatedBy`, the user and machine name versions before 1.1.1 recorded.
 //
 // The stamp only ever moves forward. A briefing written by a newer NASO than the tool
 // running the refresh is reported and left alone: downgrading the stamp would destroy the
@@ -34,10 +35,12 @@ import {
   compareVersions,
   isMainModule,
   SUPPORT_EMAIL,
+  nasoCommand,
+  nasoUpgradeCommand,
 } from './lib.mjs';
 import { refreshBriefingStamp, AGENTS_FILE } from './briefing.mjs';
 import { installPreCommitHook, readHook, isNasoHook } from './install.mjs';
-import { NASO_DIR, isVendored, vendorTooling, vendoredVersion, readConfig } from './vendor.mjs';
+import { NASO_DIR, isVendored, vendorTooling, vendoredVersion, readConfig, dropLegacyIdentity } from './vendor.mjs';
 
 export async function main(argv = process.argv.slice(2)) {
   const { flags, positional } = parseArgs(argv);
@@ -46,13 +49,13 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(`NASO refresh
 
 Usage:
-  npx naso-dev refresh [target-dir]
+  ${nasoCommand()} refresh [target-dir]
 
   Re-copies the toolset into ${NASO_DIR}/tooling/, moves the AGENTS.md version stamp
   forward, and reinstalls the pre-commit hook.
 
   Never rewrites AGENTS.md prose and never rewrites ${NASO_DIR}/config.json.
-  To regenerate the briefing itself: npx naso-dev briefing <dir> create --force
+  To regenerate the briefing itself: ${nasoCommand()} briefing <dir> create --force
 
 Support: ${SUPPORT_EMAIL}`);
     return;
@@ -76,7 +79,7 @@ Support: ${SUPPORT_EMAIL}`);
   if (!hadTooling && !hadBriefing) {
     console.log('This repository is not set up yet. Nothing to refresh.');
     console.log('');
-    console.log(`  npx naso-dev setup ${cwd}`);
+    console.log(`  ${nasoCommand()} setup ${cwd}`);
     console.log('');
     process.exitCode = 1;
     return;
@@ -94,23 +97,25 @@ Support: ${SUPPORT_EMAIL}`);
   // 2. The stamp. Forward only.
   if (!hadBriefing) {
     console.log(`--  No ${AGENTS_FILE} here, so there is no stamp to move.`);
-    console.log(`    The gate still works; run \`npx naso-dev setup ${cwd}\` for the briefing.`);
+    console.log(`    The gate still works; run \`${nasoCommand()} setup ${cwd}\` for the briefing.`);
   } else {
     const stamped = await refreshBriefingStamp(cwd, { current: version });
     if (!stamped.ok) {
       if (stamped.reason === 'unstamped') {
         console.log(`--  ${AGENTS_FILE} has no version stamp, so nothing to move.`);
-        console.log(`    \`npx naso-dev briefing ${cwd} create --force\` would write one.`);
+        console.log(`    \`${nasoCommand()} briefing ${cwd} create --force\` would write one.`);
       } else {
         console.log(`--  Could not read ${AGENTS_FILE}: ${stamped.reason}`);
         problems++;
       }
-    } else if (!stamped.changed) {
-      console.log(`--  ${AGENTS_FILE} is already stamped ${version}.`);
     } else if (compareVersions(stamped.previous, version) > 0) {
+      // Checked before `changed`: a newer stamp is also unchanged, and reporting it as
+      // "already stamped" hid the one case where the tool, not the briefing, is behind.
       console.log(`--  ${AGENTS_FILE} is stamped ${stamped.previous}, newer than this tool (${version}).`);
       console.log('    Left it alone: the tool is what needs updating here, not the briefing.');
-      console.log('    Run `npm install -g naso-dev` or `npm update naso-dev` to catch up.');
+      console.log(`    Run \`${nasoUpgradeCommand()}\`, or \`${nasoCommand({ version: 'latest' })} refresh\`, to catch up.`);
+    } else if (!stamped.changed) {
+      console.log(`--  ${AGENTS_FILE} is already stamped ${version}.`);
     } else {
       console.log(`OK  Moved the ${AGENTS_FILE} stamp ${stamped.previous} -> ${version}. No prose touched.`);
     }
@@ -121,7 +126,9 @@ Support: ${SUPPORT_EMAIL}`);
   if (hook && !isNasoHook(hook)) {
     console.log(`--  ${hook.path} is a hook NASO did not write. Left it as it is.`);
   } else {
-    const installed = await installPreCommitHook(cwd, { report: () => {} });
+    // A NASO hook already living in a tracked core.hooksPath was put there by a person's
+    // explicit choice at setup; rewriting our own file there is not a new decision.
+    const installed = await installPreCommitHook(cwd, { report: () => {}, allowTracked: isNasoHook(hook) });
     if (installed.ok) {
       console.log(`OK  Reinstalled the pre-commit hook: ${installed.hookPath}`);
     } else {
@@ -130,11 +137,17 @@ Support: ${SUPPORT_EMAIL}`);
     }
   }
 
-  // Reported, never rewritten.
+  // Reported, never rewritten — with one exception. Before 1.1.1 setup recorded the
+  // user and machine name as `generatedBy`; that key is removed and nothing else moves.
+  const droppedIdentity = await dropLegacyIdentity(cwd);
   const config = await readConfig(cwd);
   const excluded = Array.isArray(config.exclude) ? config.exclude : [];
   console.log('');
-  console.log(`   ${NASO_DIR}/config.json: left exactly as it was`);
+  console.log(
+    droppedIdentity
+      ? `   ${NASO_DIR}/config.json: removed the user and machine name older versions recorded; nothing else changed`
+      : `   ${NASO_DIR}/config.json: left exactly as it was`,
+  );
   console.log(
     excluded.length > 0
       ? `   ${excluded.length} area(s) excluded from the briefing: ${excluded.join(', ')}`
@@ -145,8 +158,8 @@ Support: ${SUPPORT_EMAIL}`);
   console.log(`Toolset version in this repository: ${(await vendoredVersion(cwd)) ?? version}`);
   console.log('');
   console.log('Next:');
-  console.log(`  npx naso-dev doctor ${cwd}       confirm the install end to end`);
-  console.log(`  npx naso-dev validate ${cwd}     run the full gate once, not just the staged one`);
+  console.log(`  ${nasoCommand()} doctor ${cwd}       confirm the install end to end`);
+  console.log(`  ${nasoCommand()} validate ${cwd}     run the full gate once, not just the staged one`);
   console.log('');
 
   if (problems > 0) process.exitCode = 1;

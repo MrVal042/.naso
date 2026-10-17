@@ -34,6 +34,7 @@ import {
   compareVersions,
   isMainModule,
   SUPPORT_EMAIL,
+  nasoCommand,
 } from './lib.mjs';
 import {
   scanRepo,
@@ -56,8 +57,8 @@ const SECTION_NOTES = [
   ['Scope', 'the prefixes to claim before editing, so the hook can check the diff'],
   ['Boundaries', 'the lines that are easy to cross without noticing'],
   ['Secrets', 'never print a credential, even accidentally'],
-  ['Commit Standard', 'how a change is expected to be shaped and described'],
-  ['Final Response Expectations', 'what a finished answer has to contain'],
+  ['Commit Standard', 'how commits here are written, read from the history the repository already has'],
+  ['When Done', 'the commands to report on before calling the work finished'],
 ];
 
 /** Pull the sections out of the briefing, keeping only the ones actually present. */
@@ -99,7 +100,7 @@ function printWalkthrough(briefing) {
 
     console.log(`  ${heading}`);
     if (section.note) console.log(`      why: ${section.note}`);
-    if (section.bodyLines <= 2) {
+    if (section.bodyLines === 0) {
       console.log('      note: nothing under this heading. Empty is the one thing the briefing');
       console.log('            was rebuilt to avoid — check it is meant to be empty.');
     }
@@ -205,11 +206,11 @@ function boundariesFor(facts, area, files) {
 
   if (area.entryPoint) out.push(`Entry point: \`${area.entryPoint}\`. Start reading here, not at the root index.`);
 
-  const imports = (facts.conventions?.aliases ?? []).filter(
-    ([from]) => from.startsWith(area.name) || from.startsWith(`${area.name}/`),
+  const imports = (facts.conventions?.aliases?.declared ?? []).filter(
+    ({ targets }) => targets.some((target) => target.startsWith(area.name) || target.includes(`/${area.name}/`)),
   );
-  for (const [from, to] of imports.slice(0, 4)) {
-    out.push(`\`${from}\` is an alias for \`${to}\` — resolve it before grepping for a real directory.`);
+  for (const { alias, targets } of imports.slice(0, 4)) {
+    out.push(`\`${alias}\` resolves into this area (${targets.join(', ')}) — grep the real path, not the alias.`);
   }
 
   if (out.length === 0) {
@@ -225,9 +226,9 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(`NASO guide
 
 Usage:
-  npx naso-dev guide <area-or-prefix> [target-dir]   everything about one area
-  npx naso-dev guide --tour [target-dir]              walk the whole briefing
-  npx naso-dev guide --list [target-dir]              the areas that exist
+  ${nasoCommand()} guide <area-or-prefix> [target-dir]   everything about one area
+  ${nasoCommand()} guide --tour [target-dir]              walk the whole briefing
+  ${nasoCommand()} guide --list [target-dir]              the areas that exist
 
   --list    print the areas and stop
 
@@ -275,7 +276,7 @@ Support: ${SUPPORT_EMAIL}`);
     console.log('No AGENTS.md here yet.');
     console.log('');
     console.log('Run setup to generate one from this repository:');
-    console.log(`  npx naso-dev setup ${cwd}`);
+    console.log(`  ${nasoCommand()} setup ${cwd}`);
     console.log('');
     return;
   }
@@ -292,7 +293,7 @@ Support: ${SUPPORT_EMAIL}`);
     console.log(
       newer
         ? `AGENTS.md was written by a newer NASO (${stamped}); this tool is ${version}. Update naso-dev rather than downgrading the briefing.`
-        : `The tool is ${version}. Run \`npx naso-dev briefing ${cwd} refresh\` to move the stamp.`,
+        : `The tool is ${version}. Run \`${nasoCommand()} briefing ${cwd} refresh\` to move the stamp.`,
     );
   }
   console.log('');
@@ -327,7 +328,7 @@ function printAreaList(facts, briefing) {
     if (!covered) console.log(`           not mentioned in AGENTS.md yet`);
   }
   console.log('');
-  console.log('  Read one:  npx naso-dev guide src .');
+  console.log('  Read one:  ' + nasoCommand() + ' guide src .');
   console.log('');
 }
 
@@ -342,7 +343,7 @@ async function printArea(cwd, facts, briefing, wanted) {
     console.log(known.length > 0 ? 'These do exist:' : 'This repository has no top-level areas at all.');
     for (const line of known) console.log(line);
     console.log('');
-    console.log('  List them again:  npx naso-dev guide --list .');
+    console.log('  List them again:  ' + nasoCommand() + ' guide --list .');
     console.log('  Everything NASO could not name:');
     const unknown = facts.areas.filter((entry) => !entry.role);
     for (const entry of unknown) console.log(`    ${entry.name}/`);
@@ -369,7 +370,7 @@ async function printArea(cwd, facts, briefing, wanted) {
     console.log(`  Not a top-level area, so NASO has no name or role for it — only the file count.`);
   }
   console.log('');
-  console.log(`  Tracked and untracked-but-not-ignored files under ${prefix}: ${areaFiles.length}`);
+  console.log(`  Tracked files under ${prefix}: ${areaFiles.length}`);
   if (areaFiles.length > 0) {
     const languages = new Map();
     for (const file of areaFiles) {
@@ -441,7 +442,7 @@ async function printArea(cwd, facts, briefing, wanted) {
   console.log('## Read the code, not just the file list');
   console.log('');
   console.log('  AGENTS.md says what this area is for. It does not say what the code does.');
-  console.log('  For the orientation, walk the whole briefing:  npx naso-dev guide --tour .');
+  console.log('  For the orientation, walk the whole briefing:  ' + nasoCommand() + ' guide --tour .');
   console.log('');
 
   const check = await checkBriefing(cwd);
@@ -501,7 +502,7 @@ async function printNextSteps(cwd, facts, unknown) {
       body:
         'The pre-commit hook only checks staged files. A full run type-checks and tests ' +
         'everything, which is what CI will do.',
-      command: `npx naso-dev validate ${cwd}`,
+      command: `${nasoCommand()} validate ${cwd}`,
     });
   }
 
@@ -527,7 +528,7 @@ async function printNextSteps(cwd, facts, unknown) {
         'AGENTS.md is excluded locally, so only this machine has it. That is right for a ' +
         'repository you do not own. For one you do, commit it so the next agent on any ' +
         'machine gets it too.',
-      command: `npx naso-dev setup ${cwd} --track`,
+      command: `${nasoCommand()} setup ${cwd} --track`,
     });
   }
 
@@ -537,7 +538,7 @@ async function printNextSteps(cwd, facts, unknown) {
       'Nobody regenerates this file. When a commit adds an area, the hook appends one line ' +
       'for it and, if the file is tracked and clean, stages it with that commit. Everything ' +
       'else is ordinary code review.',
-    command: `npx naso-dev briefing ${cwd}`,
+    command: `${nasoCommand()} briefing ${cwd}`,
   });
 
   console.log('## Next steps');

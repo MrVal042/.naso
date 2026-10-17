@@ -18,7 +18,6 @@
 
 import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { actorIdentity } from './lib.mjs';
 
 /** Abandon a lock older than 15 minutes. */
 const STALE_MS = 15 * 60 * 1000;
@@ -78,12 +77,16 @@ export async function acquire(repoRoot, { reason = 'update AGENTS.md' } = {}) {
   const release = async () => {
     if (released) return;
     released = true;
-    await rm(lockFile, { force: true }).catch(() => {});
+    // A lock left behind blocks every later write for STALE_MS, so a failure to remove
+    // it is said out loud rather than swallowed.
+    await rm(lockFile, { force: true }).catch((err) => {
+      console.error(`naso-dev: could not remove ${lockFile} (${err?.code ?? err}); remove it by hand.`);
+    });
   };
 
   const buildPayload = (recoveredFrom) =>
     [
-      `holder: ${actorIdentity()}`,
+      `holder: process ${process.pid}`,
       `pid: ${process.pid}`,
       `reason: ${reason}`,
       `started: ${new Date().toISOString()}`,
@@ -115,7 +118,9 @@ export async function acquire(repoRoot, { reason = 'update AGENTS.md' } = {}) {
     };
   }
 
-  await rm(lockFile, { force: true }).catch(() => {});
+  await rm(lockFile, { force: true }).catch((err) => {
+    console.error(`naso-dev: could not break the stale lock ${lockFile} (${err?.code ?? err}); remove it by hand.`);
+  });
   try {
     const handle = await open(lockFile, 'wx');
     try {

@@ -16,12 +16,20 @@
 // belong to the package, not to the repository, and a repository that grew its own copy
 // of them would end up with two versions of `naso-dev` in one tree.
 
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathExists, readJSONFile, run, nasoDir } from './lib.mjs';
 
 /** Directory, relative to a repository root, that holds everything NASO writes. */
 export const NASO_DIR = '.naso';
+
+/**
+ * Tooling modules that are never vendored.
+ *
+ * They draw the interactive setup — colour, prompts, the flow that asks them — and
+ * the pre-commit hook asks nothing, so a copy would be dead weight in every repository.
+ */
+const INTERACTIVE_MODULES = ['ui.mjs', 'prompt.mjs', 'flow.mjs'];
 
 /** Where the tool scripts land inside a target repository. */
 export function vendoredToolingDir(repoRoot) {
@@ -92,6 +100,10 @@ export async function vendorSources() {
   const names = entries
     .filter((entry) => entry.isFile() && entry.name.endsWith('.mjs'))
     .map((entry) => entry.name)
+    // These drive the npx entry point; the vendored toolset is driven by the copied
+    // briefing, validate and install modules, all of which style through a no-op
+    // style passed in.
+    .filter((name) => !INTERACTIVE_MODULES.includes(name))
     .sort();
   if ((await pathExists(path.join(dir, 'README.md')))) names.push('README.md');
   return names.map((name) => path.join(dir, name));
@@ -109,13 +121,34 @@ export async function isVendored(repoRoot) {
  * ceremony: they are ours, they live in a directory only NASO writes, and an out-of-date
  * copy is exactly the thing `refresh` exists to fix.
  */
+/** The first line of every vendored script: the repository's linter has no say over it. */
+export const VENDOR_HEADER = '/* eslint-disable */ // vendored by naso-dev; linted where it is developed, not here';
+
+/**
+ * A source file as it lands in a repository.
+ *
+ * The copy lives inside someone else's repository, so their ESLint reads it, with their
+ * rules: one team's `no-console` failed `npm run lint` on every NASO script, and with
+ * --track the pre-commit hook then refused to commit NASO's own files. A disable comment
+ * on line 1 (after a shebang) works under flat and legacy configs alike and needs no edit
+ * to the repository's config. Prettier has no in-file switch; see `.prettierignore` in setup.
+ */
+export function vendoredText(source, text) {
+  if (!source.endsWith('.mjs')) return text;
+  const shebang = text.startsWith('#!') ? text.slice(0, text.indexOf('\n') + 1) : '';
+  const rest = text.slice(shebang.length);
+  if (rest.startsWith(`${VENDOR_HEADER}\n`)) return text;
+  return `${shebang}${VENDOR_HEADER}\n${rest}`;
+}
+
 export async function vendorTooling(repoRoot, { version } = {}) {
   const sources = await vendorSources();
   const targetDir = vendoredToolingDir(repoRoot);
   await mkdir(targetDir, { recursive: true });
 
   for (const source of sources) {
-    await copyFile(source, path.join(targetDir, path.basename(source)));
+    const text = await readFile(source, 'utf8');
+    await writeFile(path.join(targetDir, path.basename(source)), vendoredText(source, text), 'utf8');
   }
 
   const stamped = version ?? (await readFile(path.join(nasoDir(), 'VERSION'), 'utf8')).trim();
@@ -138,27 +171,42 @@ export async function vendoredVersion(repoRoot) {
  * Separate from `vendorTooling` on purpose: `refresh` calls the first and must not call
  * the second.
  */
-export async function writeConfig(repoRoot, { version, actor, now, track, hook, exclude = [] }) {
+export async function writeConfig(repoRoot, settings) {
   const file = configPath(repoRoot);
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(
-    file,
-    `${JSON.stringify(
-      {
-        version,
-        generatedBy: actor,
-        generatedAt: now,
-        tooling: `${NASO_DIR}/tooling`,
-        hook,
-        track,
-        exclude: configuredExclusions({ exclude }),
-      },
-      null,
-      2,
-    )}\n`,
-    'utf8',
-  );
+  await writeFile(file, renderConfig(settings), 'utf8');
   return file;
+}
+
+/** The exact text `writeConfig` writes, so a plan can show it before anything is written. */
+export function renderConfig({ version, now, track, hook, exclude = [] }) {
+  return `${JSON.stringify(
+    {
+      version,
+      generatedAt: now,
+      tooling: `${NASO_DIR}/tooling`,
+      hook,
+      track,
+      exclude: configuredExclusions({ exclude }),
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+/**
+ * Remove `generatedBy` from a config.json written before 1.1.1, and nothing else.
+ *
+ * 1.0.0 and 1.1.0 recorded `user@hostname` there, and in --track mode that file is
+ * committed. Every other key is a decision a person made and is written back as it was,
+ * in the same order. Returns true when the file changed.
+ */
+export async function dropLegacyIdentity(repoRoot) {
+  const config = await readJSONFile(configPath(repoRoot));
+  if (!config || typeof config !== 'object' || !('generatedBy' in config)) return false;
+  const { generatedBy, ...rest } = config;
+  await writeFile(configPath(repoRoot), `${JSON.stringify(rest, null, 2)}\n`, 'utf8');
+  return true;
 }
 
 /** Root of the repository as git itself defines it, for path resolution from a subdir. */

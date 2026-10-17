@@ -1,12 +1,11 @@
 // Shared zero-dependency helpers for the NASO tools in this directory.
 // Built entirely on Node.js core modules — no npm packages.
 
-import { access, readFile, constants } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { access, readFile, readdir, constants } from 'node:fs/promises';
+import { realpathSync, readFileSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 /** Does a path exist on disk? */
@@ -87,22 +86,212 @@ export function run(cmd, args = [], opts = {}) {
 
 const KNOWN_PACKAGE_MANAGERS = ['npm', 'yarn', 'pnpm', 'bun'];
 
-/** Detect the JS package manager from the packageManager field or lockfiles. */
+/** Lockfile name → manager, most specific first. Two lockfiles is a broken repo, not a choice. */
+const LOCKFILE_MANAGERS = [
+  ['pnpm-lock.yaml', 'pnpm'],
+  ['bun.lockb', 'bun'],
+  ['bun.lock', 'bun'],
+  ['yarn.lock', 'yarn'],
+  ['package-lock.json', 'npm'],
+  ['npm-shrinkwrap.json', 'npm'],
+];
+
+// ---------------------------------------------------------------------------
+// The branch-name convention the repository wrote down
+// ---------------------------------------------------------------------------
+
+const CONTRIBUTING_FILES = ['CONTRIBUTING.md', '.github/CONTRIBUTING.md', 'docs/CONTRIBUTING.md'];
+
+/**
+ * The branch pattern a contributing guide states, as `{ source, text, regex }`, or null.
+ *
+ * Read from a backticked template with placeholders on a line about branches:
+ * `<type>/<KEY>-<n>-<slug>`. Each `<placeholder>` matches one or more characters other than
+ * a slash; everything else is literal. A guide with examples only and no template gives
+ * nothing, because an example does not say which of its parts are fixed. The gate used to
+ * accept any `x/y`, which passed every branch a team's own rule would have rejected.
+ */
+export async function documentedBranchPattern(cwd) {
+  for (const source of CONTRIBUTING_FILES) {
+    const text = await readFile(path.join(cwd, source), 'utf8').catch(() => null);
+    if (text === null) continue;
+    let heading = '';
+    for (const line of text.split('\n')) {
+      if (/^#+\s/.test(line)) heading = line;
+      if (!/branch/i.test(line) && !/branch/i.test(heading)) continue;
+      for (const match of line.matchAll(/`([^`\s]*<[^`\s]+>[^`\s]*)`/g)) {
+        const template = match[1];
+        if (!template.includes('/')) continue;
+        const pattern = template
+          .split(/(<[^>]+>)/)
+          .map((part) => (/^<[^>]+>$/.test(part) ? '[^/\\s]+' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+          .join('');
+        return { source, text: template, regex: new RegExp(`^${pattern}$`) };
+      }
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// How to run NASO itself, in this repository's package manager
+// ---------------------------------------------------------------------------
+
+let nasoTarget = null;
+
+/** The repository the printed commands are for; null means the working directory. */
+export function setNasoTarget(dir) {
+  nasoTarget = dir ? path.resolve(dir) : null;
+}
+
+const readSync = (file) => {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The package manager this repository uses, read synchronously, for printing commands.
+ *
+ * Same order as detectPackageManager — the packageManager field, then a lockfile — and then
+ * the manager that launched this process, from npm_config_user_agent (`pnpm dlx`, `bunx`
+ * and `yarn dlx` set it too). Synchronous and uncached on purpose: it is read where a
+ * command is printed, and the answer changes mid-run when setup records the dev dependency.
+ */
+function runnerFacts() {
+  const dir = nasoTarget ?? process.cwd();
+  let pkg = null;
+  try {
+    pkg = JSON.parse(readSync(path.join(dir, 'package.json')) ?? 'null');
+  } catch {
+    pkg = null;
+  }
+  const field = String(pkg?.packageManager ?? '');
+  let pm = KNOWN_PACKAGE_MANAGERS.find((name) => field.startsWith(`${name}@`)) ?? null;
+  if (!pm) pm = LOCKFILE_MANAGERS.find(([file]) => existsSync(path.join(dir, file)))?.[1] ?? null;
+  if (!pm) {
+    const agent = String(process.env.npm_config_user_agent ?? '').split('/')[0];
+    pm = KNOWN_PACKAGE_MANAGERS.includes(agent) ? agent : 'npm';
+  }
+  const installed = Boolean(pkg?.devDependencies?.['naso-dev'] || pkg?.dependencies?.['naso-dev']);
+  // Yarn 1 has no `dlx`. Berry announces itself with .yarnrc.yml or a yarn@2+ pin.
+  const berry = existsSync(path.join(dir, '.yarnrc.yml')) || /^yarn@(?:[2-9]|\d{2})/.test(field);
+  return { pm, installed, berry };
+}
+
+/**
+ * The command a person types to run NASO here: `npx naso-dev`, `pnpm exec naso-dev`...
+ *
+ * Installed, each manager runs the local copy with its own short form. Not installed, it
+ * needs the manager's one-off runner — and yarn 1 has none, so npx stands in, since a
+ * machine with yarn 1 has npm. A version (`latest`) always means fetching, so it is
+ * always the one-off form.
+ */
+export function nasoCommand({ version = null } = {}) {
+  const { pm, installed, berry } = runnerFacts();
+  const spec = version ? `naso-dev@${version}` : 'naso-dev';
+  const local = installed && !version;
+  switch (pm) {
+    case 'pnpm':
+      return local ? 'pnpm exec naso-dev' : `pnpm dlx ${spec}`;
+    case 'yarn':
+      return local ? 'yarn naso-dev' : berry ? `yarn dlx ${spec}` : `npx ${spec}`;
+    case 'bun':
+      return `bunx ${spec}`;
+    default:
+      return `npx ${spec}`;
+  }
+}
+
+/** The command that records the latest naso-dev as a dev dependency, in this manager. */
+export function nasoUpgradeCommand() {
+  const { pm } = runnerFacts();
+  return {
+    pnpm: 'pnpm add --save-dev naso-dev@latest',
+    yarn: 'yarn add --dev naso-dev@latest',
+    bun: 'bun add --dev naso-dev@latest',
+  }[pm] ?? 'npm install --save-dev naso-dev@latest';
+}
+
+/**
+ * Which package manager CI installs with, as a last resort before guessing.
+ *
+ * Only reached when the manifest declares nothing and no lockfile is committed — which
+ * happens in exactly the repositories where getting it wrong is most annoying, because a
+ * team that standardises on one manager usually says so in the same file everyone else
+ * copied from. Order is explicit-then-implicit: `pnpm/action-setup` is a deliberate choice,
+ * `npm ci` is often just the default nobody edited.
+ */
+export async function packageManagerFromCI(cwd) {
+  const dir = path.join(cwd, '.github', 'workflows');
+  const names = await readdir(dir).catch(() => []);
+  const text = (
+    await Promise.all(
+      names
+        .filter((name) => /\.ya?ml$/.test(name))
+        .map((name) => readFile(path.join(dir, name), 'utf8').catch(() => '')),
+    )
+  ).join('\n');
+
+  if (text === '') return null;
+  if (/pnpm\/(?:action-setup|version)|(?:^|\W)pnpm\s+(?:install|run|--filter)\b/i.test(text)) {
+    return { name: 'pnpm', source: 'ci', evidence: 'pnpm in .github/workflows' };
+  }
+  if (/\byarn\s+(?:install|run|add)\b|\byarn\b/.test(text)) {
+    return { name: 'yarn', source: 'ci', evidence: 'yarn in .github/workflows' };
+  }
+  if (/\bbun\s+(?:install|run)\b|\bbunx\b/.test(text)) {
+    return { name: 'bun', source: 'ci', evidence: 'bun in .github/workflows' };
+  }
+  if (/\bnpm\s+(?:ci|install|run)\b/.test(text)) {
+    return { name: 'npm', source: 'ci', evidence: 'npm in .github/workflows' };
+  }
+  return null;
+}
+
+/**
+ * Which package manager this repository uses, and how we know.
+ *
+ * Three sources in descending authority, and `source` travels with the answer because
+ * "packageManager: pnpm@9.1.0" and "a pnpm-lock.yaml nobody has opened since" are not the
+ * same claim and the briefing should not present them as one:
+ *
+ *   field  package.json `packageManager` — corepack pinned it, which is a decision
+ *   lock   a committed lockfile — the manager that actually produced node_modules
+ *   ci     the workflow file — weaker, but better than assuming npm
+ *
+ * The npm fallback is not a guess in the dangerous sense: `npm run <script>` is valid in
+ * every manager, so a wrong default produces a command that works, just with an extra
+ * lockfile nobody asked for. It is still reported as `default` rather than `lock`, so the
+ * briefing can say so.
+ */
 export async function detectPackageManager(cwd, pkg) {
   if (pkg?.packageManager) {
     const name = String(pkg.packageManager).split('@')[0];
-    if (KNOWN_PACKAGE_MANAGERS.includes(name)) return name;
+    if (KNOWN_PACKAGE_MANAGERS.includes(name)) {
+      return { name, source: 'field', evidence: `package.json "packageManager": ${pkg.packageManager}` };
+    }
   }
-  if (await pathExists(path.join(cwd, 'pnpm-lock.yaml'))) return 'pnpm';
-  if (await pathExists(path.join(cwd, 'yarn.lock'))) return 'yarn';
-  if (
-    (await pathExists(path.join(cwd, 'bun.lockb'))) ||
-    (await pathExists(path.join(cwd, 'bun.lock')))
-  ) {
-    return 'bun';
+
+  for (const [file, name] of LOCKFILE_MANAGERS) {
+    if (await pathExists(path.join(cwd, file))) {
+      return { name, source: 'lock', evidence: file };
+    }
   }
-  if (await pathExists(path.join(cwd, 'package-lock.json'))) return 'npm';
-  return pkg ? 'npm' : null;
+
+  const fromCI = await packageManagerFromCI(cwd);
+  if (fromCI) return fromCI;
+
+  return pkg
+    ? { name: 'npm', source: 'default', evidence: 'no packageManager field, no lockfile' }
+    : { name: 'npm', source: 'none', evidence: 'no package.json, no lockfile' };
+}
+
+/** The copy-pasteable form of `pmRunCommand`, for text in the briefing. */
+export function pmRunText(pm, scriptName) {
+  return `${pm} run ${scriptName}`;
 }
 
 /** Build [cmd, args] to run a package.json script via the detected package manager. */
@@ -247,19 +436,66 @@ export async function getStagedFiles(cwd) {
 }
 
 /**
+ * Flags that are switches, never followed by a value.
+ *
+ * Declared rather than guessed. Without this list `--yes ./repo` read `./repo` as the
+ * value of `--yes`, so the flag was never set and the directory was never the target —
+ * and that was the exact command the flow printed for people to paste.
+ */
+const BOOLEAN_FLAGS = new Set([
+  'yes',
+  'dry-run',
+  'track',
+  'no-hook',
+  'force',
+  'why',
+  'no-color',
+  'no-colour',
+  'color',
+  'colour',
+  'help',
+  'version',
+  'staged',
+  'strict',
+  'no-append',
+  'list',
+  'tour',
+  'save-dev',
+  'accept',
+]);
+
+/** Single-letter spellings, mapped to the long flag they stand for. */
+const SHORT_FLAGS = new Map([
+  ['y', 'yes'],
+  ['h', 'help'],
+  ['v', 'version'],
+]);
+
+/**
  * Minimal argv parser shared by every script's CLI.
  *
- * Supports `--flag` and `--key=value` and `--key value`. The returned `flags`
- * Set holds bare flags; `values` holds the last `--key=value` or `--key value`
- * seen for each key, so `--scope src,docs` works without a bespoke parser.
+ * Supports `--flag`, `-y`, `--key=value` and `--key value`. The returned `flags` Set
+ * holds switches; `values` holds the last value seen for each key, so `--scope src,docs`
+ * works without a bespoke parser; `lists` holds every value seen for each key, in order,
+ * for options that repeat (`--exclude a --exclude b`).
  */
 export function parseArgs(argv) {
   const flags = new Set();
   const values = new Map();
+  const lists = new Map();
   const positional = [];
+
+  const setValue = (key, value) => {
+    values.set(key, value);
+    lists.set(key, [...(lists.get(key) ?? []), value]);
+  };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    if (/^-[A-Za-z]$/.test(arg)) {
+      flags.add(SHORT_FLAGS.get(arg.slice(1)) ?? arg.slice(1));
+      continue;
+    }
     if (!arg.startsWith('--')) {
       positional.push(arg);
       continue;
@@ -267,20 +503,36 @@ export function parseArgs(argv) {
     const body = arg.slice(2);
     const eq = body.indexOf('=');
     if (eq !== -1) {
-      values.set(body.slice(0, eq), body.slice(eq + 1));
+      setValue(body.slice(0, eq), body.slice(eq + 1));
       continue;
     }
-    // Only treat the next token as this flag's value if it isn't another flag.
+    if (BOOLEAN_FLAGS.has(body)) {
+      flags.add(body);
+      continue;
+    }
+    // Only treat the next token as this option's value if it isn't another flag.
     const next = argv[i + 1];
-    if (next !== undefined && !next.startsWith('--')) {
-      values.set(body, next);
+    if (next !== undefined && !next.startsWith('-')) {
+      setValue(body, next);
       i++;
     } else {
       flags.add(body);
     }
   }
 
-  return { flags, values, positional };
+  return { flags, values, lists, positional };
+}
+
+/** Every value given for a repeatable, comma-separable option, trimmed and de-duplicated. */
+export function listOption(lists, key) {
+  return [
+    ...new Set(
+      (lists.get(key) ?? [])
+        .flatMap((value) => String(value).split(','))
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -412,14 +664,28 @@ export function nasoDir() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 }
 
-/** Current tool version, read from `<naso>/VERSION`. */
+/**
+ * Current tool version.
+ *
+ * Two places, because this file runs from two places. Installed from npm the
+ * VERSION file is a sibling of tooling/, and in a vendored copy it sits beside
+ * this file. Reading only the first made every vendored install report 0.0.0 and
+ * then warn that AGENTS.md had been written by a newer NASO — a false alarm, on
+ * every repository, forever, caused by the copy nobody looked at.
+ */
 export async function toolVersion() {
-  try {
-    const raw = await readFile(path.join(nasoDir(), 'VERSION'), 'utf8');
-    return raw.trim();
-  } catch {
-    return '0.0.0';
+  for (const candidate of [
+    path.join(nasoDir(), 'VERSION'),
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'VERSION'),
+  ]) {
+    try {
+      const raw = await readFile(candidate, 'utf8');
+      if (raw.trim()) return raw.trim();
+    } catch {
+      // Try the next location.
+    }
   }
+  return '0.0.0';
 }
 
 /**
@@ -430,14 +696,25 @@ export async function toolVersion() {
  * forever on input nobody can type, which is a far worse failure than refusing
  * to run and printing the same information as plain text.
  */
+/**
+ * A style set that does nothing.
+ *
+ * Lives here rather than in ui.mjs because this module gets vendored into a
+ * repository and run by a pre-commit hook, and ui.mjs is not vendored. The
+ * vendored modules therefore style nothing and accept a style as an argument.
+ */
+export const plainStyle = new Proxy(
+  { enabled: false, identity: (text) => String(text) },
+  {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      return (text) => String(text);
+    },
+  },
+);
+
 export function isInteractive() {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
-}
-
-/** Best-effort human identity for the machine running a script. */
-export function actorIdentity() {
-  const user = os.userInfo?.().username ?? os.userInfo?.().username ?? 'unknown';
-  return `${user}@${os.hostname()}`;
 }
 
 /**
@@ -769,7 +1046,7 @@ export async function promptChoice(question, choices) {
  * maintainer needs. Every field here is something only the reporter's machine
  * can produce, so the reply can start with the facts instead of a questionnaire.
  */
-export async function supportTemplate({ command, targetDir, version, actor, now }) {
+export async function supportTemplate({ command, targetDir, version, now }) {
   const git = await gitVersionOrUnknown();
 
   return `Subject: NASO ${version} — setup did not behave as documented
@@ -780,7 +1057,6 @@ Hi, I ran NASO setup and it did not do what the README says. Details below.
 NASO version:   ${version}
 Command:        ${command}
 Repository:     ${targetDir}
-Machine:        ${actor}
 Date:           ${now}
 Platform:       ${process.platform} ${process.arch}
 Node:           ${process.version}

@@ -14,6 +14,7 @@ import {
   compareVersions,
   isMainModule,
   SUPPORT_EMAIL,
+  nasoCommand,
 } from './lib.mjs';
 import {
   scanRepo,
@@ -22,7 +23,7 @@ import {
   NASO_START,
   NASO_END,
 } from './briefing.mjs';
-import { readHook, isNasoHook, findArtifacts } from './install.mjs';
+import { readHook, isNasoHook, findArtifacts, CLAUDE_FILE, claudeLoadsBriefing } from './install.mjs';
 import { NASO_DIR, readConfig, configuredExclusions, configPath, vendoredVersion } from './vendor.mjs';
 
 const OK = 'OK';
@@ -39,7 +40,7 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(`NASO doctor
 
 Usage:
-  npx naso-dev doctor [target-dir]
+  ${nasoCommand()} doctor [target-dir]
 
 No changes are made.
 
@@ -93,7 +94,7 @@ Support: ${SUPPORT_EMAIL}`);
   } else if (compareVersions(vendoredVersionText, version) > 0) {
     printRow('vendored toolset', WARN, `${vendoredVersionText} — newer than this tool (${version}); update naso-dev`);
   } else if (vendoredVersionText !== version) {
-    printRow('vendored toolset', WARN, `${vendoredVersionText} — behind ${version}; run \`npx naso-dev refresh\``);
+    printRow('vendored toolset', WARN, `${vendoredVersionText} — behind ${version}; run \`${nasoCommand()} refresh\``);
   } else {
     printRow('vendored toolset', OK, `${NASO_DIR}/tooling/ at ${vendoredVersionText}`);
   }
@@ -140,6 +141,15 @@ Support: ${SUPPORT_EMAIL}`);
     printRow('Briefing scan', FAIL, e?.message ?? String(e));
   }
 
+  const claude = await readFile(path.join(cwd, CLAUDE_FILE), 'utf8').catch(() => null);
+  if (claude === null) {
+    printRow('Claude Code link', WARN, 'no CLAUDE.md — Claude Code sessions will not read AGENTS.md');
+  } else if (claudeLoadsBriefing(claude)) {
+    printRow('Claude Code link', OK, 'CLAUDE.md loads AGENTS.md');
+  } else {
+    printRow('Claude Code link', WARN, 'CLAUDE.md does not load AGENTS.md — add `@AGENTS.md` to it');
+  }
+
   const artifacts = await findArtifacts(cwd);
   if (artifacts.length === 0) {
     printRow('Leftover NASO artifacts', OK, 'none');
@@ -151,8 +161,8 @@ Support: ${SUPPORT_EMAIL}`);
 
   console.log('');
   console.log('If anything is FAIL or WARN:');
-  console.log(`  npx naso-dev refresh ${cwd}   re-copy the toolset, move the stamp, reinstall the hook`);
-  console.log(`  npx naso-dev doctor ${cwd}    run this again`);
+  console.log(`  ${nasoCommand()} refresh ${cwd}   re-copy the toolset, move the stamp, reinstall the hook`);
+  console.log(`  ${nasoCommand()} doctor ${cwd}    run this again`);
   console.log('');
 }
 

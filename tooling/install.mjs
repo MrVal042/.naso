@@ -8,7 +8,7 @@
 //
 // No exports are user-facing. This module is an implementation detail of setup.
 
-import { mkdir, writeFile, readFile, appendFile, rm, stat, chmod } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, appendFile, rm, stat, chmod, rename, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import {
   pathExists,
@@ -16,10 +16,20 @@ import {
   shellSingleQuote,
   toPosixPath,
   nasoDir,
+  nasoCommand,
 } from './lib.mjs';
 import { NASO_DIR, vendoredToolingDir, vendoredScriptPath } from './vendor.mjs';
 
 const HOOK_MARKER = '# managed-by: naso-dev';
+
+/**
+ * Where a foreign pre-commit hook goes when the user chooses to chain it.
+ *
+ * Moved, never rewritten: the bytes and the mode are exactly what they were, and NASO's
+ * hook calls this file first. If something already sits at this name, chaining refuses
+ * rather than overwrite it.
+ */
+export const CHAINED_HOOK_NAME = 'pre-commit.pre-naso';
 const EXCLUDE_MARKER = '# added by naso-dev setup';
 
 /**
@@ -95,6 +105,17 @@ ${HOOK_MARKER}
 # network, no global install and no package cache. Edit or delete this file
 # freely; it is not reinstalled behind your back.
 
+# A hook that was here before NASO, moved aside when you chose to chain it, runs
+# first and unchanged. Its failure stops the commit exactly as it did before.
+PRE_NASO_HOOK="$(dirname "$0")/${CHAINED_HOOK_NAME}"
+if [ -f "$PRE_NASO_HOOK" ]; then
+  if [ -x "$PRE_NASO_HOOK" ]; then
+    "$PRE_NASO_HOOK" "$@" || exit $?
+  else
+    sh "$PRE_NASO_HOOK" "$@" || exit $?
+  fi
+fi
+
 # Resolve node: hooks inherit a minimal PATH on some systems, so fall back to
 # the common install locations rather than failing with "command not found".
 if command -v node >/dev/null 2>&1; then
@@ -114,7 +135,7 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=$(pwd)
 NASO_SCRIPT="$REPO_ROOT/${script}"
 
 if [ ! -f "$NASO_SCRIPT" ]; then
-  echo "naso-dev: $NASO_SCRIPT is missing - pre-commit checks skipped. Run: npx naso-dev refresh" >&2
+  echo "naso-dev: $NASO_SCRIPT is missing - pre-commit checks skipped. Run: ${nasoCommand()} refresh" >&2
   exit 0
 fi
 
@@ -141,45 +162,114 @@ export async function resolveHooksDir(targetDir) {
 }
 
 /**
- * Write the pre-commit hook, unless something that is not ours is already there.
+ * Everything the plan needs to know about the pre-commit hook before deciding.
  *
- * Refusing to overwrite a foreign hook is the only safe default: it may be
- * running a lint-staged config, a secret scanner, or a signing step, and
- * replacing it with ours would silently disable all three.
+ *   state        'none' | 'naso' | 'foreign' | 'not-repo'
+ *   trackedDir   core.hooksPath points inside the worktree at a directory git tracks
+ *                (husky's `.husky/`), so a hook written there is a change to the
+ *                repository, not to this machine
+ *
+ * Read only. Nothing here writes.
  */
-export async function installPreCommitHook(targetDir, { report = () => {} } = {}) {
+export async function describeHook(targetDir) {
   const hooksDir = await resolveHooksDir(targetDir);
-
   if (!hooksDir) {
+    return { state: 'not-repo', hooksDir: null, path: null, trackedDir: false, hooksPath: null };
+  }
+
+  const hookPath = path.join(hooksDir, 'pre-commit');
+  const body = await readFile(hookPath, 'utf8').catch(() => null);
+  const state = body === null ? 'none' : body.includes(HOOK_MARKER) ? 'naso' : 'foreign';
+
+  const configured = await run('git', ['config', '--get', 'core.hooksPath'], { cwd: targetDir });
+  const hooksPath = configured.ok && configured.stdout.trim() ? configured.stdout.trim() : null;
+
+  let trackedDir = false;
+  if (hooksPath) {
+    const top = await run('git', ['rev-parse', '--show-toplevel'], { cwd: targetDir });
+    const root = top.ok ? top.stdout.trim() : null;
+    // Real paths on both sides: git reports the resolved top level, and on macOS a temp
+    // directory under /var is really /private/var, which made a tracked .husky/ look like
+    // it lived outside the repository.
+    const real = async (p) => realpath(p).catch(() => path.resolve(p));
+    const rel = root ? path.relative(await real(root), await real(hooksDir)) : null;
+    if (rel !== null && rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+      const listed = await run('git', ['ls-files', '-z', '--', toPosixPath(rel)], { cwd: root });
+      trackedDir = listed.ok && listed.stdout.length > 0;
+    }
+  }
+
+  return { state, hooksDir, path: hookPath, trackedDir, hooksPath };
+}
+
+/**
+ * Write the pre-commit hook. Never over a hook NASO did not write.
+ *
+ *   action 'install'  write it when the slot is empty or already NASO's
+ *   action 'chain'    move a foreign hook to CHAINED_HOOK_NAME, byte for byte, and
+ *                     write NASO's hook, which calls it first
+ *
+ * A foreign hook is never replaced: it may be running lint-staged, a secret scanner or
+ * a signing step, and replacing it would silently disable all three. A hooks directory
+ * git tracks is refused unless `allowTracked` says the user chose it, because a hook
+ * written there is a file in the next commit.
+ */
+export async function installPreCommitHook(
+  targetDir,
+  { report = () => {}, action = 'install', allowTracked = false } = {},
+) {
+  const hook = await describeHook(targetDir);
+
+  if (hook.state === 'not-repo') {
     report('- Skipped the pre-commit hook: not a git repository.', 'warn');
     report('  To install it later, copy this into .git/hooks/pre-commit:', 'info');
     report(`    ${HOOK_MANUAL_LINE}`, 'info');
     return { ok: false, reason: 'not-a-repo' };
   }
 
-  const hookPath = path.join(hooksDir, 'pre-commit');
-
-  if (await pathExists(hookPath)) {
-    const existing = await readFile(hookPath, 'utf8').catch(() => '');
-    if (!existing.includes(HOOK_MARKER)) {
-      report(`- Skipped the pre-commit hook: ${hookPath} exists and was not written by NASO.`, 'warn');
-      report('  To run the NASO checks, add this to it yourself:', 'info');
-      report(`    ${HOOK_MANUAL_LINE}`, 'info');
-      return { ok: false, reason: 'foreign-hook' };
-    }
+  if (hook.trackedDir && !allowTracked) {
+    report(
+      `- Skipped the pre-commit hook: core.hooksPath is ${hook.hooksPath}, which git tracks. ` +
+        'A hook written there would be part of the next commit.',
+      'warn',
+    );
+    report(`  To run the NASO checks, add this to ${hook.path} yourself:`, 'info');
+    report(`    ${HOOK_MANUAL_LINE}`, 'info');
+    return { ok: false, reason: 'tracked-hooks-path', hookPath: hook.path };
   }
 
-  await mkdir(hooksDir, { recursive: true });
+  if (hook.state === 'foreign') {
+    if (action !== 'chain') {
+      report(`- Skipped the pre-commit hook: ${hook.path} exists and was not written by NASO.`, 'warn');
+      report('  To run the NASO checks, add this to it yourself:', 'info');
+      report(`    ${HOOK_MANUAL_LINE}`, 'info');
+      return { ok: false, reason: 'foreign-hook', hookPath: hook.path };
+    }
+    const chained = path.join(hook.hooksDir, CHAINED_HOOK_NAME);
+    if (await pathExists(chained)) {
+      report(`- Skipped the pre-commit hook: ${chained} already exists, and NASO will not overwrite it.`, 'warn');
+      return { ok: false, reason: 'chain-target-exists', hookPath: hook.path };
+    }
+    // A rename keeps the bytes and the mode; nothing of the old hook is rewritten.
+    await rename(hook.path, chained);
+    report(`- Moved the existing hook to ${chained}, unchanged. NASO's hook runs it first.`, 'pass');
+  }
+
+  await mkdir(hook.hooksDir, { recursive: true });
   // No BOM and LF endings: Git for Windows runs this through `sh`, and a BOM
   // would make the shebang unrecognisable while CRLF would break it outright.
-  await writeFile(hookPath, buildHookScript(), 'utf8');
-  // A no-op on Windows filesystems, harmless there; on POSIX this is what makes
-  // the hook executable.
-  await chmod(hookPath, 0o755).catch(() => {});
+  await writeFile(hook.path, buildHookScript(), 'utf8');
+  // On POSIX this is what makes the hook executable. A filesystem that refuses it is
+  // reported, because a hook git cannot execute is a gate that silently never runs.
+  try {
+    await chmod(hook.path, 0o755);
+  } catch (err) {
+    report(`  ! Could not mark ${hook.path} executable (${err?.code ?? err}); git may skip it.`, 'warn');
+  }
 
-  report(`- Installed the pre-commit hook: ${hookPath}`, 'pass');
+  report(`- Installed the pre-commit hook: ${hook.path}`, 'pass');
   report(`  It runs ${NASO_DIR}/tooling/validate.mjs from this repository.`, 'info');
-  return { ok: true, hookPath };
+  return { ok: true, hookPath: hook.path, chained: hook.state === 'foreign' };
 }
 
 /** Read the current hook body, or null when there is none. */
@@ -197,6 +287,78 @@ export function isNasoHook(hook) {
 }
 
 /**
+ * The patterns .git/info/exclude can actually keep out of git here.
+ *
+ * An exclude line only hides untracked files. A repository that already commits its own
+ * AGENTS.md keeps tracking it whatever the exclude file says, so writing the line anyway
+ * and reporting the file as "kept out of git" was a claim git does not honour: the
+ * appended NASO block showed up in `git status`, one `git commit -a` from the history.
+ */
+export async function localExcludePatterns(targetDir) {
+  const kept = [];
+  for (const pattern of LOCAL_EXCLUDE_PATTERNS) {
+    const tracked = await run('git', ['ls-files', '-z', '--', pattern], { cwd: targetDir });
+    if (!(tracked.ok && tracked.stdout.length > 0)) kept.push(pattern);
+  }
+  return kept;
+}
+
+/**
+ * Claude Code reads CLAUDE.md, not AGENTS.md.
+ *
+ * Without a link the briefing never reaches a Claude Code session at all — every token of
+ * it is spent on nothing. `@AGENTS.md` is Claude Code's import syntax, so one line makes
+ * the briefing load at the start of every session.
+ */
+export const CLAUDE_FILE = 'CLAUDE.md';
+
+export const CLAUDE_LINK_BLOCK =
+  '<!-- naso:start -->\n' +
+  'Claude Code reads this file, not AGENTS.md. The line below loads the NASO briefing.\n\n' +
+  '@AGENTS.md\n' +
+  '<!-- naso:end -->\n';
+
+/** Does this CLAUDE.md already bring AGENTS.md in? Any mention counts: it was put there on purpose. */
+export function claudeLoadsBriefing(text) {
+  return /AGENTS\.md/.test(String(text ?? ''));
+}
+
+/**
+ * What setup does about CLAUDE.md, decided before anything is written.
+ *
+ *   linked  — it already names AGENTS.md; nothing to do.
+ *   create  — there is none; write one holding only the link.
+ *   append  — it is the owner's but untracked, or --track was asked for; append the link.
+ *   advise  — git tracks it and this is a local run; editing it would put NASO in the
+ *             next commit, so setup says what to add instead.
+ */
+export async function planClaudeLink(targetDir, { track = false } = {}) {
+  const full = path.join(targetDir, CLAUDE_FILE);
+  const text = await readFile(full, 'utf8').catch(() => null);
+  if (text === null) return { action: 'create', path: full, before: '' };
+  if (claudeLoadsBriefing(text)) return { action: 'linked', path: full, before: text };
+  const tracked = await run('git', ['ls-files', '-z', '--', CLAUDE_FILE], { cwd: targetDir });
+  const isTracked = tracked.ok && tracked.stdout.length > 0;
+  return { action: isTracked && !track ? 'advise' : 'append', path: full, before: text };
+}
+
+/** The bytes CLAUDE.md will hold after `writeClaudeLink`, for the plan's line count. */
+export function claudeLinkContent(plan) {
+  if (plan.action === 'create') return CLAUDE_LINK_BLOCK;
+  if (plan.action !== 'append') return plan.before;
+  const before = plan.before;
+  const separator = before.length === 0 || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+  return `${before}${separator}${CLAUDE_LINK_BLOCK}`;
+}
+
+/** Carry out a `planClaudeLink` decision. Only create and append write anything. */
+export async function writeClaudeLink(plan) {
+  if (plan.action !== 'create' && plan.action !== 'append') return false;
+  await writeFile(plan.path, claudeLinkContent(plan), 'utf8');
+  return true;
+}
+
+/**
  * Keep the briefing files out of git entirely, using .git/info/exclude.
  *
  * That file is local-only and never committed, which is what makes it the right
@@ -205,9 +367,26 @@ export function isNasoHook(hook) {
  * machine. Repos that want the briefing reviewed like any other file pass --track
  * and skip this entirely.
  */
-export async function excludeLocally(targetDir, patterns = LOCAL_EXCLUDE_PATTERNS) {
+export async function excludeLocally(targetDir, patterns = null) {
+  const pending = await pendingLocalExclusion(targetDir, patterns);
+  if (!pending) return false;
+  if (pending.missing.length === 0) return true;
+
+  await mkdir(path.dirname(pending.path), { recursive: true });
+  await appendFile(pending.path, pending.text, 'utf8');
+  return true;
+}
+
+/**
+ * What `excludeLocally` would append to .git/info/exclude, without appending it.
+ *
+ * Returns null outside a git repository. `missing` is the patterns not already there and
+ * `text` the exact bytes that would be appended, so a plan can show the change first.
+ */
+export async function pendingLocalExclusion(targetDir, patterns = null) {
   const gitDirRes = await run('git', ['rev-parse', '--git-dir'], { cwd: targetDir });
-  if (!gitDirRes.ok) return false;
+  if (!gitDirRes.ok) return null;
+  patterns ??= await localExcludePatterns(targetDir);
 
   const gitDirRaw = gitDirRes.stdout.trim();
   const gitDir = path.isAbsolute(gitDirRaw) ? gitDirRaw : path.resolve(targetDir, gitDirRaw);
@@ -215,16 +394,9 @@ export async function excludeLocally(targetDir, patterns = LOCAL_EXCLUDE_PATTERN
   const existing = await readFile(excludePath, 'utf8').catch(() => '');
 
   const missing = patterns.filter((pattern) => !existing.includes(pattern));
-  if (missing.length === 0) return true;
-
-  await mkdir(path.dirname(excludePath), { recursive: true });
   const prefix = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
-  await appendFile(
-    excludePath,
-    `${prefix}\n${EXCLUDE_MARKER}\n${missing.join('\n')}\n`,
-    'utf8',
-  );
-  return true;
+  const text = missing.length === 0 ? '' : `${prefix}\n${EXCLUDE_MARKER}\n${missing.join('\n')}\n`;
+  return { path: excludePath, missing, text };
 }
 
 /** Remove NASO's block from .git/info/exclude. Undoes excludeLocally. */
@@ -265,17 +437,18 @@ export async function isIgnored(targetDir, file) {
 export async function findArtifacts(targetDir) {
   const found = [];
 
-  for (const file of OWNED_FILES) {
+  // AGENTS.md is not a leftover. It is the briefing — the owner's file, or the one NASO
+  // just wrote — and the plan already says what happens to it. Listing it here put a
+  // repository's own documentation under "Leftovers to remove" and made doctor warn on
+  // every healthy install.
+  for (const file of OWNED_FILES.filter((name) => name !== 'AGENTS.md')) {
     const full = path.join(targetDir, file);
     if (await pathExists(full)) {
       found.push({
         path: full,
         label: file,
-        owned: file === 'AGENTS.md' ? 'may' : 'yes',
-        note:
-          file === 'AGENTS.md'
-            ? 'pre-existing or generated briefing — removed only when you ask'
-            : 'NASO 2.x one-time setup guide, obsolete in 3.0',
+        owned: 'yes',
+        note: 'NASO 2.x one-time setup guide, obsolete in 3.0',
       });
     }
   }
@@ -314,17 +487,24 @@ export async function findArtifacts(targetDir) {
 export async function removeArtifacts(artifacts, { onlyOwned = true } = {}) {
   const removed = [];
   const kept = [];
+  const failed = [];
 
   for (const artifact of artifacts) {
     if (onlyOwned && artifact.owned !== 'yes') {
       kept.push(artifact);
       continue;
     }
-    await rm(artifact.path, { force: true }).catch(() => {});
-    removed.push(artifact);
+    // A delete that failed is reported as failed. Listing it as removed told the user a
+    // stale lock was gone while it went on blocking every write to AGENTS.md.
+    try {
+      await rm(artifact.path, { force: true });
+      removed.push(artifact);
+    } catch (err) {
+      failed.push({ ...artifact, error: err?.code ?? String(err) });
+    }
   }
 
-  return { removed, kept };
+  return { removed, kept, failed };
 }
 
 /** Absolute path to a tool script, for display and for hook bodies. */
