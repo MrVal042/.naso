@@ -22,6 +22,7 @@ import {
   NASO_START,
   SCRIPT_DELEGATES_TO,
   TEMPLATE_HEADER,
+  blockDigest,
   languageMix,
   readIgnorePatterns,
   readLocalExcludes,
@@ -1230,5 +1231,6 @@ report its path and stop.`);
 
   parts.push(`${NASO_END}`);
 
-  return `${parts.join('\n\n')}\n`;
+  const text = `${parts.join('\n\n')}\n`;
+  return text.replace('__DIGEST__', blockDigest(text));
 }

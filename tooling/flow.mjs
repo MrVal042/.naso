@@ -34,7 +34,7 @@ import { pathExists, parseArgs, listOption, run, toolVersion, isInteractive, sup
 import { topLevelEntries, areasOf, dominantLanguage, splitNul, NASO_START, NASO_END } from './briefing.mjs';
 import { describeHook } from './install.mjs';
 import { detectStack } from './stack.mjs';
-import { parseIgnorePatterns } from './scan.mjs';
+import { parseIgnorePatterns, blockEdited as isBlockEdited } from './scan.mjs';
 import { NASO_DIR, isVendored, vendoredVersion } from './vendor.mjs';
 import { inspect, install, displayPlan, displayOverview, devDependencyPlan, HOOK_ACTIONS } from './setup.mjs';
 import { colorEnabled, createStyle } from './ui.mjs';
@@ -144,10 +144,12 @@ async function describeCurrentState(cwd) {
 
   let stampedVersion = null;
   let hasBlock = false;
+  let blockEdited = false;
   if (hasBriefing) {
     const content = await readFile(agentsPath, 'utf8').catch(() => '');
     stampedVersion = content.match(/^<!--\s*version:\s*(.+?)\s*-->$/m)?.[1] ?? null;
     hasBlock = content.includes(NASO_START) && content.includes(NASO_END);
+    blockEdited = hasBlock && isBlockEdited(content);
   }
 
   const hook = await describeHook(cwd);
@@ -156,6 +158,7 @@ async function describeCurrentState(cwd) {
   return {
     hasBriefing,
     hasBlock,
+    blockEdited,
     stampedVersion,
     vendored,
     vendoredVersion: await vendoredVersion(cwd),
@@ -258,7 +261,9 @@ async function ask(style, options, context, io = {}) {
   }
 
   let force = options.force;
-  if (!force && context.hasBlock) {
+  // An edited block is not offered for replacement: the answer that discards reviewed
+  // corrections is not one a person should be able to give by pressing Enter.
+  if (!force && context.hasBlock && !context.blockEdited) {
     const replace = await confirm({
       message: 'AGENTS.md already has a NASO block. Replace it with one generated from the repository as it is now?',
       initialValue: false,
@@ -423,6 +428,7 @@ Other commands:
     exclude: listOption(lists, 'exclude'),
     hookAction: values.get('hook-action') ?? null,
     saveDev: flags.has('save-dev'),
+    discardEdits: flags.has('discard-edits'),
   };
 
   if (options.hookAction !== null && !HOOK_ACTIONS.includes(options.hookAction)) {
@@ -511,7 +517,7 @@ Other commands:
   if (!options.yes) {
     const pkg = await readJSONFile(path.join(cwd, 'package.json'));
     const devDependency = devDependencyPlan(pkg, (await detectPackageManager(cwd, pkg)).name, version);
-    const answered = await prompts.questions(style, options, { hook: state.hook, hasBlock: state.hasBlock, devDependency });
+    const answered = await prompts.questions(style, options, { hook: state.hook, hasBlock: state.hasBlock, blockEdited: state.blockEdited, devDependency });
     if (answered === null) {
       prompts.done(style.warn('Cancelled. Nothing was written.'));
       return;

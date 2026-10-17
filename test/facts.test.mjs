@@ -161,3 +161,38 @@ test('setup leaves a CLAUDE.md that CODEOWNERS gives to someone', async () => {
     assert.match(res.stdout, /CODEOWNERS gives it to @standards-team/);
   });
 });
+
+test('setup --yes --force keeps a NASO block that review corrected', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedNestService(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const file = path.join(dir, AGENTS);
+    await writeFile(file, (await readFile(file, 'utf8')).replace('## Source Map', '## Source Map\n\nCorrected in review: see docs/folder-structure.md.'));
+    assert.equal((await script('refresh')).code, 0, 'refresh re-stamps without counting as an edit');
+    const res = await bare(['--yes', '--force']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.match(await read(dir, AGENTS), /Corrected in review/);
+    assert.match(res.stdout, /kept your edited NASO block/);
+  });
+});
+
+test('briefing reports a wrong entry point and module system even when every path exists', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedNestService(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const file = path.join(dir, AGENTS);
+    const text = await readFile(file, 'utf8');
+    await writeFile(
+      file,
+      text
+        .replace('entry `src/main.ts` (nest-cli.json)', 'entry `src/app.ts`')
+        .replace(/^Modules: .*$/m, 'Modules: ES modules (.mjs, no "type" field).'),
+    );
+    const result = await checkBriefing(dir);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.wrong, [
+      'entry `src/app.ts`: nest-cli.json starts `src/main.ts`',
+      'Modules: says ES modules, but package.json has no "type" and tsconfig.json sets "module": "nodenext", so it is CommonJS',
+    ]);
+  });
+});

@@ -62,6 +62,7 @@ import {
   appendBlock,
   plural,
   NASO_START,
+  blockEdited,
   NASO_END,
 } from './briefing.mjs';
 import {
@@ -344,7 +345,7 @@ const TRACKED_AGENTS_NOTE =
  * The scan is the expensive part and it is what both a rejection and an accept
  * are decided on, so it is done up front and reused for the whole flow.
  */
-export async function inspect(cwd, { track, noHook, exclude, force = false, hookAction = null, saveDev = false }) {
+export async function inspect(cwd, { track, noHook, exclude, force = false, hookAction = null, saveDev = false, discardEdits = false }) {
   const config = await readConfig(cwd);
 
   // Saved exclusions survive the run, and a --exclude flag adds to them. The union is
@@ -383,6 +384,9 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
   const hasAgents = await pathExists(agentsPath);
   const existing = hasAgents ? await readFile(agentsPath, 'utf8').catch(() => '') : '';
   const hasBlock = existing.includes(NASO_START) && existing.includes(NASO_END);
+  const edited = hasBlock && blockEdited(existing);
+  // A reviewed block is kept whatever --force says; only --discard-edits replaces it.
+  if (edited && !discardEdits) force = false;
 
   if (!hasAgents) {
     plans.push({
@@ -397,6 +401,15 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
       detail:
         'The NASO block between <!-- naso:start --> and <!-- naso:end --> is regenerated from the ' +
         'scan. Every line outside those markers stays byte for byte as it is.',
+    });
+  } else if (hasBlock && edited) {
+    plans.push({
+      target: 'AGENTS.md',
+      verb: 'Keep',
+      detail:
+        'The NASO block was edited after NASO wrote it, so it is kept exactly as it is: a ' +
+        'regenerate never replaces reviewed corrections. Pass --discard-edits to replace it; ' +
+        'the old block is saved under .naso/backups/ first.',
     });
   } else if (hasBlock) {
     plans.push({
@@ -561,7 +574,7 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     writes.push({ path: LOCKFILE_OF[devDependency.pm] ?? 'package-lock.json', change: 'by-pm', lines: 0, note: `by ${devDependency.pm}, with node_modules/` });
   }
 
-  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, localExcludes, claude, devDependency, recordsDev, track, prettierIgnore };
+  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, blockEdited: edited, force, localExcludes, claude, devDependency, recordsDev, track, prettierIgnore };
 }
 
 /**
@@ -726,7 +739,7 @@ export async function displayPlan(state, cwd, style = plainStyle) {
 }
 
 /** Step 3. */
-export async function install(cwd, { track, noHook, force, state, style = plainStyle }) {
+export async function install(cwd, { track, noHook, force, discardEdits = false, state, style = plainStyle }) {
   const done = { hook: false, claude: false, dev: false };
   // A tick that survives no-colour output: plainStyle has no glyphs of its own.
   const ok = (text) => `${style.green ? style.green('✓') : '✓'} ${text}`;
@@ -743,7 +756,7 @@ export async function install(cwd, { track, noHook, force, state, style = plainS
   const localExcludes = state.localExcludes ?? (await localExcludePatterns(cwd));
   const excludedLocally = track ? false : await excludeLocally(cwd, localExcludes);
 
-  const created = await createBriefing(cwd, { force, exclude: state.excluded });
+  const created = await createBriefing(cwd, { force: state.force ?? force, discardEdits, exclude: state.excluded });
 
   // The areas were on screen in the plan a moment ago; printing them again here pushed the
   // prompt this run ends with off the top of a normal terminal.
@@ -753,9 +766,12 @@ export async function install(cwd, { track, noHook, force, state, style = plainS
       console.log(ok(`AGENTS.md: wrote the NASO block below your ${created.existingLines} lines, which are unchanged`));
     } else if (created.replacedBlock) {
       console.log(ok(`AGENTS.md: wrote the NASO block in place of the old one; your ${created.existingLines} other lines are unchanged`));
+      if (created.backup) console.log(`    the edited block was saved to ${created.backup}`);
     } else {
       console.log(ok(`AGENTS.md: wrote the NASO block, ${plural(lines, 'line')}`));
     }
+  } else if (created.reason === 'edited' || (created.reason === 'has-block' && state.blockEdited)) {
+    console.log(ok('AGENTS.md: kept your edited NASO block as it is (--discard-edits replaces it, after a backup)'));
   } else if (created.reason === 'has-block') {
     console.log(ok('AGENTS.md: kept the existing NASO block as it is (--force regenerates it)'));
   } else {
@@ -982,6 +998,7 @@ Support: ${SUPPORT_EMAIL}`);
     exclude: listOption(lists, 'exclude'),
     hookAction: values.get('hook-action') ?? null,
     saveDev: flags.has('save-dev'),
+    discardEdits: flags.has('discard-edits'),
   };
 
   if (!(await pathExists(cwd))) {
