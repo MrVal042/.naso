@@ -303,6 +303,19 @@ const CLAUDE_ADVICE =
   'not load the briefing: add `@AGENTS.md` to CLAUDE.md, or re-run with --track to let setup ' +
   'append it.';
 
+/** Why CLAUDE.md is not NASO's to edit, in the repository's words, or null. */
+function claudeProtection(facts) {
+  const note = (facts.ignoreNotes ?? []).find((entry) => entry.path === 'CLAUDE.md' && entry.kind === 'protected');
+  if (note) return `${note.source} marks it "${note.note}"`;
+  const owner = (facts.codeowners?.entries ?? []).find((entry) => /^\/?CLAUDE\.md$/.test(entry.pattern));
+  if (owner) return `${facts.codeowners.path} gives it to ${owner.owners.join(', ')}`;
+  return null;
+}
+
+const claudeProtectedAdvice = (claude) =>
+  `Left as it is: ${claude.reason}. Claude Code reads CLAUDE.md, not AGENTS.md, so ask whoever ` +
+  'maintains it to add `@AGENTS.md`; until then Claude Code sessions start without the briefing.';
+
 /** The plan line for CLAUDE.md, in the same words the write will report. */
 function claudePlanEntry(claude) {
   const detail = {
@@ -314,8 +327,9 @@ function claudePlanEntry(claude) {
       'Claude Code reads CLAUDE.md, not AGENTS.md. One `@AGENTS.md` line, inside naso markers, ' +
       'goes below what is there; nothing above it changes.',
     advise: CLAUDE_ADVICE,
+    protected: claude.action === 'protected' ? claudeProtectedAdvice(claude) : null,
   }[claude.action];
-  const verb = { linked: 'Keep', create: 'Write', append: 'Append', advise: 'Leave' }[claude.action];
+  const verb = { linked: 'Keep', create: 'Write', append: 'Append', advise: 'Leave', protected: 'Leave' }[claude.action];
   return { target: 'CLAUDE.md', verb, detail };
 }
 
@@ -352,6 +366,12 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     exclude: excluded,
     pendingLocalExcludes: pendingExclude?.missing ?? [],
   });
+  // A CLAUDE.md the repository marks as someone else's is not NASO's to append to, --track
+  // or not: the standards it came from would overwrite the line, or a review would refuse it.
+  if (claude.action === 'append' || claude.action === 'advise') {
+    const protectedBy = claudeProtection(facts);
+    if (protectedBy) Object.assign(claude, { action: 'protected', reason: protectedBy });
+  }
   const artifacts = await findArtifacts(cwd);
   const hook = await describeHook(cwd);
   const hookDecision = decideHook(hook, { noHook, hookAction });
@@ -751,6 +771,8 @@ export async function install(cwd, { track, noHook, force, state, style = plainS
     console.log(ok(`CLAUDE.md: ${claude.action === 'create' ? 'wrote' : 'appended'} \`@AGENTS.md\`, so Claude Code loads the briefing`));
   } else if (claude.action === 'advise') {
     console.log(no(`CLAUDE.md: left alone. ${CLAUDE_ADVICE}`));
+  } else if (claude.action === 'protected') {
+    console.log(no(`CLAUDE.md: ${claudeProtectedAdvice(claude)}`));
   } else {
     console.log(ok('CLAUDE.md: already loads AGENTS.md'));
   }

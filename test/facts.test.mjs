@@ -137,3 +137,27 @@ test('a git-ignored path in the briefing is generated, not missing', async () =>
     assert.deepEqual(result.ignored, ['src/gen/']);
   });
 });
+
+test('setup leaves a CLAUDE.md the repository marks as kept as published, even with --track', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedNestService(dir, git);
+    const res = await bare(['--yes', '--track']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.equal(await read(dir, 'CLAUDE.md'), '# Standards\n');
+    assert.match(res.stdout, /CLAUDE\.md: Left as it is: \.prettierignore marks it "Kept as published by the standards repo"/);
+  });
+});
+
+test('setup leaves a CLAUDE.md that CODEOWNERS gives to someone', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await put(dir, 'CLAUDE.md', '# Standards\n');
+    await put(dir, 'CODEOWNERS', '/CLAUDE.md @standards-team\n');
+    await put(dir, 'src/index.ts', 'export {};\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'init');
+    const res = await bare(['--yes', '--track']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.equal(await read(dir, 'CLAUDE.md'), '# Standards\n');
+    assert.match(res.stdout, /CODEOWNERS gives it to @standards-team/);
+  });
+});

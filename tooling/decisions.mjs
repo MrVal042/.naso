@@ -166,10 +166,13 @@ export function renderDecisionIndex({ records }) {
   const closed = records.filter((record) => !accepted.includes(record) && !proposed.includes(record));
   const sections = [];
   if (records.length === 0) sections.push('No decisions recorded yet.');
-  if (accepted.length > 0) sections.push(['## Accepted', ...accepted.map(indexLine)].join('\n'));
-  if (proposed.length > 0) sections.push(['## Proposed, not binding until a person accepts', ...proposed.map(indexLine)].join('\n'));
-  if (closed.length > 0) sections.push(['## Rejected or superseded', ...closed.map(closedLine)].join('\n'));
-  return `${DECISIONS_START}\n${sections.join('\n\n')}\n${DECISIONS_END}`;
+  // Blank lines around every heading, list and marker: the shape Prettier writes, so a
+  // repository whose CI runs `prettier --check` does not fail on a file NASO wrote.
+  const section = (heading, lines) => `${heading}\n\n${lines.join('\n')}`;
+  if (accepted.length > 0) sections.push(section('## Accepted', accepted.map(indexLine)));
+  if (proposed.length > 0) sections.push(section('## Proposed, not binding until a person accepts', proposed.map(indexLine)));
+  if (closed.length > 0) sections.push(section('## Rejected or superseded', closed.map(closedLine)));
+  return `${DECISIONS_START}\n\n${sections.join('\n\n')}\n\n${DECISIONS_END}`;
 }
 
 const INDEX_INTRO =
@@ -229,7 +232,9 @@ const slugify = (title) =>
 /** Write a new record. Proposed unless a person passes --accept. */
 export async function createDecision(cwd, { title, decision, why = null, source, by = null, applies = [], supersedes = [], status = 'proposed', date = today() }) {
   const { dir, records } = await readDecisions(cwd);
-  const next = pad(records.reduce((max, record) => Math.max(max, Number(record.id) || 0), 0) + 1);
+  const elsewhere = await numbersOnOtherBranches(cwd, dir);
+  const highest = Math.max(0, ...records.map((record) => Number(record.id) || 0), ...elsewhere.keys());
+  const next = pad(highest + 1);
   const file = `${dir}/${next}-${slugify(title)}.md`;
   const header = [
     `- Status: ${status}`,
@@ -242,7 +247,33 @@ export async function createDecision(cwd, { title, decision, why = null, source,
   const text = `# ${next}. ${title}\n\n${header.join('\n')}\n\n## Decision\n\n${decision}\n\n## Why\n\n${why ?? 'Not recorded.'}\n`;
   await mkdir(path.join(cwd, dir), { recursive: true });
   await writeFile(path.join(cwd, file), text, 'utf8');
-  return { id: next, file };
+  const local = new Set(records.map((record) => Number(record.id) || 0));
+  const skipped = [...elsewhere.entries()].filter(([n]) => !local.has(n)).sort((a, b) => a[0] - b[0]);
+  return { id: next, file, skipped: skipped.map(([n, refs]) => ({ id: pad(n), refs })) };
+}
+
+/**
+ * Decision numbers other branches already use in the same folder, with which branches.
+ *
+ * Two branches that each write 0002 collide when the second one merges, and nobody sees it
+ * until then. Reading every local and remote branch's tree costs one git call per branch
+ * and changes nothing; a repository without branches or git returns an empty map.
+ */
+export async function numbersOnOtherBranches(cwd, dir) {
+  const refs = await run('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'], { cwd });
+  const found = new Map();
+  if (!refs.ok) return found;
+  for (const ref of refs.stdout.split('\n').map((line) => line.trim()).filter((line) => line && !line.endsWith('/HEAD'))) {
+    const tree = await run('git', ['ls-tree', '--name-only', ref, '--', `${dir}/`], { cwd });
+    if (!tree.ok) continue;
+    for (const name of tree.stdout.split('\n')) {
+      const n = Number(path.posix.basename(name).match(/^(\d{1,5})-/)?.[1]);
+      if (!n) continue;
+      if (!found.has(n)) found.set(n, []);
+      if (!found.get(n).includes(ref)) found.get(n).push(ref);
+    }
+  }
+  return found;
 }
 
 /** Set one header field, keeping the record's own layout: bullet line, `## Heading`, or front matter. */
@@ -405,6 +436,9 @@ an agent never passes it.`);
     status,
   });
   console.log(`Recorded ${created.file} as ${status}.`);
+  for (const { id, refs } of created.skipped) {
+    console.log(`Skipped ${id}: it is taken on ${refs.join(', ')}, which has not merged here.`);
+  }
   if (status === 'proposed') console.log(`A person accepts it with: ${nasoCommand()} decisions accept ${created.id}`);
   await reportSync(cwd);
 }
