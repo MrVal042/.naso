@@ -22,6 +22,7 @@ import {
   NASO_START,
   SCRIPT_DELEGATES_TO,
   TEMPLATE_HEADER,
+  blockDigest,
   languageMix,
   readIgnorePatterns,
   readLocalExcludes,
@@ -341,7 +342,7 @@ export function describeEntry(entry) {
   const facts = [fileCountSentence(entry)];
   if (entry.testFiles > 0) facts.push(`${plural(entry.testFiles, 'test file')}`);
   if (entry.manifest) facts.push(`manifest \`${entry.isDir ? `${entry.name}/` : ''}${entry.manifest}\``);
-  if (entry.entryPoint) facts.push(`entry \`${entry.entryPoint}\``);
+  if (entry.entryPoint) facts.push(`entry \`${entry.entryPoint}\`${entry.entrySource ? ` (${entry.entrySource})` : ''}`);
 
   const responsibility = role ?? 'role not derivable from its name or a manifest';
   return `- \`${label}\` — ${responsibility}; ${facts.join('; ')}.`;
@@ -683,6 +684,21 @@ async function renderBoundaries(facts) {
     );
   }
 
+  // In the repository's own words, from the comment above the pattern. Paths written by a
+  // script are already named above; this adds the ones only the comment explains.
+  const noted = (facts.ignoreNotes ?? []).filter((entry) => !generated.some((g) => g.path === entry.path));
+  if (noted.length > 0) {
+    lines.push(
+      `**Not edited by hand.** ${noted
+        .map(
+          (entry) =>
+            `\`${entry.path}\` — ${entry.source} says "${entry.note}"; ` +
+            (entry.kind === 'generated' ? 'regenerate it instead of editing it.' : 'leave it as it is unless the task is to change it.'),
+        )
+        .join(' ')}`,
+    );
+  }
+
   const owners = facts.codeowners;
   if (owners && (owners.entries.length > 0 || owners.fallback)) {
     const shown = owners.entries.slice(0, 10).map((entry) => `${entry.pattern} → ${entry.owners.join(', ')}`);
@@ -786,16 +802,20 @@ function renderCommitStandard(facts) {
     lines.push(`- \`${facts.contributing.path}\` writes the commit rules down; where it and this count differ, it wins.`);
   }
 
-  if (history.count >= HISTORY_MINIMUM && history.conventional / history.count >= 0.6) {
+  const shape = dominantShape(history);
+  if (history.count >= HISTORY_MINIMUM && shape && shape.count / history.count >= 0.6) {
     lines.push(
-      `- Subjects follow \`${subjectShape(history)}\` in ${history.conventional} of the last ` +
+      `- Subjects follow \`${shape.text}\` in ${shape.count} of the last ` +
         `${history.count} non-merge commits. Types used: ${history.types.join(', ')}.`,
     );
-    // A scope used now and then is allowed, not expected. Saying `type(scope)` for a
-    // history that almost never has one taught agents to invent scopes.
-    if (history.scoped > 0 && history.scoped / history.conventional < 0.6) {
-      lines.push(`  ${history.scoped} of them add a scope: \`type(scope): …\`.`);
-    }
+    // Name the rest by their form, so the count above is exact and a scope used now and
+    // then reads as allowed, not expected.
+    const others = Object.entries(history.shapes)
+      .filter(([key]) => key !== shape.key)
+      .map(([key, n]) => `${n} ${n === 1 ? 'uses' : 'use'} \`${shapeText(key, history.ticketKey)}\``);
+    const untyped = history.count - history.conventional;
+    if (untyped > 0) others.push(`${untyped} ${untyped === 1 ? 'has' : 'have'} no type`);
+    if (others.length > 0) lines.push(`  Of the rest, ${others.join(', ')}.`);
   }
   if (history.count >= HISTORY_MINIMUM && history.coAuthored === 0) {
     lines.push(
@@ -808,12 +828,17 @@ function renderCommitStandard(facts) {
   return lines;
 }
 
-/** The subject form most of the history uses: scope and ticket key only when most have one. */
-function subjectShape(history) {
-  const most = (n) => n / history.conventional >= 0.6;
-  const head = most(history.scoped) ? 'type(scope)' : 'type';
-  const ticket = most(history.ticketed) && history.ticketKey ? `${history.ticketKey}-n: ` : '';
-  return `${head}: ${ticket}summary`;
+/** The subject form most of the history uses, counted by exact form. */
+function dominantShape(history) {
+  const entries = Object.entries(history.shapes ?? {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  if (entries.length === 0) return null;
+  const [key, count] = entries[0];
+  return { key, count, text: shapeText(key, history.ticketKey) };
+}
+
+function shapeText(key, ticketKey) {
+  const [head, ticket] = key.split(': ');
+  return `${head}: ${ticket && ticketKey ? `${ticketKey}-n: ` : ''}summary`;
 }
 
 /**
@@ -1206,5 +1231,6 @@ report its path and stop.`);
 
   parts.push(`${NASO_END}`);
 
-  return `${parts.join('\n\n')}\n`;
+  const text = `${parts.join('\n\n')}\n`;
+  return text.replace('__DIGEST__', blockDigest(text));
 }

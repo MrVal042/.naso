@@ -20,7 +20,9 @@ import {
   NASO_END,
   NASO_START,
   areasOf,
+  declaredModuleSystem,
   listRepoFiles,
+  runtimeEntry,
   topLevelEntries,
 } from './scan.mjs';
 
@@ -113,6 +115,54 @@ export function findUncovered(entries, briefingText) {
 }
 
 /**
+ * Claims in the block that the repository contradicts. A path can exist and the sentence
+ * about it still be false: `src/app.ts` is real, and it is not what starts the service.
+ *
+ * Two claims are tested, each against the file that settles it: the entry point against
+ * nest-cli.json, a Dockerfile CMD or the start script, and the "Modules:" line against
+ * package.json "type" and tsconfig "module". Commit counts are not: they change with every
+ * commit, and a check that fails on the next commit teaches people to ignore it.
+ */
+export async function wrongClaims(cwd, claimed) {
+  const out = [];
+  const files = await listRepoFiles(cwd).catch(() => []);
+  let pkg = null;
+  try {
+    pkg = JSON.parse(await readFile(path.join(cwd, 'package.json'), 'utf8'));
+  } catch {
+    // No manifest, or one that does not parse: no start script to test against.
+  }
+  const started = await runtimeEntry(cwd, files ?? [], pkg);
+  if (started) {
+    const said = [...claimed.matchAll(/\bentry(?: point)?(?: is)? `([^`]+)`/gi)].map((match) => match[1]);
+    const area = started.file.split('/')[0];
+    for (const file of new Set(said)) {
+      if (file !== started.file && file.split('/')[0] === area) {
+        out.push(`entry \`${file}\`: ${started.source} starts \`${started.file}\``);
+      }
+    }
+  }
+  const modules = await declaredModuleSystem(cwd);
+  const line = claimed.match(/^Modules:\s*(.+)$/m)?.[1];
+  if (modules && line) {
+    const saysEsm = /^ES modules/i.test(line);
+    const saysCjs = /^CommonJS/i.test(line);
+    if ((modules.kind === 'CommonJS' && saysEsm) || (modules.kind === 'ES modules' && saysCjs)) {
+      out.push(`Modules: says ${saysEsm ? 'ES modules' : 'CommonJS'}, but ${modules.why}, so it is ${modules.kind}`);
+    }
+  }
+  return out;
+}
+
+/** The paths among these that .gitignore covers, whether or not they exist yet. */
+async function ignoredPaths(cwd, paths) {
+  if (paths.length === 0) return [];
+  const res = await run('git', ['check-ignore', '--', ...paths], { cwd });
+  const listed = new Set(res.stdout.split('\n').map((line) => line.trim()).filter(Boolean));
+  return paths.filter((p) => listed.has(p) || listed.has(p.replace(/\/$/, '')));
+}
+
+/**
  * Compare the briefing against the repository.
  *
  * Three failure modes, and the middle one is the reason this exists: the old
@@ -136,12 +186,17 @@ export async function checkBriefing(cwd) {
   const tokens = extractPathTokens(claimed);
   const entries = await listTopLevelEntries(cwd);
 
-  const missing = [];
+  const absent = [];
   for (const token of tokens) {
-    if (!(await pathExists(path.join(cwd, token)))) missing.push(token);
+    if (!(await pathExists(path.join(cwd, token)))) absent.push(token);
   }
+  // A git-ignored path is generated, not invented: `src/gen/` is real once the build runs.
+  // Reporting it as missing pushed briefing writers to drop true facts.
+  const ignored = await ignoredPaths(cwd, absent);
+  const missing = absent.filter((token) => !ignored.includes(token));
 
   const uncovered = findUncovered(entries, claimed);
+  const wrong = await wrongClaims(cwd, claimed);
 
   const markerCounts = MARKERS.map((marker) => ({
     marker,
@@ -150,6 +205,7 @@ export async function checkBriefing(cwd) {
   const unfilled = markerCounts.filter((m) => m.count > 0);
 
   const problems = [
+    ...wrong.map((w) => ({ kind: 'WRONG', item: w })),
     ...missing.map((m) => ({ kind: 'MISSING', item: m })),
     ...uncovered.map((u) => ({ kind: 'UNCOVERED', item: u })),
     ...unfilled.map((m) => ({ kind: 'UNFILLED', item: `${m.marker} x${m.count}` })),
@@ -161,6 +217,8 @@ export async function checkBriefing(cwd) {
     briefing,
     tokens,
     entries: entries ?? [],
+    ignored,
+    wrong,
     missing,
     uncovered,
     unfilled,
@@ -176,9 +234,18 @@ export function printCheck(result) {
     return;
   }
 
+  if (result.wrong?.length > 0) {
+    section(`WRONG (${result.wrong.length}) — the repository says otherwise`);
+    for (const item of result.wrong) console.log(`- ${item}`);
+    console.log('');
+  }
+
   if (result.missing.length > 0) {
     section(`MISSING (${result.missing.length}) — claimed by the briefing, not on disk`);
     for (const item of result.missing) console.log(`- ${item}`);
+    console.log('');
+    console.log('A path in another repository is not a claim about this one: write it as `repo:path`,');
+    console.log('for example `customer-changelog:changelog/customer/`, and it is not checked.');
     console.log('');
   }
 
@@ -197,7 +264,8 @@ export function printCheck(result) {
   if (result.ok) {
     console.log(
       `Briefing is consistent with the repository: ${result.tokens.length} path claim(s) ` +
-        `verified, ${result.entries.length} top-level area(s) covered, no placeholders left.`,
+        `verified${result.ignored?.length ? ` (${result.ignored.length} git-ignored, so generated rather than tracked)` : ''}, ` +
+        `${result.entries.length} top-level area(s) covered, no placeholders left.`,
     );
     return;
   }

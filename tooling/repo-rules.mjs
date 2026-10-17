@@ -99,8 +99,70 @@ const SOURCE_ROOTS = ['src', 'lib', 'app', 'source', 'pkg', 'internal'];
 /** Markdown files that may describe where code lives, layout docs first. */
 function layoutDocs(files) {
   const docs = files.filter((f) => /\.mdx?$/i.test(f) && (/^docs?\//i.test(f) || !f.includes('/')) && !/^(?:AGENTS|CHANGELOG)\.md$/i.test(f));
-  const rank = (f) => (/(?:folder|structure|layout|architecture|overview|codebase)/i.test(f) ? 0 : /^README/i.test(f) ? 1 : 2);
+  // A folder-structure doc describes folders; an architecture doc mentions them in passing.
+  const rank = (f) =>
+    /(?:folder|structure|layout)/i.test(f) ? 0 : /(?:architecture|overview|codebase)/i.test(f) ? 1 : /^README/i.test(f) ? 2 : 3;
   return docs.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).slice(0, 20);
+}
+
+/** Text that reads as a description, not a fragment: starts like a phrase, has a word in it. */
+function cleanPurpose(text) {
+  const out = text.replace(/`/g, '').replace(/^\s*(?:[—–:-]+|#|\/\/)\s*/, '').trim();
+  return out && /^[A-Za-z(]/.test(out) && /[a-z]{3}/.test(out) ? out : null;
+}
+
+/**
+ * A purpose from a line that names the folder by full path: a table row or a bullet.
+ *
+ * A table row is split into cells and the cell after the path is the purpose; reading the
+ * rest of the row as text turned the pipes into fragments like "Env / required / yes".
+ */
+function linePurpose(lines, token) {
+  for (const line of lines) {
+    const at = line.indexOf(token);
+    if (at === -1) continue;
+    if (/^\s*\|/.test(line)) {
+      const cells = line.split('|').map((cell) => cell.trim()).filter(Boolean);
+      const own = cells.findIndex((cell) => cell.includes(token));
+      const purpose = cells.slice(own + 1).map(cleanPurpose).find(Boolean);
+      if (purpose) return purpose;
+      continue;
+    }
+    // Prose that only mentions the folder mid-sentence ("see src/config/ and …") is not a
+    // description of it: the path has to lead the line, after a bullet or a heading.
+    if (!/^\s*(?:[-*+]|\d+\.|#+)?\s*`?$/.test(line.slice(0, at))) continue;
+    const purpose = cleanPurpose(line.slice(at + token.length).replace(/^`/, ''));
+    if (purpose) return purpose;
+  }
+  return null;
+}
+
+/**
+ * A purpose from a tree diagram under the source root: `├── config/   # env, validated`.
+ *
+ * Only direct children of the root count, matched by column, so a nested `config/` deeper
+ * in the tree never lends its comment to the top-level one.
+ */
+function treePurpose(lines, root, dir) {
+  let rootCol = -1;
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      rootCol = -1;
+      continue;
+    }
+    const head = line.match(new RegExp(`^([\\s│├└─|\`'-]*)${root}/\\s*(?:#.*)?$`));
+    if (head) {
+      rootCol = head[1].length;
+      continue;
+    }
+    if (rootCol === -1) continue;
+    const child = line.match(/^([\s│├└─|`'-]*?)([\w.@-]+)\/?\s+(?:#|\/\/|—|–|-{1,2}\s)\s*(.+)$/);
+    if (!child || child[2] !== dir) continue;
+    if (child[1].length !== rootCol + 4) continue;
+    const purpose = cleanPurpose(child[3]);
+    if (purpose) return purpose;
+  }
+  return null;
 }
 
 /**
@@ -135,20 +197,9 @@ export async function readSourceMap(cwd, files) {
   }
 
   const purposeOf = (dir) => {
-    const token = `${root}/${dir}/`;
     for (const { doc, lines } of docs) {
-      for (const line of lines) {
-        const at = line.indexOf(token);
-        if (at === -1) continue;
-        const after = line
-          .slice(at + token.length)
-          .replace(/^`/, '')
-          .replace(/^\s*(?:[—–:-]+|#)\s*/, '')
-          .replace(/`/g, '')
-          .replace(/\|/g, '/')
-          .trim();
-        if (after && /^[A-Za-z(]/.test(after)) return { text: after.length > 120 ? `${after.slice(0, 117)}…` : after, doc };
-      }
+      const text = treePurpose(lines, root, dir) ?? linePurpose(lines, `${root}/${dir}/`);
+      if (text) return { text: text.length > 120 ? `${text.slice(0, 117)}…` : text, doc };
     }
     return null;
   };
