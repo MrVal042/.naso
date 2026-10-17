@@ -112,6 +112,14 @@ export function findUncovered(entries, briefingText) {
   return (entries ?? []).filter((entry) => !coversUnit(briefingText, entry));
 }
 
+/** The paths among these that .gitignore covers, whether or not they exist yet. */
+async function ignoredPaths(cwd, paths) {
+  if (paths.length === 0) return [];
+  const res = await run('git', ['check-ignore', '--', ...paths], { cwd });
+  const listed = new Set(res.stdout.split('\n').map((line) => line.trim()).filter(Boolean));
+  return paths.filter((p) => listed.has(p) || listed.has(p.replace(/\/$/, '')));
+}
+
 /**
  * Compare the briefing against the repository.
  *
@@ -136,10 +144,14 @@ export async function checkBriefing(cwd) {
   const tokens = extractPathTokens(claimed);
   const entries = await listTopLevelEntries(cwd);
 
-  const missing = [];
+  const absent = [];
   for (const token of tokens) {
-    if (!(await pathExists(path.join(cwd, token)))) missing.push(token);
+    if (!(await pathExists(path.join(cwd, token)))) absent.push(token);
   }
+  // A git-ignored path is generated, not invented: `src/gen/` is real once the build runs.
+  // Reporting it as missing pushed briefing writers to drop true facts.
+  const ignored = await ignoredPaths(cwd, absent);
+  const missing = absent.filter((token) => !ignored.includes(token));
 
   const uncovered = findUncovered(entries, claimed);
 
@@ -161,6 +173,7 @@ export async function checkBriefing(cwd) {
     briefing,
     tokens,
     entries: entries ?? [],
+    ignored,
     missing,
     uncovered,
     unfilled,
@@ -180,6 +193,9 @@ export function printCheck(result) {
     section(`MISSING (${result.missing.length}) — claimed by the briefing, not on disk`);
     for (const item of result.missing) console.log(`- ${item}`);
     console.log('');
+    console.log('A path in another repository is not a claim about this one: write it as `repo:path`,');
+    console.log('for example `customer-changelog:changelog/customer/`, and it is not checked.');
+    console.log('');
   }
 
   if (result.uncovered.length > 0) {
@@ -197,7 +213,8 @@ export function printCheck(result) {
   if (result.ok) {
     console.log(
       `Briefing is consistent with the repository: ${result.tokens.length} path claim(s) ` +
-        `verified, ${result.entries.length} top-level area(s) covered, no placeholders left.`,
+        `verified${result.ignored?.length ? ` (${result.ignored.length} git-ignored, so generated rather than tracked)` : ''}, ` +
+        `${result.entries.length} top-level area(s) covered, no placeholders left.`,
     );
     return;
   }

@@ -464,15 +464,18 @@ async function detectConventions(cwd, files, pkg) {
               ? 'node:test'
               : null;
 
+  // `eslint.config.mjs` is a tool's config file, not the project's source: one of them
+  // made a NestJS service compiled to CommonJS read as "ES modules".
+  const sourceMjs = files.filter((f) => f.endsWith('.mjs') && !CONFIG_FILE.test(f));
   const moduleSystem = pkg?.type === 'module'
     ? 'ES modules (package.json declares "type": "module")'
-    : files.some((f) => f.endsWith('.mjs')) && !files.some((f) => f.endsWith('.cjs'))
-      ? 'ES modules (.mjs, no "type" field)'
-      : pkg
-        ? has('typescript')
-          ? typescriptModuleLine(files)
-          : 'CommonJS by default (no "type": "module")'
-        : null;
+    : pkg && has('typescript')
+      ? typescriptModuleLine(files, tsconfig)
+      : sourceMjs.length > 0 && !files.some((f) => f.endsWith('.cjs'))
+        ? 'ES modules (.mjs, no "type" field)'
+        : pkg
+          ? 'CommonJS by default (no "type": "module")'
+          : null;
 
   // A repository is rarely one module system. `.mjs` beside `plugins/*.cjs` is two, and
   // the one-liner above would have to pick one — so each folder is classified on its own
@@ -532,6 +535,9 @@ async function detectConventions(cwd, files, pkg) {
   };
 }
 
+/** A tool's config file (`eslint.config.mjs`, `.prettierrc.mjs`), which says nothing about the source. */
+const CONFIG_FILE = /(?:^|\/)(?:[^/]+\.config|\.[^/]+rc)\.m[jt]s$/;
+
 /**
  * The module line for TypeScript with no "type" field.
  *
@@ -539,8 +545,17 @@ async function detectConventions(cwd, files, pkg) {
  * the `.ts` source, which is written with `import` and compiled by tsc, Babel or Metro.
  * Read as a statement about the whole repository it sent agents to write `require`.
  */
-function typescriptModuleLine(files) {
+function typescriptModuleLine(files, tsconfig) {
   const rootJs = files.filter((file) => !file.includes('/') && file.endsWith('.js'));
+  // With no "type" field, tsc emits CommonJS for these settings: nodenext and node16
+  // follow the nearest package.json, which here says nothing, so CommonJS.
+  const target = String(tsconfig?.compilerOptions?.module ?? '').toLowerCase();
+  if (/^(?:nodenext|node16|node18|commonjs)$/.test(target)) {
+    return (
+      `CommonJS: tsconfig.json sets "module": "${tsconfig.compilerOptions.module}" and package.json has no "type", ` +
+      'so the compiled output uses require; write TypeScript source with import syntax'
+    );
+  }
   return (
     // Not backticked: the checker reads `.js` and `import` as paths that must exist.
     '.js files are CommonJS (no "type": "module")' +
@@ -827,6 +842,11 @@ async function manifestFor(cwd, entry) {
  */
 function entryPointOf(entry) {
   const prefix = entry.isDir ? `${entry.name}/` : '';
+  const rank = (file) => {
+    const stem = path.posix.basename(file).replace(/\.[^.]+$/, '').toLowerCase();
+    const at = ENTRY_PREFERENCE.indexOf(stem);
+    return at === -1 ? ENTRY_PREFERENCE.length : at;
+  };
   const candidates = entry.files
     .filter((file) => {
       const rest = prefix ? file.slice(prefix.length) : file;
@@ -834,8 +854,59 @@ function entryPointOf(entry) {
       if (!ENTRY_BASENAME.test(rest)) return false;
       return CODE_EXTS.has(path.posix.extname(rest).slice(1).toLowerCase());
     })
-    .sort();
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   return candidates[0] ?? null;
+}
+
+// When the filename is all there is to go on. `app` comes late: in a NestJS or Express
+// service `app.ts` builds the application and `main.ts` starts it, and alphabetical order
+// named the wrong one.
+const ENTRY_PREFERENCE = ['main', 'index', 'server', 'cli', 'entry', '__main__', 'mod', '__init__', 'lib', 'app'];
+
+/**
+ * The file the repository says it starts from, and which file says so.
+ *
+ * Read from what actually runs it, in order: nest-cli.json, a Dockerfile CMD or
+ * ENTRYPOINT, then the start scripts. A compiled path (`dist/main.js`) is traced back to
+ * the source file that exists (`src/main.ts`). Null when none of them names a file.
+ */
+export async function runtimeEntry(cwd, files, pkg) {
+  const tracked = new Set(files);
+  const toSource = (value) => {
+    const clean = value.replace(/^\.\//, '');
+    if (tracked.has(clean)) return clean;
+    const stem = clean.replace(/^(?:dist|build|out|lib)\//, '').replace(/\.[cm]?js$/, '');
+    for (const base of [`src/${stem}`, stem]) {
+      for (const ext of ['.ts', '.mts', '.tsx', '.js', '.mjs']) {
+        if (tracked.has(base + ext)) return base + ext;
+      }
+    }
+    return null;
+  };
+
+  if (tracked.has('nest-cli.json')) {
+    const nest = (await readMaybeJson(path.join(cwd, 'nest-cli.json'))) ?? {};
+    const file = toSource(`${nest.sourceRoot ?? 'src'}/${nest.entryFile ?? 'main'}.ts`);
+    if (file) return { file, source: 'nest-cli.json' };
+  }
+
+  for (const docker of files.filter((f) => /(?:^|\/)Dockerfile[^/]*$/.test(f)).sort()) {
+    const text = await readFile(path.join(cwd, docker), 'utf8').catch(() => '');
+    const lines = text.split('\n').filter((line) => /^\s*(?:CMD|ENTRYPOINT)\b/i.test(line));
+    for (const line of lines.reverse()) {
+      const script = line.match(/[\w./-]+\.[cm]?[jt]s\b/)?.[0];
+      const file = script ? toSource(script) : null;
+      if (file) return { file, source: `${docker} ${line.trim().split(/\s+/)[0].toUpperCase()}` };
+    }
+  }
+
+  for (const name of ['start:prod', 'start']) {
+    const script = pkg?.scripts?.[name];
+    const target = typeof script === 'string' ? script.match(/\b(?:node|ts-node|tsx|bun)\s+(?:--?\S+\s+)*([\w./-]+)/)?.[1] : null;
+    const file = target ? toSource(target) : null;
+    if (file) return { file, source: `package.json "${name}" script` };
+  }
+  return null;
 }
 
 /** Relative module specifiers in a file: static and literal dynamic imports, and require. */
@@ -1577,6 +1648,52 @@ export function generatedOutputs(pkg, files, pm = 'npm') {
   return out;
 }
 
+const GENERATED_NOTE = /\b(?:generated|auto-?generated|codegen|build output)\b/i;
+const PROTECTED_NOTE = /\b(?:kept as published|as published|do not edit|don't edit|managed by|owned by|vendored|maintained upstream|synced from)\b/i;
+
+/**
+ * Paths an ignore file explains in a comment: "# Generated by npm run openapi" above
+ * `openapi.yaml`, "# kept as published" above `CLAUDE.md`.
+ *
+ * The comment is the repository saying, in its own words, that a file is not edited by
+ * hand. Only patterns that name a plain path are kept, and only for a comment that says
+ * generated or protected; any other comment explains formatting and is left alone.
+ */
+export async function readIgnoreNotes(cwd, files) {
+  const notes = [];
+  for (const source of ['.prettierignore', '.eslintignore']) {
+    if (!files.includes(source)) continue;
+    const text = await readFile(path.join(cwd, source), 'utf8').catch(() => '');
+    let comment = null;
+    for (const raw of text.split('\n')) {
+      const line = raw.trim();
+      if (!line) {
+        comment = null;
+        continue;
+      }
+      if (line.startsWith('#')) {
+        const said = line.replace(/^#+\s*/, '');
+        comment = comment && !GENERATED_NOTE.test(comment) && !PROTECTED_NOTE.test(comment) ? `${comment} ${said}` : said;
+        continue;
+      }
+      if (!comment || /[*?![\]]/.test(line)) continue;
+      const kind = GENERATED_NOTE.test(comment) ? 'generated' : PROTECTED_NOTE.test(comment) ? 'protected' : null;
+      if (!kind) continue;
+      const target = line.replace(/^\//, '');
+      if (!notes.some((note) => note.path === target)) notes.push({ path: target, kind, note: comment.replace(/\.$/, ''), source });
+    }
+  }
+  // A briefing names a path only if it is tracked or git ignores it (generated on build);
+  // anything else is a pattern for a file this checkout does not have.
+  const dir = (p) => p.replace(/\/?$/, '/');
+  const tracked = (p) => files.includes(p) || files.some((f) => f.startsWith(dir(p)));
+  const untracked = notes.filter((note) => !tracked(note.path)).map((note) => note.path);
+  const ignored = untracked.length
+    ? new Set((await run('git', ['check-ignore', '--no-index', '--', ...untracked], { cwd })).stdout.split('\n').map((l) => l.trim().replace(/\/$/, '')))
+    : new Set();
+  return notes.filter((note) => tracked(note.path) || ignored.has(note.path.replace(/\/$/, '')));
+}
+
 /**
  * The contributing guide, and whether it writes commit rules down.
  *
@@ -1714,9 +1831,15 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
   const packageManager = await detectPackageManager(cwd, pkg);
   const published = manifestEntryPoints(pkg).filter((point) => point.field === 'bin');
 
+  const started = await runtimeEntry(cwd, files, pkg);
   for (const entry of entries) {
     entry.manifest = await manifestFor(cwd, entry);
     entry.entryPoint = entryPointOf(entry);
+    // What runs the code outranks what a file is called.
+    if (started && (entry.isDir ? started.file.startsWith(`${entry.name}/`) : started.file === entry.name)) {
+      entry.entryPoint = started.file;
+      entry.entrySource = started.source;
+    }
     entry.language = dominantLanguage(entry.files);
     entry.testFiles = entry.files.filter((f) => TEST_FILE.test(f)).length;
     // Resolved once, here, so the generator, the pre-commit append and the guide
@@ -1794,6 +1917,7 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
       pm: packageManager.name,
     }),
     generated: generatedOutputs(pkg, files, packageManager.name),
+    ignoreNotes: await readIgnoreNotes(cwd, files),
     gate: await detectGate(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),
     manifestEntryPoints: manifestEntryPoints(pkg),
@@ -1831,7 +1955,7 @@ export async function readCommitHistory(cwd) {
     ['log', `-${HISTORY_DEPTH}`, '--no-merges', '--format=%s%x1f%(trailers:key=Co-authored-by,valueonly)%x1e'],
     { cwd },
   );
-  if (!res.ok) return { count: 0, conventional: 0, scoped: 0, ticketed: 0, ticketKey: null, types: [], coAuthored: 0 };
+  if (!res.ok) return { count: 0, conventional: 0, scoped: 0, ticketed: 0, ticketKey: null, types: [], shapes: {}, coAuthored: 0 };
   const commits = res.stdout
     .split('\x1e')
     .map((record) => record.trim())
@@ -1846,6 +1970,10 @@ export async function readCommitHistory(cwd) {
   let conventional = 0;
   let scoped = 0;
   let ticketed = 0;
+  // Each subject's exact form. `chore(SCRUM-40): x` and `chore: SCRUM-40: x` both match the
+  // pattern, but a count that lumped them together claimed a convention more commits
+  // followed than did.
+  const shapes = {};
   for (const { subject } of commits) {
     const match = CONVENTIONAL_SUBJECT.exec(subject);
     if (!match) continue;
@@ -1856,6 +1984,8 @@ export async function readCommitHistory(cwd) {
       ticketed += 1;
       keys.set(match[3], (keys.get(match[3]) ?? 0) + 1);
     }
+    const shape = `${match[2] ? 'type(scope)' : 'type'}: ${match[3] ? 'ticket' : ''}`;
+    shapes[shape] = (shapes[shape] ?? 0) + 1;
   }
   const byCount = (map) => [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name]) => name);
   const types = byCount(counts);
@@ -1867,6 +1997,7 @@ export async function readCommitHistory(cwd) {
     ticketed,
     ticketKey: byCount(keys)[0] ?? null,
     types,
+    shapes,
     coAuthored: commits.filter((commit) => commit.coAuthored).length,
   };
 }
