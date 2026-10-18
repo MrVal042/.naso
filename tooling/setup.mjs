@@ -91,6 +91,7 @@ import {
   renderConfig,
 } from './vendor.mjs';
 import { reviewPrompt } from './review.mjs';
+import { indexFileOf } from './decisions.mjs';
 
 /** Greedy word wrap, for the explanatory paragraphs in the plan. */
 const wrap = (text, width = 74) => {
@@ -954,13 +955,17 @@ function benefits({ verification, track, done, state }) {
   } else {
     lines.push(`No pre-commit gate. Run it by hand: node ${NASO_DIR}/tooling/validate.mjs --staged`);
   }
+  // Every block carries the Decisions section, so this holds whatever else the run skipped.
+  lines.push(
+    `Decisions survive the session: AGENTS.md tells every agent to read ${indexFileOf(state?.facts?.decisions?.dir ?? 'docs/decisions')} before proposing an approach, ` +
+      `and to record what you decide with \`${nasoCommand()} decide\`.`,
+  );
   if (done.dev) lines.push('naso-dev is in devDependencies: teammates get this version from an ordinary install, and production installs leave it out.');
   lines.push(
     track
       ? `Commit AGENTS.md and ${NASO_DIR}/ and every teammate gets the same briefing and the same gate (the hook itself is per machine).`
       : `Nothing reached git history: AGENTS.md and ${NASO_DIR}/ stay on this machine until you choose --track.`,
   );
-  void state;
   return lines;
 }
 

@@ -259,3 +259,12 @@ test('review says when ESLint will lint the vendored toolset', async () => {
     assert.match((await naso(dir, ['review'])).stdout, /eslint\.config\.mjs does not ignore \.naso\//);
   });
 });
+
+test('setup says where decisions are kept among what the repository now has', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    const res = await bare(['--yes']);
+    const now = res.stdout.slice(res.stdout.indexOf('## What you have now'), res.stdout.indexOf('## Last step'));
+    assert.match(now, /Decisions survive the session: AGENTS\.md tells every agent to read docs\/decisions\/README\.md/);
+  });
+});
