@@ -74,7 +74,7 @@ test('a pnpm repository is never told to run npx, before or after naso-dev is re
     assert.equal(plain.code, 0, plain.stdout + plain.stderr);
     assert.doesNotMatch(plain.stdout, /npx naso-dev/);
     assert.match(plain.stdout, /^ {2}pnpm dlx naso-dev doctor/m);
-    assert.match(plain.stdout, /Run `pnpm dlx naso-dev briefing` and fix anything it reports/);
+    assert.match(plain.stdout, /Run `pnpm dlx naso-dev briefing` and fix everything it reports/);
     assert.match(await read(dir, '.git/hooks/pre-commit'), /Run: pnpm dlx naso-dev refresh/);
 
     const recorded = await exec(process.execPath, [BIN, dir, '--yes', '--force', '--save-dev'], dir, env);

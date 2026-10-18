@@ -14,7 +14,10 @@ import {
   escapeRegExp,
   section,
   nasoCommand,
+  toolVersion,
+  compareVersions,
 } from './lib.mjs';
+import { DECISIONS_LEAD, decisionsLead, readDecisions } from './decisions.mjs';
 import {
   AGENTS_FILE,
   NASO_END,
@@ -151,7 +154,38 @@ export async function wrongClaims(cwd, claimed) {
       out.push(`Modules: says ${saysEsm ? 'ES modules' : 'CommonJS'}, but ${modules.why}, so it is ${modules.kind}`);
     }
   }
+  // The line saying where the decisions list is goes stale with the first `decide`; the
+  // commands rewrite it, but a record added by hand or on another branch leaves it behind.
+  const lead = claimed.split('\n').find((line) => line.startsWith(DECISIONS_LEAD)) ?? null;
+  if (lead !== null) {
+    const expected = decisionsLead(await readDecisions(cwd));
+    if (lead !== expected) out.push(`Decisions: the line saying where the list is is out of date. Run: ${nasoCommand()} decisions sync`);
+  }
   return out;
+}
+
+/**
+ * Which NASO wrote the block, which one the hook runs, and which one is running now.
+ *
+ * Notes, not problems: a version gap is fixed by `refresh` or an upgrade, not by editing the
+ * block, and a check that failed on it would block every commit after a teammate upgraded.
+ */
+export async function versionNotes(cwd, claimed) {
+  const stamped = claimed.match(/^<!--\s*version:\s*([^\s]+)\s*-->$/m)?.[1] ?? null;
+  const vendored = (await readFile(path.join(cwd, '.naso', 'tooling', 'VERSION'), 'utf8').catch(() => '')).trim() || null;
+  const running = await toolVersion();
+  const notes = [];
+  if (vendored && vendored !== running) {
+    notes.push(`.naso/tooling/ is ${vendored} and this command is ${running}. Run \`${nasoCommand()} refresh\` with the version the team uses.`);
+  }
+  if (stamped && vendored && stamped !== vendored) {
+    notes.push(
+      compareVersions(stamped, vendored) < 0
+        ? `The block is stamped ${stamped} and .naso/tooling/ is ${vendored}. \`${nasoCommand()} briefing refresh\` moves the stamp and nothing else.`
+        : `The block is stamped ${stamped}, newer than .naso/tooling/ (${vendored}). \`${nasoCommand()} refresh\` from ${stamped} or later updates the toolset.`,
+    );
+  }
+  return notes;
 }
 
 /** The paths among these that .gitignore covers, whether or not they exist yet. */
@@ -197,6 +231,7 @@ export async function checkBriefing(cwd) {
 
   const uncovered = findUncovered(entries, claimed);
   const wrong = await wrongClaims(cwd, claimed);
+  const notes = await versionNotes(cwd, briefing);
 
   const markerCounts = MARKERS.map((marker) => ({
     marker,
@@ -222,6 +257,7 @@ export async function checkBriefing(cwd) {
     missing,
     uncovered,
     unfilled,
+    notes,
     problems,
   };
 }
@@ -258,6 +294,12 @@ export function printCheck(result) {
   if (result.unfilled.length > 0) {
     section(`UNFILLED (${result.unfilled.length}) — placeholder markers still present`);
     for (const item of result.unfilled) console.log(`- ${item.marker}: ${item.count}`);
+    console.log('');
+  }
+
+  if (result.notes?.length > 0) {
+    section(`VERSIONS (${result.notes.length}) — not a problem with the block`);
+    for (const item of result.notes) console.log(`- ${item}`);
     console.log('');
   }
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`naso-dev review` prints the agent prompt at any time, built from the repository as it is now.** Setup ends with the same prompt. It names the rule files this repository actually has (contributing guides, CODEOWNERS, review templates, CI, hooks, lint and format config, docs), never a `.env` file. It says whether the block was reviewed before, and on a second review asks the agent to check what changed since then instead of starting over. It lists what `briefing` and `decisions audit` report today, and any version gap.
+- **The prompt asks for a full audit, not only additions.** For each line of the block the agent keeps, corrects or removes it. It removes lines that are wrong, repeat a linked file, or would not change what an agent does. It cites file and line numbers, quotes whole sentences, and leaves the git index exactly as it found it. It also checks NASO's other files against the repository's own check-only format and lint commands and says how to fix each failure. The report ends with "What NASO gives this repository": counted, specific, and only what the run verified.
+- **AGENTS.md tells every session to keep decisions and the block current.** Before asking the person a question, an agent checks the decisions list, including the options turned down. It records a decision made in the session before the session ends. A new "When This Block Is Wrong" section tells it to correct a line the repository contradicts, citing the file, instead of working around it.
+- **`decide --considered "<option> — <why not>"`**, repeatable, writes a "Considered and not chosen" section, so a later session does not offer a turned-down option again.
+- **`briefing` notes a version gap** between the block's stamp, `.naso/tooling/` and the running command, with the command that closes it. It is a note, not a failure, so a teammate's upgrade never blocks a commit.
+
+### Fixed
+
+- **`decide --why "<reason>"` records the reason.** `--why` was parsed as setup's switch, so the reason became the target directory: NASO created a folder named after the sentence, with a second decisions tree inside it, and numbered the record 0001 again. `decide` now also refuses a target directory that does not exist.
+- **`decide` says it once.** A title that is already recorded is refused, naming the record, unless the new record supersedes it.
+- **"No decision is recorded yet" no longer outlives the first decision.** `decide` and `decisions` rewrite that one line in AGENTS.md when the list appears, and the change does not count as an edit to the block. `briefing` reports the line as WRONG when a record was added by hand. The line no longer counts as describing `docs/`, so the first decision still earns the area its own line.
+
 ## 1.4.0
 
 ### Fixed

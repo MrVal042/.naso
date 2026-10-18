@@ -29,7 +29,7 @@ import {
   roleFor,
   plural,
 } from './scan.mjs';
-import { indexFileOf } from './decisions.mjs';
+import { decisionsLead } from './decisions.mjs';
 
 // ---------------------------------------------------------------------------
 // Rendering
@@ -852,22 +852,15 @@ function shapeText(key, ticketKey) {
  */
 function renderDecisions(facts) {
   const decisions = facts.decisions ?? { dir: 'docs/decisions', exists: false, records: [] };
-  const index = indexFileOf(decisions.dir);
-  // No path for a list that is not there yet: a backticked path is a claim it exists, and
-  // any mention of docs/ would count as describing a docs/ area the checker should report.
-  const lead = 'Decisions the team already made are recorded one per file, with who decided and where.';
-  const where = decisions.indexExists
-    ? `${lead} The list is \`${index}\`: one line per decision, linked to its record.`
-    : decisions.records.length > 0
-      ? `${lead} The list will be ${index}, one line per decision linked to its record, once \`${nasoCommand()} decisions sync\` writes it.`
-      : `${lead} No decision is recorded yet; the first one creates the list beside it.`;
+  const where = decisionsLead({ dir: decisions.dir, indexExists: Boolean(decisions.indexExists), records: decisions.records ?? [] });
   return [
     '## Decisions',
     '',
     where,
     '',
     '- Before proposing an approach, read the accepted decisions in it that apply to the paths you are changing, and follow them. Do not reopen one unless the person asks to.',
-    `- When the person decides something in a session, record it so the next session, account or agent starts from it: \`${nasoCommand()} decide --title "…" --source "…" --decision "…"\`. It is written as proposed.`,
+    '- Before asking the person a question, check the list: an accepted decision may already answer it, and a rejected or superseded one says why an option was turned down. Do not offer a turned-down option again without saying it was.',
+    `- When the person decides something in a session, record it before the session ends, so the next session, account or agent starts from it: \`${nasoCommand()} decide --title "…" --source "…" --decision "…" --why "…"\`, with one \`--considered "<option> — <why not>"\` per option turned down. It is written as proposed, and \`decide\` refuses a title that is already recorded.`,
     '- Never accept, reject or supersede a decision yourself; ask the person. A proposed decision is not binding.',
     `- \`${nasoCommand()} decisions audit\` lists records that no longer hold. It changes nothing.`,
   ].join('\n');
@@ -1123,6 +1116,18 @@ export async function renderBriefing(facts, { version, now }) {
     ...(facts.precedence ?? []).map((entry) => `- \`${entry.file}\` line ${entry.line}: “${entry.text}”`),
   ];
   parts.push(`## Which Document Wins\n\n${wins.join('\n')}`);
+
+  // The block is only as good as its last correction, and the agent reading it is the first
+  // to find a line the repository contradicts. Working around a wrong line leaves it for the
+  // next session to trip on; correcting it, with a cited file, ends it.
+  parts.push(
+    [
+      '## When This Block Is Wrong',
+      '',
+      '- If a path, count, command or rule here is contradicted by the repository, do not work around it silently. Correct the line between the markers, name the file that proves the correction, and say so in your summary to the person.',
+      `- \`${nasoCommand()} review\` prints the full review: what to read, what to check, and what NASO can and cannot derive here. \`${nasoCommand()} briefing\` checks every path claim; run it after any edit to this block.`,
+    ].join('\n'),
+  );
 
   parts.push(renderDecisions(facts));
 

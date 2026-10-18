@@ -81,7 +81,7 @@ test('AGENTS.md carries the rules and one link; the list lives in the decisions 
     assert.match(section, /`npx naso-dev decide --title/);
     assert.match(section, /Never accept, reject or supersede a decision yourself/);
     assert.doesNotMatch(section, /0001|Use REST|naso:decisions/, 'no decision is listed in AGENTS.md');
-    assert.ok(section.trim().split('\n').length <= 8, 'the section stays the same size however many decisions there are');
+    assert.ok(section.trim().split('\n').length <= 9, 'the section stays the same size however many decisions there are');
     assert.equal((await script('briefing')).code, 0);
 
     const index = await read(dir, 'docs/decisions/README.md');

@@ -90,6 +90,7 @@ import {
   writeConfig,
   renderConfig,
 } from './vendor.mjs';
+import { reviewPrompt } from './review.mjs';
 
 /** Greedy word wrap, for the explanatory paragraphs in the plan. */
 const wrap = (text, width = 74) => {
@@ -106,51 +107,6 @@ const wrap = (text, width = 74) => {
   if (line) lines.push(line);
   return lines.join('\n      ');
 };
-
-/**
- * The prompt to hand to the user's own coding agent after setup.
- *
- * It asks for a correction, not a free rewrite. NASO derives the block from file lists,
- * manifests and history; the rules people wrote down (CONTRIBUTING, CODEOWNERS, review
- * templates, CI, docs) are where it is most often incomplete, and an agent with the whole
- * repository open is the cheapest way to close that gap. Three limits keep the result
- * trustworthy: every change cites a file it read, edits stay between the markers, and the
- * checker runs before anything is reported — an agent "improving" a briefing without
- * evidence produces exactly the confident fiction NASO exists to replace.
- */
-function agentPrompt(cwd, here = ` ${cwd}`) {
-  const where = here ? ` (${cwd})` : '';
-  return `Copy everything between the lines below and paste it into your coding agent.
-
---------------------------------------------------------------
-Read AGENTS.md in this repository${where}. NASO generated the part between
-<!-- naso:start --> and <!-- naso:end --> from file lists, manifests and git
-history. Its aim: every path is real, every count is a count, and every rule
-is this repository's own. Your job is to make that true here.
-
-1. Read the rules this repository already wrote down: README, CONTRIBUTING,
-   CODEOWNERS, pull or merge request templates, CI configuration, commit hooks
-   and lint config, and any docs on architecture, folder structure or decisions.
-2. Check every claim in the NASO block against those files and the code: paths,
-   counts, commands, the commit format, the gate, and what the hook enforces.
-3. Correct what is wrong and add what is missing that an agent would otherwise
-   get wrong: framework rules, generated files that must not be edited by hand,
-   import boundaries, protected paths, which commands only check and which
-   rewrite files, and which document wins when two disagree. Prefer a link to
-   the file that states a rule over copying the rule.
-   Decisions the team already made but never recorded (in docs, CONTRIBUTING,
-   the README): propose each one with \`${nasoCommand()} decide\`, citing the
-   file as --source. Never accept one yourself.
-4. Edit only between <!-- naso:start --> and <!-- naso:end -->. Every line you
-   add or change must name the file it came from. If you cannot cite it, leave
-   it out. Never open or print the contents of .env files, keys or other
-   credentials; name them by path only.
-5. Run \`${nasoCommand()} briefing${here}\` and fix anything it reports.
-6. Do not commit. Show me the diff of AGENTS.md, and for each change say what
-   was wrong or missing and which file proves it. Then list what you found
-   that NASO should derive on its own, so it can be reported upstream.
---------------------------------------------------------------`;
-}
 
 /**
  * Recording naso-dev as a dev dependency, with the repository's own package manager.
@@ -901,6 +857,7 @@ export async function install(cwd, { track, noHook, force, discardEdits = false,
   const here = (await real(process.cwd())) === (await real(cwd)) ? '' : ` ${cwd}`;
   const commands = [
     [`${nasoCommand()} briefing${here}`, 're-check the briefing against the code'],
+    [`${nasoCommand()} review${here}`, 'this prompt again, with the state at that time'],
     [`${nasoCommand()} guide${here}`, 'the guide for one area'],
     [`${nasoCommand()} doctor${here}`, 'confirm the install end to end'],
     [`${nasoCommand()} refresh${here}`, 'after upgrading: re-copy the toolset and re-stamp'],
@@ -915,7 +872,7 @@ export async function install(cwd, { track, noHook, force, discardEdits = false,
   // cannot derive, and a person copying it should not have to scroll back to find it.
   console.log('## Last step: hand this to your coding agent');
   console.log('');
-  console.log(agentPrompt(cwd, here));
+  console.log(await reviewPrompt(cwd, { here }));
 
   return verification.ok;
 }

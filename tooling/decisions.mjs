@@ -22,7 +22,7 @@
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { parseArgs, pathExists, run, nasoCommand, isMainModule } from './lib.mjs';
+import { parseArgs, pathExists, run, nasoCommand, isMainModule, DECISIONS_LEAD } from './lib.mjs';
 import { withLock } from './lock.mjs';
 
 export const DECISIONS_START = '<!-- naso:decisions:start -->';
@@ -145,6 +145,49 @@ export async function readDecisions(cwd) {
 /** The index file for a decisions folder. */
 export const indexFileOf = (dir) => `${dir}/README.md`;
 
+/**
+ * The opening line of the Decisions section in AGENTS.md, which says where the list is.
+ *
+ * It depends on whether the list exists yet, so it goes stale the moment the first decision
+ * is recorded. `decide` and `decisions` rewrite it, and only it; the block digest leaves it
+ * out, so that rewrite is not counted as a person's edit. No path is named for a list that
+ * is not there: a backticked path is a claim that it exists.
+ */
+export { DECISIONS_LEAD };
+
+export function decisionsLead({ dir, indexExists, records }) {
+  const index = indexFileOf(dir);
+  if (indexExists) return `${DECISIONS_LEAD} The list is \`${index}\`: one line per decision, linked to its record.`;
+  if (records.length > 0) {
+    return `${DECISIONS_LEAD} The list will be ${index}, one line per decision linked to its record, once \`${nasoCommand()} decisions sync\` writes it.`;
+  }
+  return `${DECISIONS_LEAD} No decision is recorded yet; the first one creates the list beside it.`;
+}
+
+// The same markers scan.mjs exports; spelled here because scan.mjs imports this module.
+const BLOCK_START = '<!-- naso:start -->';
+const BLOCK_END = '<!-- naso:end -->';
+
+/** The lead line inside an AGENTS.md block, or null when there is no block or no such line. */
+export function leadLineIn(text) {
+  const start = text.indexOf(BLOCK_START);
+  const end = text.indexOf(BLOCK_END);
+  if (start === -1 || end < start) return null;
+  return text.slice(start, end).split('\n').find((line) => line.startsWith(DECISIONS_LEAD)) ?? null;
+}
+
+/** Bring the lead line in AGENTS.md up to date with the decisions on disk. True when it changed. */
+export async function refreshDecisionsLead(cwd) {
+  const file = path.join(cwd, 'AGENTS.md');
+  const text = await readFile(file, 'utf8').catch(() => null);
+  const line = text === null ? null : leadLineIn(text);
+  if (line === null) return false;
+  const next = decisionsLead(await readDecisions(cwd));
+  if (next === line) return false;
+  await writeFile(file, text.replace(line, next), 'utf8');
+  return true;
+}
+
 const indexLine = (record) =>
   `- [${record.id} ${record.title}](${path.basename(record.file)})` +
   (record.applies.length > 0 ? ` — applies to ${record.applies.join(', ')}` : '') +
@@ -230,7 +273,7 @@ const slugify = (title) =>
     .replace(/-+$/, '') || 'decision';
 
 /** Write a new record. Proposed unless a person passes --accept. */
-export async function createDecision(cwd, { title, decision, why = null, source, by = null, applies = [], supersedes = [], status = 'proposed', date = today() }) {
+export async function createDecision(cwd, { title, decision, why = null, considered = [], source, by = null, applies = [], supersedes = [], status = 'proposed', date = today() }) {
   const { dir, records } = await readDecisions(cwd);
   const elsewhere = await numbersOnOtherBranches(cwd, dir);
   const highest = Math.max(0, ...records.map((record) => Number(record.id) || 0), ...elsewhere.keys());
@@ -244,7 +287,9 @@ export async function createDecision(cwd, { title, decision, why = null, source,
     ...(applies.length > 0 ? [`- Applies to: ${applies.join(', ')}`] : []),
     ...(supersedes.length > 0 ? [`- Supersedes: ${supersedes.map(pad).join(', ')}`] : []),
   ];
-  const text = `# ${next}. ${title}\n\n${header.join('\n')}\n\n## Decision\n\n${decision}\n\n## Why\n\n${why ?? 'Not recorded.'}\n`;
+  // The options turned down are what stop the next session proposing them again.
+  const rejected = considered.length > 0 ? `\n## Considered and not chosen\n\n${considered.map((item) => `- ${item}`).join('\n')}\n` : '';
+  const text = `# ${next}. ${title}\n\n${header.join('\n')}\n\n## Decision\n\n${decision}\n\n## Why\n\n${why ?? 'Not recorded.'}\n${rejected}`;
   await mkdir(path.join(cwd, dir), { recursive: true });
   await writeFile(path.join(cwd, file), text, 'utf8');
   const local = new Set(records.map((record) => Number(record.id) || 0));
@@ -393,20 +438,22 @@ async function reportSync(cwd) {
   if (outcome === 'updated') console.log(`Updated ${file}.`);
   if (outcome === 'appended') console.log(`Added the list of decisions at the end of ${file}, between NASO markers.`);
   if (outcome === 'locked') console.log(`${file} is locked by another writer; run ${nasoCommand()} decisions sync after.`);
+  if (outcome !== 'locked' && (await refreshDecisionsLead(cwd))) console.log(`Updated the line in AGENTS.md that says where the list is.`);
 }
 
 /** `naso-dev decide`: record a decision, proposed unless a person passes --accept. */
 export async function decideMain(argv = process.argv.slice(2)) {
-  const { flags, values, positional } = parseArgs(argv);
+  const { flags, values, lists, positional } = parseArgs(argv, { valued: ['why'] });
   const cwd = path.resolve(positional[0] ?? process.cwd());
   if (flags.has('help')) {
     console.log(`Record a decision so every later session, account and agent starts from it.
 
   ${nasoCommand()} decide --title "<what was decided>" --source "<where>" --decision "<the decision>"
-      [--why "<reason>"] [--by "<who decided>"] [--applies src/api/,docs/api.md]
-      [--supersedes 0003] [--accept]
+      [--why "<reason>"] [--considered "<option> — <why not>"]... [--by "<who decided>"]
+      [--applies src/api/,docs/api.md] [--supersedes 0003] [--accept]
 
 --source is required: the meeting, ticket, email or doc it came from, by reference.
+--considered repeats, one per option the team turned down, so no later session offers it again.
 The record is written as proposed. --accept is for the person who made the decision;
 an agent never passes it.`);
     return;
@@ -424,11 +471,28 @@ an agent never passes it.`);
     process.exitCode = 2;
     return;
   }
+  // A stray word read as the target once created a folder named after a sentence, with a
+  // second decisions tree inside it. The target is a repository that is already there.
+  if (!(await pathExists(cwd))) {
+    console.error(`naso-dev decide: target directory does not exist: ${cwd}. Quote every value, and pass the repository as the only bare argument.`);
+    process.exitCode = 2;
+    return;
+  }
+  const same = (await readDecisions(cwd)).records.find((record) => record.title.trim().toLowerCase() === title.trim().toLowerCase());
+  if (same && !listOf(values.get('supersedes')).map(pad).includes(same.id)) {
+    console.error(
+      `naso-dev decide: ${same.file} already records "${same.title}" (${same.status ?? 'no status'}). ` +
+        `Say it once: change that record, or record the replacement with --supersedes ${same.id}.`,
+    );
+    process.exitCode = 2;
+    return;
+  }
   const status = flags.has('accept') ? 'accepted' : 'proposed';
   const created = await createDecision(cwd, {
     title,
     decision,
     why: values.get('why') ?? null,
+    considered: lists.get('considered') ?? [],
     source,
     by: values.get('by') ?? null,
     applies: listOf(values.get('applies')),

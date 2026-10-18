@@ -11,6 +11,7 @@ const TOOL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const COMMANDS = {
   briefing: { module: 'briefing.mjs', blurb: 'Regenerate or re-verify the AGENTS.md briefing' },
   refresh: { module: 'refresh.mjs', blurb: 'Re-vendor the tooling, move the version stamp, reinstall the hook' },
+  review: { module: 'review.mjs', blurb: 'Print the prompt that has your coding agent review and correct NASO here' },
   guide: { module: 'guide.mjs', blurb: 'Guide for one area, or --tour for a read-through of the whole briefing' },
   validate: { module: 'validate.mjs', blurb: 'Pre-commit gate: secrets, scope, format, lint, briefing' },
   doctor: { module: 'doctor.mjs', blurb: 'Diagnose the environment and the install' },

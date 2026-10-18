@@ -479,8 +479,12 @@ const SHORT_FLAGS = new Map([
  * holds switches; `values` holds the last value seen for each key, so `--scope src,docs`
  * works without a bespoke parser; `lists` holds every value seen for each key, in order,
  * for options that repeat (`--exclude a --exclude b`).
+ *
+ * `valued` names options that take a value in this command even though another command
+ * uses them as a switch: setup's `--why` prints the rationale, decide's `--why "…"` is the
+ * reason. Read as a switch there, the reason became the target directory.
  */
-export function parseArgs(argv) {
+export function parseArgs(argv, { valued = [] } = {}) {
   const flags = new Set();
   const values = new Map();
   const lists = new Map();
@@ -507,7 +511,7 @@ export function parseArgs(argv) {
       setValue(body.slice(0, eq), body.slice(eq + 1));
       continue;
     }
-    if (BOOLEAN_FLAGS.has(body)) {
+    if (BOOLEAN_FLAGS.has(body) && !valued.includes(body)) {
       flags.add(body);
       continue;
     }
@@ -594,8 +598,17 @@ export function isNoisyDir(name) {
 export function coversUnit(briefingText, unit) {
   if (!briefingText || !unit) return false;
   const needle = escapeRegExp(unit);
-  return new RegExp(`(^|[^A-Za-z0-9_./-])${needle}`, 'i').test(briefingText);
+  // The line saying where the decisions list is names a path in docs/ without describing
+  // docs/; counting it hid the area line the first `decide` should have earned.
+  const text = String(briefingText)
+    .split('\n')
+    .filter((line) => !line.startsWith(DECISIONS_LEAD))
+    .join('\n');
+  return new RegExp(`(^|[^A-Za-z0-9_./-])${needle}`, 'i').test(text);
 }
+
+/** The opening words of the Decisions section's lead line in AGENTS.md; see decisions.mjs. */
+export const DECISIONS_LEAD = 'Decisions the team already made are recorded one per file, with who decided and where.';
 
 /** Escape a string for literal use inside a RegExp. */
 export function escapeRegExp(value) {

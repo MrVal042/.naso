@@ -146,7 +146,9 @@ Briefing is consistent with the repository: 38 path claim(s) verified, 4 top-lev
 ## Last step: hand this to your coding agent
 ```
 
-It ends with a prompt to paste into your coding agent. The agent checks every claim in the NASO block against the rules your repository already wrote down, corrects it between the markers, cites a file for every change, and gives you a diff to review without committing.
+It ends with a prompt to paste into your coding agent. The agent checks every claim in the NASO block against the rules your repository already wrote down, corrects or removes what is wrong, adds what an agent would otherwise get wrong, cites a file and line for every change, proposes the decisions your docs already made, and gives you a diff to review without committing. Its report ends with what NASO gives your repository, counted.
+
+`npx naso-dev review` prints that prompt again whenever you want it, built from the repository as it is then. It names the rule files your repository has, what `briefing` and `decisions audit` report today, and the decisions waiting for a person. On a second review it asks the agent to check what changed since the first one instead of starting over.
 
 ### Adding it to a project
 
@@ -208,6 +210,7 @@ Frameworks it names: Expo, React Native, Next.js, Nuxt, SvelteKit, Remix, Astro,
 These work the same in any repository, and say nothing where the file is absent:
 
 - **Which Document Wins** comes first. A file people wrote wins over the NASO block, and every line in `CLAUDE.md`, `AGENTS.md` (outside the block), `CONTRIBUTING.md` or `README.md` that says which source wins is quoted with its file and line.
+- **When This Block Is Wrong** follows: an agent that finds a line the repository contradicts corrects it between the markers, citing the file, instead of working around it, and `npx naso-dev review` gives it the full review.
 - **Owners** lists CODEOWNERS paths with their reviewers, and names plain paths that match no tracked file yet.
 - **Source Map** lists every folder under the source root with its file count and the purpose the repository's own docs give it, cited. A folder no doc describes says so. Folders sharing a name at two depths (`src/auth/` and `src/features/auth/`) and folders a doc names that no longer exist are flagged.
 - **Branch names** follow the template the contributing guide writes down (`<type>/<KEY>-<n>-<slug>`), and the hook warns on any other branch. With no template, the hook only checks for a `prefix/name` shape.
@@ -220,6 +223,8 @@ A decision made in a meeting, a ticket, an email or a chat is lost to the next A
 ```bash
 npx naso-dev decide --title "Use REST for the customer API" \
   --decision "The app calls only REST endpoints of customer-api." \
+  --why "One contract for web and mobile" \
+  --considered "GraphQL — no team owns a schema" \
   --source "PO email, 2026-10-14" --by "product owner" --applies src/api/
 npx naso-dev decisions                 # list
 npx naso-dev decisions accept 0004     # a person accepts it
@@ -230,6 +235,8 @@ npx naso-dev decisions audit           # what no longer holds; changes nothing
 - **Where:** the folder the repository already uses for decision records (`docs/adr/`, `docs/decisions/`, an `.adr-dir`…), else `docs/decisions/`. Nygard and MADR records are read as they are.
 - **Agents propose, people accept.** `decide` writes `proposed`; only `accept` makes a decision binding, and the briefing tells agents never to run it themselves.
 - **Every record has a source**, by reference: "PO email, 2026-10-14", not the email.
+- **Say it once.** `decide` refuses a title that is already recorded unless the new record supersedes it, and `--considered` keeps the options turned down, so no later session offers one again.
+- **Every session uses them.** AGENTS.md tells an agent to check the list before asking the person a question, and to record a decision made in the session before the session ends.
 - **Nothing is deleted.** The audit reports contradictions, missing sources, scopes that are gone, unsettled proposals and passed review dates; a person supersedes or rejects.
 - **One list, one link.** The list sits between `<!-- naso:decisions:start -->` and `<!-- naso:decisions:end -->` in the decisions folder's `README.md`, accepted first, then proposed, then rejected or superseded; anything the team writes around the markers is kept. These commands and the pre-commit hook refresh it, and the hook stages it with the records. AGENTS.md links to it and tells every agent to read it before proposing an approach, so Claude Code, Codex, Cursor or Copilot start from the same decisions in a new session, on a new account or on another machine.
 
@@ -255,6 +262,7 @@ The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplev
 | `npx naso-dev [target] [options]`                                   | The setup flow: read, plan, ask, write. No TTY and no `--yes` prints the plan, writes nothing, exits 2.           |
 | `npx naso-dev briefing [target] [check\|create\|refresh]`           | Verify `AGENTS.md` against disk, write the NASO block, or move the version stamp only.                            |
 | `npx naso-dev refresh [target]`                                     | Re-copy the toolset, re-stamp the briefing, reinstall the hook. Never rewrites briefing prose or `.naso/config.json`. |
+| `npx naso-dev review [target]`                                     | Print the prompt for your coding agent, built from this repository as it is now: its rule files, the check, decisions waiting for a person, and whether the block was reviewed before. |
 | `npx naso-dev guide <area-or-prefix> [target]`                      | The guide for one area: its paths, its checks, its boundary rules, and a ready-to-paste `NASO_SCOPE`.            |
 | `npx naso-dev guide --list [target]`                                | The areas that exist, with their file counts. Unknown areas are an error, not an empty screen.                   |
 | `npx naso-dev guide --tour [target]`                                | The read-through: every section of the briefing in reading order, plus the consistency check.                    |
