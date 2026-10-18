@@ -1101,3 +1101,46 @@ async function gitVersionOrUnknown() {
   return res.ok ? res.stdout.trim() : 'not found';
 }
 
+const RENOVATE_FILES = ['renovate.json', 'renovate.json5', '.renovaterc', '.renovaterc.json', '.github/renovate.json', '.github/renovate.json5', '.gitlab/renovate.json'];
+const RENOVATE_PINS = /rangeStrategy["']?\s*:\s*["']pin["']|:pin(?:AllExceptPeerDependencies|Dependencies|DevDependencies|Versions)\b|config:js-app|":js-app"/;
+
+/**
+ * Whether this repository pins exact versions, so naso-dev is recorded as `1.5.0`, not `^1.5.0`.
+ *
+ * Read from what the repository says: `save-exact` in .npmrc, a Renovate config that pins,
+ * or a package.json whose every dependency is already an exact version. A caret range in a
+ * repository that pins is a line its own review would reject.
+ */
+export async function pinsExactVersions(cwd, pkg) {
+  const npmrc = await readFile(path.join(cwd, '.npmrc'), 'utf8').catch(() => '');
+  if (/^\s*save-exact\s*=\s*true\s*$/m.test(npmrc)) return true;
+  for (const name of RENOVATE_FILES) {
+    if (RENOVATE_PINS.test(await readFile(path.join(cwd, name), 'utf8').catch(() => ''))) return true;
+  }
+  if (pkg?.renovate && RENOVATE_PINS.test(JSON.stringify(pkg.renovate))) return true;
+  const specs = Object.values({ ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) }).filter((spec) => typeof spec === 'string');
+  return specs.length >= 3 && specs.every((spec) => /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(spec));
+}
+
+/** The command that records naso-dev at exactly `version` as a dev dependency, for this package manager. */
+export function exactDevInstallText(pm, version) {
+  const spec = `naso-dev@${version}`;
+  return {
+    pnpm: `pnpm add --save-dev --save-exact ${spec}`,
+    yarn: `yarn add --dev --exact ${spec}`,
+    bun: `bun add --dev --exact ${spec}`,
+  }[pm] ?? `npm install --save-dev --save-exact ${spec}`;
+}
+
+/**
+ * The naso-dev version package.json and its npm lockfile record: `{ spec, installed }`, or
+ * null when package.json does not list it. `installed` is null without a readable lockfile.
+ */
+export async function recordedNasoVersion(cwd) {
+  const pkg = await readJSONFile(path.join(cwd, 'package.json'));
+  const spec = pkg?.devDependencies?.['naso-dev'] ?? pkg?.dependencies?.['naso-dev'] ?? null;
+  if (!spec) return null;
+  const lock = await readJSONFile(path.join(cwd, 'package-lock.json'));
+  const installed = lock?.packages?.['node_modules/naso-dev']?.version ?? null;
+  return { pkg, spec, installed };
+}

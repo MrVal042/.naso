@@ -66,6 +66,11 @@ const RULE_SOURCES = [
     match: (f) =>
       /^(?:package\.json|pyproject\.toml|go\.mod|Cargo\.toml|Gemfile|pom\.xml|build\.gradle(?:\.kts)?|composer\.json|pubspec\.yaml|Makefile|Dockerfile[\w.-]*|\.dockerignore|docker-compose[\w.-]*\.ya?ml|compose\.ya?ml|\.gitignore|\.gitattributes|nest-cli\.json|app\.config\.\w+|app\.json|turbo\.json|nx\.json|pnpm-workspace\.yaml)$/.test(f),
   },
+  {
+    kind: 'Build, test and dependency tool config',
+    match: (f) =>
+      /^(?:renovate\.json5?|\.renovaterc(?:\.json)?|\.github\/renovate\.json5?|\.github\/dependabot\.ya?ml|\.npmrc|\.nvmrc|\.node-version|\.tool-versions|(?:metro|babel|jest|vitest|vite|next|webpack|rollup|tsup|playwright|cypress)\.config\.\w+|eas\.json)$/.test(f),
+  },
   { kind: 'Docs on architecture, structure and decisions', match: (f) => /^(?:docs?|adr|architecture)\/.+\.(?:md|mdx|adoc|rst)$/i.test(f) },
 ];
 
@@ -94,6 +99,41 @@ async function eslintWithoutNaso(cwd, files) {
   return /\.naso\b/.test(text) ? null : config;
 }
 
+/**
+ * Rows the repository's own docs mark decided, in a table with a Status column: candidates
+ * for `decide` that a reviewer otherwise finds by reading every doc. A row whose file and
+ * line a record already cites as its source is left out, so a second review lists only
+ * what is still unrecorded.
+ */
+export async function decidedRows(cwd, files, records) {
+  const docs = files.filter((file) => /\.mdx?$/i.test(file) && !/(?:^|\/)decisions?\/|(?:^|\/)adrs?\//i.test(file));
+  const cells = (line) => line.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.replace(/\*\*|`/g, '').trim());
+  const cited = (file, line) =>
+    records.some((record) => record.source?.includes(file) && new RegExp(`\\b${line}\\b`).test(record.source.slice(record.source.indexOf(file))));
+  const rows = [];
+  for (const file of docs) {
+    const lines = ((await readFile(path.join(cwd, file), 'utf8').catch(() => '')) ?? '').split('\n');
+    let status = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim().startsWith('|')) {
+        status = -1;
+        continue;
+      }
+      const row = cells(line);
+      if (status === -1) {
+        status = row.findIndex((cell) => /^status$/i.test(cell));
+        continue;
+      }
+      if (/^[\s:|-]+$/.test(line)) continue;
+      if (/^decided\b/i.test(row[status] ?? '') && !cited(file, i + 1)) {
+        rows.push({ file, line: i + 1, text: row.find((cell, index) => index !== status && cell) ?? '' });
+      }
+    }
+  }
+  return rows;
+}
+
 /** Everything the prompt adapts to, read once. */
 export async function reviewState(cwd) {
   const agentsPath = path.join(cwd, AGENTS_FILE);
@@ -117,6 +157,7 @@ export async function reviewState(cwd) {
     hook: /naso/i.test((await readFile(path.join(cwd, '.git', 'hooks', 'pre-commit'), 'utf8').catch(() => '')) ?? ''),
     version: await toolVersion(),
     eslintUnignored: await eslintWithoutNaso(cwd, files ?? []),
+    decided: await decidedRows(cwd, files ?? [], decisions.records),
   };
 }
 
@@ -172,6 +213,11 @@ function stateLines(state, cmd, here) {
       `- Decisions: ${by('accepted')} accepted, ${by('proposed')} proposed and waiting for a person, ` +
         `${records.length - by('accepted') - by('proposed')} rejected or superseded.`,
     );
+  }
+  if (state.decided.length > 0) {
+    lines.push(`- Rows this repository's docs mark Decided that no record cites yet (${state.decided.length}). Propose each that is a decision, citing the file and line:`);
+    for (const row of state.decided.slice(0, 40)) lines.push(`  - ${row.file} line ${row.line}: ${row.text}`);
+    if (state.decided.length > 40) lines.push(`  - and ${state.decided.length - 40} more`);
   }
   if (state.findings.length > 0) {
     lines.push(`- \`${cmd} decisions audit\` reports ${count(state.findings.length, 'finding')}:`);

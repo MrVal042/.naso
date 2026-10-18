@@ -16,6 +16,10 @@ import {
   nasoCommand,
   toolVersion,
   compareVersions,
+  recordedNasoVersion,
+  pinsExactVersions,
+  detectPackageManager,
+  exactDevInstallText,
 } from './lib.mjs';
 import { DECISIONS_LEAD, decisionsLead, readDecisions } from './decisions.mjs';
 import {
@@ -161,7 +165,50 @@ export async function wrongClaims(cwd, claimed) {
     const expected = decisionsLead(await readDecisions(cwd));
     if (!lead.startsWith(expected)) out.push(`Decisions: the line saying where the list is is out of date. Run: ${nasoCommand()} decisions sync`);
   }
+  out.push(...(await staleDecisionCounts(cwd, claimed)), ...(await citationsPastTheEnd(cwd, claimed)));
   return out;
+}
+
+/**
+ * A count of decisions written into the Decisions section that the list no longer bears out.
+ * Reviewers write "All 6 there are proposed"; the next `decide` makes it false, and nothing
+ * else would notice.
+ */
+async function staleDecisionCounts(cwd, claimed) {
+  const at = claimed.indexOf('## Decisions');
+  if (at === -1) return [];
+  const section = claimed.slice(at, claimed.indexOf('\n## ', at + 1) === -1 ? undefined : claimed.indexOf('\n## ', at + 1));
+  const { records } = await readDecisions(cwd);
+  const out = [];
+  for (const match of section.matchAll(/\b[Aa]ll (\d+)\b|\b(\d+) (?:decisions|records|decision records)\b/g)) {
+    const said = Number(match[1] ?? match[2]);
+    if (said !== records.length) {
+      out.push(`Decisions: says "${match[0]}", and the list has ${records.length}. Point to the list instead of counting it.`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Line citations past the end of the file they cite: `CONTRIBUTING.md` line 40 in a file
+ * of 20 lines. A citation inside the file may still point at the wrong sentence, but one
+ * past its end is certainly wrong, and it is the first thing a moved or rewritten file breaks.
+ */
+async function citationsPastTheEnd(cwd, claimed) {
+  const out = [];
+  const pattern = /`([^`\s]+)`[^`\n]{0,15}?\blines? (\d+)((?:\s*[–-]\s*\d+)?(?:(?:,\s*|,? and\s+)\d+(?:\s*[–-]\s*\d+)?)*)/g;
+  const lengths = new Map();
+  for (const match of stripFencedBlocks(claimed).matchAll(pattern)) {
+    const file = match[1];
+    const highest = Math.max(...`${match[2]}${match[3]}`.match(/\d+/g).map(Number));
+    if (!lengths.has(file)) {
+      const text = await readFile(path.join(cwd, file), 'utf8').catch(() => null);
+      lengths.set(file, text === null ? null : text.split('\n').length - (text.endsWith('\n') ? 1 : 0));
+    }
+    const length = lengths.get(file);
+    if (length !== null && highest > length) out.push(`\`${file}\` line ${highest}: the file has ${length} lines`);
+  }
+  return [...new Set(out)];
 }
 
 /**
@@ -184,6 +231,19 @@ export async function versionNotes(cwd, claimed) {
         ? `The block is stamped ${stamped} and .naso/tooling/ is ${vendored}. \`${nasoCommand()} briefing refresh\` moves the stamp and nothing else.`
         : `The block is stamped ${stamped}, newer than .naso/tooling/ (${vendored}). \`${nasoCommand()} refresh\` from ${stamped} or later updates the toolset.`,
     );
+  }
+  // package.json and the lockfile are what teammates install; the vendored copy is what the
+  // hook runs. Two versions there and `refresh` from node_modules would move the toolset back.
+  const recorded = await recordedNasoVersion(cwd);
+  if (recorded && vendored) {
+    const pm = (await detectPackageManager(cwd, recorded.pkg)).name;
+    const fix = exactDevInstallText(pm, vendored);
+    const installed = recorded.installed ?? recorded.spec.replace(/^[\^~=v]+/, '');
+    if (installed !== vendored) {
+      notes.push(`package.json records naso-dev ${recorded.spec}${recorded.installed ? ` (installed ${recorded.installed})` : ''} and .naso/tooling/ is ${vendored}. \`${fix}\` brings them together.`);
+    } else if (/^[\^~]/.test(recorded.spec) && (await pinsExactVersions(cwd, recorded.pkg))) {
+      notes.push(`package.json records naso-dev as ${recorded.spec}, and this repository pins exact versions. \`${fix}\` pins it.`);
+    }
   }
   return notes;
 }

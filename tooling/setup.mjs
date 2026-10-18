@@ -49,6 +49,7 @@ import {
   detectPackageManager,
   SUPPORT_EMAIL,
   nasoCommand,
+  pinsExactVersions,
 } from './lib.mjs';
 import {
   scanRepo,
@@ -137,26 +138,7 @@ export function devDependencyPlan(pkg, pm, version, { exact = false } = {}) {
 
 const commandText = ([bin, args]) => [bin, ...args].join(' ');
 
-const RENOVATE_FILES = ['renovate.json', 'renovate.json5', '.renovaterc', '.renovaterc.json', '.github/renovate.json', '.github/renovate.json5', '.gitlab/renovate.json'];
-const RENOVATE_PINS = /rangeStrategy["']?\s*:\s*["']pin["']|:pin(?:AllExceptPeerDependencies|Dependencies|DevDependencies|Versions)\b|config:js-app|":js-app"/;
-
-/**
- * Whether this repository pins exact versions, so naso-dev is recorded as `1.5.0`, not `^1.5.0`.
- *
- * Read from what the repository says: `save-exact` in .npmrc, a Renovate config that pins,
- * or a package.json whose every dependency is already an exact version. A caret range in a
- * repository that pins is a line its own review would reject.
- */
-export async function pinsExactVersions(cwd, pkg) {
-  const npmrc = await readFile(path.join(cwd, '.npmrc'), 'utf8').catch(() => '');
-  if (/^\s*save-exact\s*=\s*true\s*$/m.test(npmrc)) return true;
-  for (const name of RENOVATE_FILES) {
-    if (RENOVATE_PINS.test(await readFile(path.join(cwd, name), 'utf8').catch(() => ''))) return true;
-  }
-  if (pkg?.renovate && RENOVATE_PINS.test(JSON.stringify(pkg.renovate))) return true;
-  const specs = Object.values({ ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) }).filter((spec) => typeof spec === 'string');
-  return specs.length >= 3 && specs.every((spec) => /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(spec));
-}
+export { pinsExactVersions };
 
 /** The lines NASO appends to an ignore file: its own comment, so it never sits under the team's. */
 export function ignoreAppend(text) {
