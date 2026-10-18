@@ -85,9 +85,9 @@ test('AGENTS.md carries the rules and one link; the list lives in the decisions 
     assert.equal((await script('briefing')).code, 0);
 
     const index = await read(dir, 'docs/decisions/README.md');
-    assert.match(index, /^## Accepted\n- \[0001 Use REST\]\(0001-use-rest\.md\) — applies to src\/ — kickoff meeting$/m);
-    assert.match(index, /^## Proposed, not binding until a person accepts\n- \[0002 Try GraphQL\]\(0002-graphql\.md\) — Slack thread$/m);
-    assert.match(index, /^## Rejected or superseded\n- \[0003 Use SOAP\]\(0003-soap\.md\) — rejected$/m);
+    assert.match(index, /^## Accepted\n\n- \[0001 Use REST\]\(0001-use-rest\.md\) — applies to src\/ — kickoff meeting$/m);
+    assert.match(index, /^## Proposed, not binding until a person accepts\n\n- \[0002 Try GraphQL\]\(0002-graphql\.md\) — Slack thread$/m);
+    assert.match(index, /^## Rejected or superseded\n\n- \[0003 Use SOAP\]\(0003-soap\.md\) — rejected$/m);
 
     // Accepting rewrites the record and the list between the markers, nothing else.
     const agentsBefore = await read(dir, AGENTS);
@@ -97,7 +97,7 @@ test('AGENTS.md carries the rules and one link; the list lives in the decisions 
     assert.match(res.stdout, /Updated docs\/decisions\/README\.md\./);
     assert.match(await read(dir, 'docs/decisions/0002-graphql.md'), /^- Status: accepted$/m);
     const after = await read(dir, 'docs/decisions/README.md');
-    assert.match(after, /^## Accepted\n- \[0001 Use REST\][^\n]*\n- \[0002 Try GraphQL\]\(0002-graphql\.md\) — Slack thread$/m);
+    assert.match(after, /^## Accepted\n\n- \[0001 Use REST\][^\n]*\n- \[0002 Try GraphQL\]\(0002-graphql\.md\) — Slack thread$/m);
     assert.match(after, /Notes the team wrote under the list\.\n$/);
     assert.equal(await read(dir, AGENTS), agentsBefore, 'AGENTS.md does not change when a decision does');
   });
@@ -205,5 +205,29 @@ test('the first decision creating docs/ still gets its area line', async () => {
     const auto = text.slice(text.indexOf('<!-- naso:auto:start -->'), text.indexOf('<!-- naso:auto:end -->'));
     assert.match(auto, /`docs\/`/, 'docs/ is a new area and gets its line');
     assert.match(await read(dir, 'docs/decisions/README.md'), /- \[0001 Use REST\]\(0001-use-rest\.md\)/);
+  });
+});
+
+test('decide skips a number another branch already uses in the same folder', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    await git('switch', '-q', '-c', 'feat/kyc');
+    await put(dir, 'docs/decisions/0001-kyc-provider.md', '# 0001. KYC provider\n\n- Status: proposed\n- Source: ticket\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'docs: kyc decision');
+    await git('switch', '-q', 'main');
+    const res = await naso(dir, ['decide', '--title', 'Use REST', '--decision', 'REST only.', '--source', 'kickoff']);
+    assert.equal(res.code, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /Recorded docs\/decisions\/0002-use-rest\.md as proposed/);
+    assert.match(res.stdout, /Skipped 0001: it is taken on feat\/kyc, which has not merged here\./);
+  });
+});
+
+test('the decisions list is written with blank lines around headings, lists and markers', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    assert.equal((await naso(dir, ['decide', '--title', 'Use REST', '--decision', 'REST only.', '--source', 'kickoff'])).code, 0);
+    const index = await read(dir, 'docs/decisions/README.md');
+    assert.match(index, /<!-- naso:decisions:start -->\n\n## Proposed, not binding until a person accepts\n\n- \[0001 Use REST\]\(0001-use-rest\.md\) — kickoff\n\n<!-- naso:decisions:end -->/);
   });
 });

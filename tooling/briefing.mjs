@@ -33,8 +33,10 @@
 import {
   readFile,
   writeFile,
+  mkdir,
 } from 'node:fs/promises';
 import path from 'node:path';
+import { NASO_DIR } from './vendor.mjs';
 import {
   pathExists,
   parseArgs,
@@ -52,6 +54,7 @@ import {
   AGENTS_FILE,
   NASO_END,
   NASO_START,
+  blockEdited,
   plural,
   scanRepo,
 } from './scan.mjs';
@@ -69,6 +72,12 @@ import {
 export * from './scan.mjs';
 export * from './render.mjs';
 export * from './check.mjs';
+
+export const EDITED_BLOCK_NOTE =
+  `- ${AGENTS_FILE}: the NASO block was edited after NASO wrote it (or was written before\n` +
+  '  NASO kept a digest), so it was left exactly as it is. Reviewed corrections are never\n' +
+  '  replaced by a regenerate. To replace it anyway, add --discard-edits; the old block is\n' +
+  '  saved under .naso/backups/ first.';
 
 /**
  * Write the NASO block into AGENTS.md, under the repo lock, without ever touching
@@ -90,7 +99,7 @@ export * from './check.mjs';
  * finds there, so two concurrent setups produce one of two complete briefings
  * rather than a half-written file.
  */
-export async function createBriefing(cwd, { force = false, exclude = null } = {}) {
+export async function createBriefing(cwd, { force = false, discardEdits = false, exclude = null } = {}) {
   const agentsPath = path.join(cwd, AGENTS_FILE);
 
   const version = await toolVersion();
@@ -124,6 +133,19 @@ export async function createBriefing(cwd, { force = false, exclude = null } = {}
         return { ok: false, reason: 'has-block', agentsPath, existingLines };
       }
 
+      // People corrected this block in review. --force alone never discards that; it takes
+      // --discard-edits, and even then the old block is saved first.
+      const edited = blockEdited(before);
+      if (edited && !discardEdits) {
+        return { ok: false, reason: 'edited', agentsPath, existingLines };
+      }
+      let backup = null;
+      if (edited) {
+        backup = path.join(NASO_DIR, 'backups', `AGENTS-block-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
+        await mkdir(path.join(cwd, path.dirname(backup)), { recursive: true });
+        await writeFile(path.join(cwd, backup), before.slice(start, end + NASO_END.length) + '\n', 'utf8');
+      }
+
       const replaced =
         before.slice(0, start) + block.trimEnd() + before.slice(end + NASO_END.length);
       await writeFile(agentsPath, replaced, 'utf8');
@@ -131,6 +153,7 @@ export async function createBriefing(cwd, { force = false, exclude = null } = {}
         ok: true,
         appended: false,
         replacedBlock: true,
+        backup,
         existingLines,
         agentsPath,
         content: replaced,
@@ -257,9 +280,11 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (command === 'create') {
-    const result = await createBriefing(cwd, { force: flags.has('force') });
+    const result = await createBriefing(cwd, { force: flags.has('force'), discardEdits: flags.has('discard-edits') });
     if (!result.ok) {
-      if (result.reason === 'has-block') {
+      if (result.reason === 'edited') {
+        console.log(EDITED_BLOCK_NOTE);
+      } else if (result.reason === 'has-block') {
         console.log(
           `- ${AGENTS_FILE} already has a naso:start / naso:end block. Left it exactly as it is.\n` +
             '  Re-run with --force to replace just that block. Nothing outside the markers\n' +

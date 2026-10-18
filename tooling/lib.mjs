@@ -462,6 +462,7 @@ const BOOLEAN_FLAGS = new Set([
   'tour',
   'save-dev',
   'accept',
+  'discard-edits',
 ]);
 
 /** Single-letter spellings, mapped to the long flag they stand for. */

@@ -179,9 +179,16 @@ test('createBriefing --force replaces only what is between the markers', async (
       'utf8',
     );
 
-    const result = await createBriefing(dir, { force: true });
+    // No digest: the block may carry reviewed edits, so --force alone keeps it.
+    const kept = await createBriefing(dir, { force: true });
+    assert.equal(kept.ok, false);
+    assert.equal(kept.reason, 'edited');
+    assert.match(await read(dir, AGENTS), /stale generated content/);
+
+    const result = await createBriefing(dir, { force: true, discardEdits: true });
     assert.ok(result.ok);
     assert.ok(result.replacedBlock);
+    assert.match(await read(dir, result.backup), /stale generated content/, 'the discarded block is backed up');
 
     const text = await read(dir, AGENTS);
     assert.ok(text.startsWith(head), 'prose above the block must survive --force');
@@ -317,5 +324,20 @@ test('guide does not call a one-paragraph section empty', async () => {
     const res = await script('guide');
     const done = res.stdout.slice(res.stdout.indexOf('  When Done'));
     assert.doesNotMatch(done.split('\n').slice(0, 4).join('\n'), /nothing under this heading/);
+  });
+});
+
+test('an untouched NASO block is replaced by --force; one edited in review is kept', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    assert.ok((await createBriefing(dir)).ok);
+    const fresh = await read(dir, AGENTS);
+    assert.match(fresh, /^<!-- digest: [0-9a-f]{16} -->$/m);
+    assert.ok((await createBriefing(dir, { force: true })).replacedBlock, 'nothing to lose, so --force replaces it');
+
+    await writeFile(path.join(dir, AGENTS), fresh.replace('## Project Structure', '## Project Structure\n\nThe entry point is `package.json`, per review.'), 'utf8');
+    const kept = await createBriefing(dir, { force: true });
+    assert.equal(kept.reason, 'edited');
+    assert.match(await read(dir, AGENTS), /per review/);
   });
 });
