@@ -19,6 +19,16 @@ const read = (cwd, file) => readFile(path.join(cwd, file), 'utf8').catch(() => n
 
 const CODEOWNERS_FILES = ['CODEOWNERS', '.github/CODEOWNERS', '.gitlab/CODEOWNERS', 'docs/CODEOWNERS'];
 
+
+/**
+ * The text up to its first full stop, whole. A description cut at a fixed width ended
+ * mid-word ("React Query c…") and quoted the repository saying something it did not.
+ */
+export function firstSentence(text) {
+  const value = String(text).trim();
+  return value.match(/^.*?[.!?](?=\s+[A-Z(`"“]|$)/)?.[0] ?? value;
+}
+
 /**
  * The CODEOWNERS file, as `{ path, entries, fallback, unmatched }`, or null.
  *
@@ -84,7 +94,7 @@ export async function readPrecedence(cwd, files, { start, end }) {
       const line = raw.replace(/^\s*(?:[-*>]|\d+\.)\s+/, '').trim();
       if (!PRECEDENCE_WORDS.test(line) || !ABOUT_DOCUMENTS.test(line) || line.length > 400) return;
       const quoted = line.replace(/`/g, '').replace(/\*\*/g, '');
-      found.push({ file, line: index + 1, text: quoted.length > 220 ? `${quoted.slice(0, 217)}…` : quoted });
+      found.push({ file, line: index + 1, text: quoted.length > 220 ? firstSentence(quoted) : quoted });
     });
   }
   return found.slice(0, 6);
@@ -199,7 +209,7 @@ export async function readSourceMap(cwd, files) {
   const purposeOf = (dir) => {
     for (const { doc, lines } of docs) {
       const text = treePurpose(lines, root, dir) ?? linePurpose(lines, `${root}/${dir}/`);
-      if (text) return { text: text.length > 120 ? `${text.slice(0, 117)}…` : text, doc };
+      if (text) return { text: firstSentence(text), doc };
     }
     return null;
   };

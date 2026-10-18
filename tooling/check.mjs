@@ -159,7 +159,7 @@ export async function wrongClaims(cwd, claimed) {
   const lead = claimed.split('\n').find((line) => line.startsWith(DECISIONS_LEAD)) ?? null;
   if (lead !== null) {
     const expected = decisionsLead(await readDecisions(cwd));
-    if (lead !== expected) out.push(`Decisions: the line saying where the list is is out of date. Run: ${nasoCommand()} decisions sync`);
+    if (!lead.startsWith(expected)) out.push(`Decisions: the line saying where the list is is out of date. Run: ${nasoCommand()} decisions sync`);
   }
   return out;
 }

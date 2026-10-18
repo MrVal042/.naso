@@ -339,11 +339,12 @@ test('the vendored toolset is invisible to the repository\'s ESLint and Prettier
       const head = (await read(dir, `.naso/tooling/${file}`)).split('\n').slice(0, 2).join('\n');
       assert.match(head, /^(?:#!.*\n)?\/\* eslint-disable \*\/ \/\/ vendored by naso-dev/, `${file} must opt out of the repository's lint`);
     }
-    assert.equal(await read(dir, '.prettierignore'), 'coverage/\n.naso/\n');
-    assert.match(res.stdout, /\.prettierignore\s+append 1 line/);
+    const appended = "coverage/\n\n# Vendored by naso-dev; not part of this project's code\n.naso/\n";
+    assert.equal(await read(dir, '.prettierignore'), appended, 'its own comment, never under the team\'s');
+    assert.match(res.stdout, /\.prettierignore\s+append 3 lines/);
     // A second run adds nothing.
     assert.equal((await bare(['--yes', '--force'])).code, 0);
-    assert.equal(await read(dir, '.prettierignore'), 'coverage/\n.naso/\n');
+    assert.equal(await read(dir, '.prettierignore'), appended);
   });
 });
 

@@ -61,12 +61,20 @@ export async function decisionsDir(cwd) {
 
 /** A header field: `- Status: accepted`, `* Date: 2026-10-14`, or a bare `Date: …` line. */
 function field(lines, names) {
-  const pattern = new RegExp(`^\\s*(?:[-*]\\s*)?(?:\\*\\*)?(?:${names})(?:\\*\\*)?\\s*:\\s*(.+?)\\s*$`, 'i');
+  const pattern = new RegExp(`^\\s*(?:[-*]\\s*)?(?:\\*\\*)?(?:${names})(?:\\*\\*)?\\s*:(?:\\*\\*)?\\s*(.+?)\\s*$`, 'i');
   for (const line of lines) {
     const match = line.match(pattern);
     if (match) return match[1];
   }
   return null;
+}
+
+/** The first line under a `## <name>` heading, list marker and links' brackets removed. */
+function sectionFirstLine(lines, names) {
+  const at = lines.findIndex((line) => new RegExp(`^#{2,}\\s+(?:${names})\\s*$`, 'i').test(line));
+  if (at === -1) return null;
+  const first = lines.slice(at + 1).find((line) => line.trim() && !/^#/.test(line));
+  return first ? first.replace(/^\s*[-*\d.]+\s*/, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim() || null : null;
 }
 
 /**
@@ -117,7 +125,7 @@ export function parseDecision(file, text) {
     supersededBy: supersededFromStatus ? pad(supersededFromStatus) : supersededField ? pad(supersededField) : null,
     date: field(lines, 'Date') ?? front.date ?? null,
     by: field(lines, 'Decided by|Deciders|Decider') ?? front.deciders ?? null,
-    source: field(lines, 'Source|Decided in|Origin') ?? front.source ?? null,
+    source: field(lines, 'Source|Decided in|Origin') ?? front.source ?? sectionFirstLine(lines, 'Sources?|References') ?? null,
     applies: list(field(lines, 'Applies to|Scope') ?? front.applies),
     supersedes: list(field(lines, 'Supersedes')).map((item) => item.match(/(\d+)/)?.[1]).filter(Boolean).map(pad),
     reviewBy: field(lines, 'Review by|Revisit by|Review date') ?? front['review-by'] ?? null,
@@ -164,6 +172,13 @@ export function decisionsLead({ dir, indexExists, records }) {
   return `${DECISIONS_LEAD} No decision is recorded yet; the first one creates the list beside it.`;
 }
 
+/** The three forms decisionsLead writes, so a rewrite can tell NASO's words from a person's. */
+const LEAD_FORMS = new RegExp(
+  `^${DECISIONS_LEAD.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} (?:The list is \`[^\`]+\`: one line per decision, linked to its record\\.|` +
+    `The list will be \\S+, one line per decision linked to its record, once \`[^\`]+\` writes it\\.|` +
+    `No decision is recorded yet; the first one creates the list beside it\\.)`,
+);
+
 // The same markers scan.mjs exports; spelled here because scan.mjs imports this module.
 const BLOCK_START = '<!-- naso:start -->';
 const BLOCK_END = '<!-- naso:end -->';
@@ -182,9 +197,12 @@ export async function refreshDecisionsLead(cwd) {
   const text = await readFile(file, 'utf8').catch(() => null);
   const line = text === null ? null : leadLineIn(text);
   if (line === null) return false;
+  const ours = line.match(LEAD_FORMS)?.[0];
+  if (!ours) return false;
   const next = decisionsLead(await readDecisions(cwd));
-  if (next === line) return false;
-  await writeFile(file, text.replace(line, next), 'utf8');
+  if (ours === next) return false;
+  // Only NASO's own sentence moves: text a person wrote after it on the same line stays.
+  await writeFile(file, text.replace(line, next + line.slice(ours.length)), 'utf8');
   return true;
 }
 
@@ -250,7 +268,11 @@ export async function syncDecisionIndex(cwd) {
         await writeFile(full, `${text}${text.endsWith('\n') ? '' : '\n'}\n${block}\n`, 'utf8');
         return 'appended';
       }
-      const next = text.slice(0, start) + block + text.slice(end + DECISIONS_END.length);
+      // Prettier wants a blank line on each side of the markers; 1.3.x wrote none, and this is
+      // the one place that list is ever rewritten.
+      const before = text.slice(0, start).replace(/\n*$/, start > 0 ? '\n\n' : '');
+      const rest = text.slice(end + DECISIONS_END.length).replace(/^\n*/, '');
+      const next = before + block + (rest ? `\n\n${rest}` : '\n');
       if (next === text) return 'current';
       await writeFile(full, next, 'utf8');
       return 'updated';
@@ -272,8 +294,21 @@ const slugify = (title) =>
     .slice(0, 50)
     .replace(/-+$/, '') || 'decision';
 
+/**
+ * `<placeholder>` outside a code span, put in one. GitLab and GitHub read a bare `<type>` as
+ * an HTML tag and show nothing, so a record saying "`<type>/SCRUM-n`" rendered as "/SCRUM-n".
+ */
+export function codeAngles(text) {
+  return String(text)
+    .split('`')
+    .map((part, i) => (i % 2 === 0 ? part.replace(/<[^<>\n`]+>/g, (tag) => `\`${tag}\``) : part))
+    .join('`');
+}
+
 /** Write a new record. Proposed unless a person passes --accept. */
 export async function createDecision(cwd, { title, decision, why = null, considered = [], source, by = null, applies = [], supersedes = [], status = 'proposed', date = today() }) {
+  [title, decision, why] = [title, decision, why].map((value) => (value === null ? null : codeAngles(value)));
+  considered = considered.map(codeAngles);
   const { dir, records } = await readDecisions(cwd);
   const elsewhere = await numbersOnOtherBranches(cwd, dir);
   const highest = Math.max(0, ...records.map((record) => Number(record.id) || 0), ...elsewhere.keys());

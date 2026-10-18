@@ -1782,6 +1782,21 @@ export function detectRewritingScripts(pkg, pm = 'npm') {
     .map((name) => ({ script: name, command: pmRunText(pm, name), body: scripts[name] }));
 }
 
+/** A script body that serves or watches until it is stopped. */
+const NEVER_EXITS = /--watch\b|\bwatch\b|\b(?:expo|react-native) start\b|\bnext dev\b|\bnuxt dev\b|\bastro dev\b|\bremix dev\b|\bng serve\b|\bwebpack serve\b|\bnodemon\b|\bts-node-dev\b|\bstorybook dev\b|^vite(?:\s+(?!build|preview)|$)/;
+
+/**
+ * Scripts that never exit: dev servers and watchers. An agent that runs one to "check"
+ * its work waits for ever, or kills it and reports nothing.
+ */
+export function detectLongRunningScripts(pkg, pm = 'npm') {
+  const scripts = pkg?.scripts ?? {};
+  return Object.keys(scripts)
+    .filter((name) => typeof scripts[name] === 'string' && NEVER_EXITS.test(scripts[name].trim()))
+    .sort()
+    .map((name) => ({ script: name, command: name === 'start' ? `${pm} start` : pmRunText(pm, name), body: scripts[name] }));
+}
+
 export async function detectValidationCommands(cwd, pkg, pm = 'npm') {
   const commands = [];
   const scripts = pkg?.scripts ?? {};
@@ -1964,6 +1979,7 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
     tests: detectTestCoverage(files, pkg, packageManager.name, conventions.runner),
     validation: await detectValidationCommands(cwd, pkg, packageManager.name),
     rewriters: detectRewritingScripts(pkg, packageManager.name),
+    longRunning: detectLongRunningScripts(pkg, packageManager.name),
     contributing: await readContributing(cwd, files),
     codeowners: await readCodeowners(cwd, files),
     precedence: await readPrecedence(cwd, files, { start: NASO_START, end: NASO_END }),

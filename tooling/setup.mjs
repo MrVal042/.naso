@@ -118,16 +118,17 @@ const wrap = (text, width = 74) => {
  * yarn and bun keep an entry in "dependencies" when asked to add it as dev, so it is
  * removed first; npm and pnpm move it in one step. Null when there is no package.json.
  */
-export function devDependencyPlan(pkg, pm, version) {
+export function devDependencyPlan(pkg, pm, version, { exact = false } = {}) {
   if (!pkg) return null;
   if (pkg.devDependencies?.['naso-dev']) return { action: 'present', commands: [] };
   const spec = `naso-dev@${version}`;
+  const pin = (flag) => (exact ? [flag] : []);
   const add = {
-    npm: ['npm', ['install', '--save-dev', spec]],
-    pnpm: ['pnpm', ['add', '--save-dev', spec]],
-    yarn: ['yarn', ['add', '--dev', spec]],
-    bun: ['bun', ['add', '--dev', spec]],
-  }[pm] ?? ['npm', ['install', '--save-dev', spec]];
+    npm: ['npm', ['install', '--save-dev', ...pin('--save-exact'), spec]],
+    pnpm: ['pnpm', ['add', '--save-dev', ...pin('--save-exact'), spec]],
+    yarn: ['yarn', ['add', '--dev', ...pin('--exact'), spec]],
+    bun: ['bun', ['add', '--dev', ...pin('--exact'), spec]],
+  }[pm] ?? ['npm', ['install', '--save-dev', ...pin('--save-exact'), spec]];
   const inDependencies = Boolean(pkg.dependencies?.['naso-dev']);
   const commands = inDependencies && (pm === 'yarn' || pm === 'bun') ? [[pm, ['remove', 'naso-dev']], add] : [add];
   return { action: inDependencies ? 'move' : 'add', pm, commands };
@@ -135,15 +136,47 @@ export function devDependencyPlan(pkg, pm, version) {
 
 const commandText = ([bin, args]) => [bin, ...args].join(' ');
 
+const RENOVATE_FILES = ['renovate.json', 'renovate.json5', '.renovaterc', '.renovaterc.json', '.github/renovate.json', '.github/renovate.json5', '.gitlab/renovate.json'];
+const RENOVATE_PINS = /rangeStrategy["']?\s*:\s*["']pin["']|:pin(?:AllExceptPeerDependencies|Dependencies|DevDependencies|Versions)\b|config:js-app|":js-app"/;
+
+/**
+ * Whether this repository pins exact versions, so naso-dev is recorded as `1.5.0`, not `^1.5.0`.
+ *
+ * Read from what the repository says: `save-exact` in .npmrc, a Renovate config that pins,
+ * or a package.json whose every dependency is already an exact version. A caret range in a
+ * repository that pins is a line its own review would reject.
+ */
+export async function pinsExactVersions(cwd, pkg) {
+  const npmrc = await readFile(path.join(cwd, '.npmrc'), 'utf8').catch(() => '');
+  if (/^\s*save-exact\s*=\s*true\s*$/m.test(npmrc)) return true;
+  for (const name of RENOVATE_FILES) {
+    if (RENOVATE_PINS.test(await readFile(path.join(cwd, name), 'utf8').catch(() => ''))) return true;
+  }
+  if (pkg?.renovate && RENOVATE_PINS.test(JSON.stringify(pkg.renovate))) return true;
+  const specs = Object.values({ ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) }).filter((spec) => typeof spec === 'string');
+  return specs.length >= 3 && specs.every((spec) => /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(spec));
+}
+
+/** The lines NASO appends to an ignore file: its own comment, so it never sits under the team's. */
+export function ignoreAppend(text) {
+  const sep = text === '' || text.endsWith('\n\n') ? '' : text.endsWith('\n') ? '\n' : '\n\n';
+  return `${sep}# Vendored by naso-dev; not part of this project's code\n${NASO_DIR}/\n`;
+}
+
+/** An ignore file that lacks .naso/, with what it holds now; null when it is covered. */
+async function planIgnoreFile(cwd, name, { create }) {
+  const file = path.join(cwd, name);
+  const text = await readFile(file, 'utf8').catch(() => null);
+  if (text === null && !create) return null;
+  const covered = (text ?? '').split('\n').some((line) => /^\/?\.naso(?:\/\**)?$/.test(line.trim()));
+  return covered ? null : { name, file, exists: text !== null, text: text ?? '', lines: lineCount(ignoreAppend(text ?? '')) };
+}
+
 /** Whether this repository uses Prettier and its .prettierignore lacks .naso/; null when nothing to do. */
 async function planPrettierIgnore(cwd, facts) {
   const deps = facts.conventions?.deps ?? {};
   const usesPrettier = Boolean(facts.conventions?.prettierConfig || deps.prettier || facts.pkg?.prettier);
-  if (!usesPrettier) return null;
-  const file = path.join(cwd, '.prettierignore');
-  const text = await readFile(file, 'utf8').catch(() => null);
-  const covered = (text ?? '').split('\n').some((line) => /^\/?\.naso(?:\/\**)?$/.test(line.trim()));
-  return covered ? null : { file, exists: text !== null, text: text ?? '' };
+  return usesPrettier ? planIgnoreFile(cwd, '.prettierignore', { create: true }) : null;
 }
 
 /** The lockfile a package manager writes, for the plan's list of files. */
@@ -509,10 +542,23 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
         `One line, ${NASO_DIR}/, so \`prettier --check\` leaves the copied toolset alone. Prettier does not ` +
         'read .git/info/exclude, and the scripts are formatted for this project, not yours.',
     });
-    writes.push({ path: '.prettierignore', change: prettierIgnore.exists ? 'append' : 'new', lines: 1 });
+    writes.push({ path: '.prettierignore', change: prettierIgnore.exists ? 'append' : 'new', lines: prettierIgnore.lines });
   }
 
-  const devDependency = devDependencyPlan(facts.pkg, facts.packageManager?.name ?? 'npm', version);
+  // `COPY . .` sends the build context to Docker, and .git/info/exclude does not reach it:
+  // without this line the toolset is baked into the team's image. Only an existing
+  // .dockerignore is appended to; a repository with none is not given one.
+  const dockerIgnore = await planIgnoreFile(cwd, '.dockerignore', { create: false });
+  if (dockerIgnore) {
+    plans.push({
+      target: '.dockerignore',
+      verb: 'Append',
+      detail: `${NASO_DIR}/, so a Docker build does not copy the toolset into the image. Docker does not read .git/info/exclude.`,
+    });
+    writes.push({ path: '.dockerignore', change: 'append', lines: dockerIgnore.lines });
+  }
+
+  const devDependency = devDependencyPlan(facts.pkg, facts.packageManager?.name ?? 'npm', version, { exact: await pinsExactVersions(cwd, facts.pkg) });
   const recordsDev = Boolean(saveDev && devDependency && devDependency.action !== 'present');
   if (recordsDev) {
     const how = devDependency.commands.map(commandText).join(' && ');
@@ -530,7 +576,7 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     writes.push({ path: LOCKFILE_OF[devDependency.pm] ?? 'package-lock.json', change: 'by-pm', lines: 0, note: `by ${devDependency.pm}, with node_modules/` });
   }
 
-  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, blockEdited: edited, force, localExcludes, claude, devDependency, recordsDev, track, prettierIgnore };
+  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, blockEdited: edited, force, localExcludes, claude, devDependency, recordsDev, track, ignoreFiles: [prettierIgnore, dockerIgnore].filter(Boolean) };
 }
 
 /**
@@ -761,10 +807,15 @@ export async function install(cwd, { track, noHook, force, discardEdits = false,
   });
   console.log(ok(`${NASO_DIR}/config.json: wrote the settings this run used`));
 
-  if (state.prettierIgnore) {
-    const { file, text } = state.prettierIgnore;
-    await writeFile(file, `${text}${text && !text.endsWith('\n') ? '\n' : ''}${NASO_DIR}/\n`, 'utf8');
-    console.log(ok(`.prettierignore: added ${NASO_DIR}/, so prettier --check leaves the toolset alone`));
+  for (const { name, file, text } of state.ignoreFiles ?? []) {
+    await writeFile(file, `${text}${ignoreAppend(text)}`, 'utf8');
+    console.log(
+      ok(
+        name === '.prettierignore'
+          ? `.prettierignore: added ${NASO_DIR}/, so prettier --check leaves the toolset alone`
+          : `${name}: added ${NASO_DIR}/, so a Docker build leaves the toolset out of the image`,
+      ),
+    );
   }
 
   if (decision.action === 'install' || decision.action === 'reinstall' || decision.action === 'chain') {

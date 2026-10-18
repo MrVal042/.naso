@@ -82,6 +82,18 @@ export function ruleSources(files) {
   return groups;
 }
 
+/**
+ * A flat ESLint config that does not ignore .naso/, or null. ESLint 9 reads neither
+ * .gitignore nor .git/info/exclude, so it lints the vendored copy and reports each file's
+ * `eslint-disable` header as unused. NASO does not edit a JavaScript config; it says so.
+ */
+async function eslintWithoutNaso(cwd, files) {
+  const config = files.find((file) => /^eslint\.config\.(?:js|mjs|cjs|ts|mts|cts)$/.test(file));
+  if (!config) return null;
+  const text = await readFile(path.join(cwd, config), 'utf8').catch(() => '');
+  return /\.naso\b/.test(text) ? null : config;
+}
+
 /** Everything the prompt adapts to, read once. */
 export async function reviewState(cwd) {
   const agentsPath = path.join(cwd, AGENTS_FILE);
@@ -104,6 +116,7 @@ export async function reviewState(cwd) {
     vendored: await pathExists(path.join(cwd, '.naso', 'tooling', 'validate.mjs')),
     hook: /naso/i.test((await readFile(path.join(cwd, '.git', 'hooks', 'pre-commit'), 'utf8').catch(() => '')) ?? ''),
     version: await toolVersion(),
+    eslintUnignored: await eslintWithoutNaso(cwd, files ?? []),
   };
 }
 
@@ -112,7 +125,7 @@ const count = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 /** What NASO consists of in this repository, from what is on disk. */
 function installedLines(state, index) {
   const lines = [
-    `- ${AGENTS_FILE}, the part between ${NASO_START} and ${NASO_END}: derived from file lists, manifests and git history. Its aim: every path is real, every count is a count, and every rule is this repository's own.`,
+    `- ${AGENTS_FILE}, the part between ${NASO_START} and ${NASO_END}: derived from file lists, manifests and git history. Its aim: every path is real, every count was counted, and every rule is this repository's own.`,
     `- ${state.decisions.dir}/: one file per decision the team made, with who decided and where, listed in ${index}${state.decisions.indexExists ? '' : ' once the first one is recorded'}. Agents propose; only a person accepts.`,
   ];
   if (state.claudeLinks) lines.push('- CLAUDE.md: its `@AGENTS.md` line makes Claude Code load the briefing.');
@@ -144,6 +157,11 @@ function stateLines(state, cmd, here) {
     for (const problem of check.problems) lines.push(`  - ${problem.kind}: ${problem.item}`);
   }
   for (const note of check?.notes ?? []) lines.push(`- Versions: ${note}`);
+  if (state.eslintUnignored) {
+    lines.push(
+      `- ${state.eslintUnignored} does not ignore .naso/, so lint reports the vendored files' eslint-disable headers as unused. Report the fix (add '.naso/' to its ignores); do not edit .naso/tooling/.`,
+    );
+  }
 
   const { records } = state.decisions;
   const by = (status) => records.filter((record) => record.status === status).length;
@@ -232,6 +250,8 @@ ${sources.join('\n')}
      with \`--applies <paths>\` and one \`--considered "<option> — <why not>"\` per
      alternative the docs say was turned down. Quote every value.
    - Never propose one that is already recorded; \`decide\` refuses a title it has.
+   - Never write how many decisions there are, or their ids, into the block:
+     the next \`decide\` makes that stale. Point to ${index} instead.
    - Never accept, reject or supersede a decision. List them for the person.
 7. Audit the rest of what NASO installed here (the list at the top) against
    this repository: run its check-only format and lint commands (never the ones

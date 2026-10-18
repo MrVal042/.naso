@@ -36,7 +36,7 @@ import { describeHook } from './install.mjs';
 import { detectStack } from './stack.mjs';
 import { parseIgnorePatterns, blockEdited as isBlockEdited } from './scan.mjs';
 import { NASO_DIR, isVendored, vendoredVersion } from './vendor.mjs';
-import { inspect, install, displayPlan, displayOverview, devDependencyPlan, HOOK_ACTIONS } from './setup.mjs';
+import { inspect, install, displayPlan, displayOverview, devDependencyPlan, pinsExactVersions, HOOK_ACTIONS } from './setup.mjs';
 import { colorEnabled, createStyle } from './ui.mjs';
 import { confirm, select, isCancel, note, outro } from './prompt.mjs';
 
@@ -516,7 +516,7 @@ Other commands:
 
   if (!options.yes) {
     const pkg = await readJSONFile(path.join(cwd, 'package.json'));
-    const devDependency = devDependencyPlan(pkg, (await detectPackageManager(cwd, pkg)).name, version);
+    const devDependency = devDependencyPlan(pkg, (await detectPackageManager(cwd, pkg)).name, version, { exact: await pinsExactVersions(cwd, pkg) });
     const answered = await prompts.questions(style, options, { hook: state.hook, hasBlock: state.hasBlock, blockEdited: state.blockEdited, devDependency });
     if (answered === null) {
       prompts.done(style.warn('Cancelled. Nothing was written.'));

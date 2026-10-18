@@ -22,7 +22,7 @@ One command, once per repository:
 npx naso-dev@latest --save-dev
 ```
 
-`--save-dev` records naso-dev in your project's `devDependencies`, never `dependencies`: it is a development tool, so production installs and your app's build leave it out. In a repository without a `package.json` the flag does nothing. `@latest` makes npx fetch the current release instead of reusing an older copy it cached.
+`--save-dev` records naso-dev in your project's `devDependencies`, never `dependencies`, as an exact version when the repository pins its versions (`save-exact` in `.npmrc`, a Renovate config that pins, or every dependency already exact): it is a development tool, so production installs and your app's build leave it out. In a repository without a `package.json` the flag does nothing. `@latest` makes npx fetch the current release instead of reusing an older copy it cached.
 
 It works like a guided installer. In order:
 
@@ -247,6 +247,7 @@ npx naso-dev decisions audit           # what no longer holds; changes nothing
 | `AGENTS.md`                 | The briefing, inside its `naso:start` / `naso:end` markers. Never overwritten outside them.     |
 | `CLAUDE.md`                 | One `@AGENTS.md` line, so Claude Code (which reads `CLAUDE.md`, not `AGENTS.md`) loads the briefing. Written only when there is no `CLAUDE.md` or yours is untracked; a tracked one is left alone unless you pass `--track`, and setup says what to add. |
 | `.naso/tooling/*.mjs`       | A copy of the toolset, so the hook works with no network and no global install. Each file starts with `/* eslint-disable */`, so your lint rules do not apply to NASO's code. |
+| `.dockerignore`             | One `.naso/` line under its own comment, only when the file already exists, so a Docker build does not copy the toolset into the image. Docker does not read `.git/info/exclude`. |
 | `.prettierignore`           | One `.naso/` line, only in a repository that uses Prettier, so `prettier --check .` leaves the toolset alone. Prettier does not read `.git/info/exclude`. |
 | `.naso/tooling/VERSION`     | The version that copy was vendored from — the briefing stamp is compared against it.             |
 | `.naso/config.json`         | Per-repository setup choices, including any areas you excluded.                                  |
