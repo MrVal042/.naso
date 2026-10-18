@@ -8,7 +8,7 @@ entry point `npx naso-dev <command>`.
 
 ## They are copied into your repository
 
-`npx naso-dev setup` copies every `.mjs` in this directory, this file, and a `VERSION` file
+`npx naso-dev` copies every `.mjs` in this directory except the three interactive ones, this file, and a `VERSION` file
 into `<repo>/.naso/tooling/`. The pre-commit hook runs that copy, resolved from
 `git rev-parse --show-toplevel`.
 
