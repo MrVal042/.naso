@@ -168,33 +168,29 @@ test('a script that rewrites files is not listed as a validation command', async
   });
 });
 
-test('the alias line states the mapping and claims no rule NASO never read', async () => {
+test('the alias line states the mapping once, under Code Conventions, and claims no rule NASO never read', async () => {
   await withRepo(async ({ dir, git, bare }) => {
     await seedCustomerApp(dir, git);
     assert.equal((await bare(['--yes'])).code, 0);
     const text = await read(dir, AGENTS);
-    assert.match(sectionOf(text, 'Boundaries'), /\*\*Import aliases\.\*\* @ → src\.\n/);
+    assert.match(sectionOf(text, 'Code Conventions'), /^Import aliases: @ → src /m);
+    assert.doesNotMatch(sectionOf(text, 'Boundaries'), /Import aliases/, 'not a second time');
     assert.doesNotMatch(text, /the one mistake/);
   });
 });
 
-test('the language mix leaves out AGENTS.md and its total is every file with an extension', async () => {
+test('the block has no language mix, ignored-path list or local excludes: none changes what an agent does', async () => {
   await withRepo(async ({ dir, git, bare }) => {
     await seedCustomerApp(dir, git);
-    assert.equal((await bare(['--yes', '--track'])).code, 0);
+    await put(dir, '.gitignore', 'node_modules/\ndist/\n/ios\n/android\n!dist/keep.txt\n*.p8\n');
     await git('add', '-A');
-    await git('commit', '-qm', 'chore: SCRUM-2: briefing');
-    assert.equal((await bare(['--yes', '--force', '--track'])).code, 0);
+    await git('commit', '-qm', 'chore: SCRUM-5: ignore');
+    assert.equal((await bare(['--yes'])).code, 0);
     const text = await read(dir, AGENTS);
-    const mix = text.match(/Language mix[^\n]*/)?.[0] ?? '';
-    const tracked = (await git('ls-files')).stdout.split('\n').filter(Boolean);
-    assert.ok(tracked.includes(AGENTS), 'AGENTS.md is in the index, so leaving it out is a choice');
-    const counted = tracked.filter((file) => file !== AGENTS);
-    const markdown = counted.filter((file) => file.endsWith('.md')).length;
-    assert.match(mix, new RegExp(`Markdown ${markdown}\\b`), mix);
-    // .gitignore has no extension by path.extname, so it is the one file not counted.
-    const withExtension = counted.filter((file) => path.extname(file) !== '').length;
-    assert.match(mix, new RegExp(`of ${withExtension} files with an extension`), mix);
+    for (const gone of ['Language mix', '**Ignored paths.**', '**Re-included.**', '**Local excludes.**']) {
+      assert.ok(!text.includes(gone), `${gone} is not rendered`);
+    }
+    assert.match(sectionOf(text, 'Boundaries'), /\*\*Credentials\.\*\* \.gitignore excludes \*\.p8/, 'an ignored path that carries a rule stays');
   });
 });
 
@@ -386,18 +382,6 @@ test('a CONTRIBUTING.md that states commit rules is named as the authority over 
       sectionOf(await read(dir, AGENTS), 'Commit Standard'),
       /`CONTRIBUTING\.md` writes the commit rules down; where it and this count differ, it wins\./,
     );
-  });
-});
-
-test('root-anchored ignore patterns are listed before generic ones', async () => {
-  await withRepo(async ({ dir, git, bare }) => {
-    await seedCustomerApp(dir, git);
-    await put(dir, '.gitignore', 'node_modules/\ndist/\n*.log\n.DS_Store\ncoverage/\n.expo/\nweb-build/\n*.tsbuildinfo\n.cache/\ntmp/\nbuild/\n/ios\n/android\n');
-    await git('add', '-A');
-    await git('commit', '-qm', 'chore: SCRUM-5: ignore');
-    assert.equal((await bare(['--yes'])).code, 0);
-    const ignored = sectionOf(await read(dir, AGENTS), 'Boundaries').match(/\*\*Ignored paths\.\*\*[^\n]*/)[0];
-    assert.match(ignored, /Nothing under \/ios, \/android, node_modules\//);
   });
 });
 

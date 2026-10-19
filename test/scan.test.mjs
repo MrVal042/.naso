@@ -487,22 +487,19 @@ test('boundaries lead the section: enforced seams, then aliases, then ignores', 
       /- `verify:boundary:auth` \(`pnpm run verify:boundary:auth`\) — checks `scripts\/verify-boundary-auth\.mjs`, runs in the gate; the rule is in `docs\/boundaries\/auth\.md`\./,
     );
 
-    // Aliases next.
-    assert.match(section, /\*\*Import aliases\.\*\* @ → app\./);
+    // Aliases are stated once, under Code Conventions, not again here.
+    assert.doesNotMatch(section, /Import aliases/);
+    assert.match(text, /^Import aliases: @ → app /m);
 
     // Credentials from .gitignore, listed in full rather than truncated to fit.
     assert.match(section, /\*\*Credentials\.\*\* \.gitignore excludes [^.]*\*\.keystore/);
     assert.ok(
-      section.indexOf('**Enforced checks.**') < section.indexOf('**Import aliases.**') &&
-        section.indexOf('**Import aliases.**') < section.indexOf('**Credentials.**'),
-      `boundaries must be ordered enforced, aliases, ignores:\n${section}`,
+      section.indexOf('**Enforced checks.**') < section.indexOf('**Credentials.**'),
+      `boundaries must be ordered enforced, then ignores:\n${section}`,
     );
 
-    // The local exclude file is named as its own, non-shared mechanism.
-    assert.match(
-      section,
-      /\*\*Local excludes\.\*\* \.git\/info\/exclude holds \.naso, AGENTS\.md, CLAUDE\.md on this machine only\./,
-    );
+    // One machine's .git/info/exclude is not a fact about the repository.
+    assert.doesNotMatch(section, /Local excludes/);
   });
 });
 
@@ -682,7 +679,7 @@ test('@a in babel and @a/* in tsconfig are one alias; only @b is divergent', asy
     const res = await bare(['--yes']);
     assert.equal(res.code, 0, res.stdout + res.stderr);
     const text = await read(dir, AGENTS);
-    assert.match(text, /Already divergent: @b \(missing from tsconfig\.json\)\./);
+    assert.match(text, /@b → [^;\n]*— tsconfig\.json does not declare it/);
     assert.ok(!/@a[^\n]*missing from/.test(text), `@a is declared in both files:\n${sectionOf(text, 'Boundaries')}`);
     assert.match(text, /@a → src\/a \(tsconfig\.json as @a\/\*, babel\.config\.js\)/);
   });

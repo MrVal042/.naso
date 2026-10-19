@@ -23,9 +23,7 @@ import {
   SCRIPT_DELEGATES_TO,
   TEMPLATE_HEADER,
   blockDigest,
-  languageMix,
   readIgnorePatterns,
-  readLocalExcludes,
   roleFor,
   plural,
 } from './scan.mjs';
@@ -468,18 +466,8 @@ function renderConventions(facts) {
   const { conventions, packageManager } = facts;
   const lines = [];
 
-  // AGENTS.md is left out here as it is everywhere else the header says it is, and the
-  // total is every file with an extension: summing only the four shown made a number
-  // nobody could reproduce.
-  const all = languageMix(facts.files.filter((file) => file !== 'AGENTS.md'));
-  const mix = all.slice(0, 4);
-  if (mix.length > 0) {
-    const total = all.reduce((sum, item) => sum + item.count, 0);
-    lines.push(
-      `Language mix: ${mix.map((item) => `${item.label} ${item.count}`).join(', ')}` +
-        ` (of ${total} files with an extension).`,
-    );
-  }
+  // No language mix: counts of files by extension changed no agent's next step, and every
+  // review removed the line.
 
   // A repository with no package.json has no Node package manager, and naming npm there
   // ("from no package.json, no lockfile") told a Python project every command used npm.
@@ -712,25 +700,8 @@ async function renderBoundaries(facts) {
     lines.push(`**Owners.** \`${owners.path}\` asks for these reviewers: ${shown.join('; ')}.${unmatched}`);
   }
 
-  const declared = conventions.aliases?.declared ?? [];
-  if (declared.length > 0) {
-    lines.push(
-      // The mapping only. Whether this repository prefers the alias over a relative path is
-      // a rule in its docs or its lint config, and NASO reads neither; "a relative import is
-      // the one mistake TypeScript will not catch" was a rule nobody here had written.
-      `**Import aliases.** ${declared.map((entry) => `${entry.alias} → ${entry.targets.join(', ')}`).join('; ')}.`,
-    );
-    if (conventions.aliases.files.length > 1) {
-      const missing = conventions.aliases.divergent;
-      lines.push(
-        `Declared in ${conventions.aliases.files.join(', ')}. A new alias must go in all of ` +
-          'them, or it resolves in one toolchain and not the other.' +
-          (missing.length > 0
-            ? ` Already divergent: ${missing.map((entry) => `${entry.alias} (missing from ${entry.absent.join(', ')})`).join('; ')}.`
-            : ''),
-      );
-    }
-  }
+  // The import aliases are stated once, under Code Conventions, with the files that declare
+  // them; a second line here said the same thing in fewer words.
 
   if (Array.isArray(conventions.eslintIgnores) && conventions.eslintIgnores.length > 0) {
     // Not backticked: these are glob patterns, not paths that must exist.
@@ -750,34 +721,9 @@ async function renderBoundaries(facts) {
       );
     }
 
-    // Root-anchored first: `/ios` is this repository's own decision, `node_modules/` is
-    // everybody's, and the cap below hid the former behind the latter.
-    const ordered = [...ignored.ordinary.filter((p) => p.startsWith('/')), ...ignored.ordinary.filter((p) => !p.startsWith('/'))];
-    const shown = ordered.slice(0, 10);
-    const elided = ordered.length - shown.length;
-    if (shown.length > 0) {
-      lines.push(
-        `**Ignored paths.** Nothing under ${shown.join(', ')} reaches a commit, and nothing ` +
-          `under ${shown.length === 1 ? 'it is' : 'them is'} reviewed.` +
-          (elided > 0 ? ` ${elided} further pattern${elided === 1 ? '' : 's'} in .gitignore ${elided === 1 ? 'is' : 'are'} not listed here.` : ''),
-      );
-    }
-
-    if (ignored.negated.length > 0) {
-      lines.push(
-        `**Re-included.** ${ignored.negated.join(', ')} — a negated pattern means those paths ` +
-          'are tracked after all, whatever sits above them.',
-      );
-    }
-  }
-
-  const local = [...new Set([...(await readLocalExcludes(facts.cwd)), ...(facts.pendingLocalExcludes ?? [])])];
-  if (local.length > 0) {
-    lines.push(
-      `**Local excludes.** .git/info/exclude holds ${local.join(', ')} on this machine only. ` +
-        'Nobody else has them: a teammate cloning this repository gets none of these paths ' +
-        'excluded, so do not reason about them as if they were shared policy.',
-    );
+    // No list of ignored paths, re-included paths or local excludes: they restate .gitignore,
+    // and .git/info/exclude is one machine's. An ignored path that carries a rule is said
+    // where the rule is: credentials above, generated files and "not edited by hand" earlier.
   }
 
   if (lines.length === 0) return null;
@@ -1171,13 +1117,12 @@ export async function renderBriefing(facts, { version, now }) {
     );
   }
 
-  if (facts.featureMap) {
-    const rows = facts.featureMap.rows.slice(0, 20).map((row) => {
-      const dir = `${facts.featureMap.dir}/${row.key}/`;
-      const role = roleFor(row.key);
-      return `| ${humanize(row.key)} | \`${dir}\` | ${plural(row.count, 'file')}${role ? `, ${role}` : ''} |`;
-    });
-    const omitted = facts.featureMap.rows.length - rows.length;
+  // Only folders whose name says what they hold. A row of "Auth | src/features/auth/ |
+  // 12 files" restated the path and a count, and reviews removed the whole table.
+  const featured = (facts.featureMap?.rows ?? []).filter((row) => roleFor(row.key));
+  if (featured.length > 0) {
+    const rows = featured.slice(0, 20).map((row) => `| ${humanize(row.key)} | \`${facts.featureMap.dir}/${row.key}/\` | ${roleFor(row.key)} |`);
+    const omitted = featured.length - rows.length;
     const more = omitted > 0
       ? `\n\n${omitted} further director${omitted === 1 ? 'y' : 'ies'} exist under the same parent; this table is capped so the map stays scannable.`
       : '';

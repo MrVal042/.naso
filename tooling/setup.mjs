@@ -814,10 +814,9 @@ export async function install(cwd, { track, noHook, force, discardEdits = false,
 
   const decision = state.hookDecision ?? decideHook(await describeHook(cwd), { noHook });
 
-  // The local excludes go in before the briefing is written, not after. The Boundaries
-  // section reports what .git/info/exclude holds, and a briefing generated one step before
-  // those lines existed would describe the mechanism and not its contents — which is the
-  // one thing the reader cannot work out alone, since nobody else has this file either.
+  // The local excludes go in before the briefing is written, not after: whether AGENTS.md
+  // is tracked is read from git, and a briefing generated one step before those lines
+  // existed would tell an agent to stage a file git is about to ignore.
   const localExcludes = state.localExcludes ?? (await localExcludePatterns(cwd));
   const excludedLocally = track ? false : await excludeLocally(cwd, localExcludes);
 

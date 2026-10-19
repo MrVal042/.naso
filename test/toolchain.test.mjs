@@ -90,3 +90,24 @@ test('doctor runs the repository\'s ESLint on .naso/ and reports what it prints'
     assert.match(doctor.stdout, /OK\s+ESLint on \.naso\/\s+prints nothing/);
   });
 });
+
+test('the Feature To Folder Map lists only folders whose name says what they hold, without file counts', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    for (const feature of ['auth', 'payments', 'profile']) await put(dir, `src/features/${feature}/index.ts`, 'export {};\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'features');
+    assert.equal((await bare(['--yes'])).code, 0);
+    assert.doesNotMatch(await read(dir, AGENTS), /Feature To Folder Map/, 'names and counts only: no table');
+  });
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    for (const feature of ['auth', 'components']) await put(dir, `src/features/${feature}/index.ts`, 'export {};\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'features');
+    assert.equal((await bare(['--yes'])).code, 0);
+    const map = sectionOf(await read(dir, AGENTS), 'Feature To Folder Map');
+    assert.match(map, /\| Components \| `src\/features\/components\/` \| user interface \|/);
+    assert.doesNotMatch(map, /Auth|\d+ files?/);
+  });
+});
