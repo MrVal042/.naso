@@ -1162,10 +1162,11 @@ staged paths outside them, and refuses them with \`NASO_SCOPE_STRICT=1\`:
 export NASO_SCOPE=path/to/area,other/area
 \`\`\`
 
-The hook runs only where setup installed it, from .git/hooks on that machine; CI does not run it,
-and a fresh clone has none until setup runs there. Every rule below that names the hook holds on
-that machine only. It checks staged files for secret-shaped lines, scope, format and lint, and
-adds a line here for a new top-level area; its branch-name check only warns. It does not
+The hook runs only where setup installed it, in .git/hooks on that machine; CI does not run it,
+and a fresh clone has none until someone runs \`${nasoCommand()} refresh\` there, which installs it
+and, at the version already vendored, changes nothing else. Every rule below that names the hook
+holds on a machine that has it. It checks staged files for secret-shaped lines, scope, format
+and lint, and adds a line here for a new top-level area; its branch-name check only warns. It does not
 type-check, run tests or read the commit message. If .naso/tooling/ is missing it prints one
 line and lets the commit through.`);
 

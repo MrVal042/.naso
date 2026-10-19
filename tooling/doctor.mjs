@@ -147,7 +147,9 @@ Support: ${SUPPORT_EMAIL}`);
   const hookPath = path.join(cwd, '.git', 'hooks', 'pre-commit');
   const hook = await readHook(cwd);
   if (!hook) {
-    printRow('pre-commit hook', WARN, 'missing');
+    // A fresh clone has everything tracked and no hook. One command installs it, and the
+    // block, the toolset README and this row all name the same one.
+    printRow('pre-commit hook', WARN, `missing; install it with \`${nasoCommand()} refresh\` (at the vendored version it changes nothing else)`);
   } else if (isNasoHook(hook)) {
     const pointsAt = hook.body.includes(`${NASO_DIR}/tooling/validate.mjs`);
     printRow(

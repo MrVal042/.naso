@@ -111,3 +111,24 @@ test('the Feature To Folder Map lists only folders whose name says what they hol
     assert.doesNotMatch(map, /Auth|\d+ files?/);
   });
 });
+
+test('a fresh clone gets the hook from one command, named the same in the block, doctor and refresh', async () => {
+  const { rm } = await import('node:fs/promises');
+  const path = await import('node:path');
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    assert.equal((await bare(['--yes', '--track'])).code, 0);
+    const scope = sectionOf(await read(dir, AGENTS), 'Scope').replace(/\s+/g, ' ');
+    assert.match(scope, /a fresh clone has none until someone runs `npx naso-dev refresh` there/);
+    assert.doesNotMatch(scope, /until setup runs there/);
+
+    // A teammate's clone: everything tracked is there, the hook is not.
+    await rm(path.join(dir, '.git/hooks/pre-commit'));
+    const before = { agents: await read(dir, AGENTS), lib: await read(dir, '.naso/tooling/lib.mjs'), config: await read(dir, '.naso/config.json') };
+    assert.match((await script('doctor')).stdout, /WARN\s+pre-commit hook\s+missing; install it with `npx naso-dev refresh`/);
+    const res = await naso(dir, ['refresh']);
+    assert.equal(res.code, 0, res.stdout);
+    assert.match(await read(dir, '.git/hooks/pre-commit'), /naso/i);
+    assert.deepEqual({ agents: await read(dir, AGENTS), lib: await read(dir, '.naso/tooling/lib.mjs'), config: await read(dir, '.naso/config.json') }, before, 'at the same version nothing else changes');
+  });
+});
