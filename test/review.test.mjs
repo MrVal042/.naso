@@ -484,3 +484,24 @@ test('the version note says exactly which command closes the gap, in the directi
     assert.match(out, /\.naso\/tooling\/ is 0\.7\.0 and this command is (\d+\.\d+\.\d+)\. `npx naso-dev@\1 refresh` brings the toolset up to \1\./);
   });
 });
+
+test('the check reports a curly quote that the cited lines do not say', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    await put(dir, 'CONTRIBUTING.md', '# Contributing\n\nMerge requests are squashed\nwhen they merge.\n\nRevert messages are accepted as they are.\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'contributing');
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    const cite = (line) => text.replace('## When This Block Is Wrong', `## When This Block Is Wrong\n\n${line}`);
+    await writeFile(path.join(dir, AGENTS), cite('- `CONTRIBUTING.md` lines 3-4: “Merge requests are squashed when they merge.”'));
+    assert.equal((await script('briefing')).code, 0, 'a quote across a line break, whitespace-normalised, passes');
+    await writeFile(path.join(dir, AGENTS), cite('Reverts are fine: “Revert messages are accepted as they are.” (`CONTRIBUTING.md` line 3)'));
+    let res = await script('briefing');
+    assert.equal(res.code, 1);
+    assert.match(res.stdout, /`CONTRIBUTING\.md` line 3: the quote is not in that line; first differing word: "Revert"/);
+    await writeFile(path.join(dir, AGENTS), cite('- `CONTRIBUTING.md` line 6: “Revert messages are always accepted as they are.”'));
+    res = await script('briefing');
+    assert.match(res.stdout, /`CONTRIBUTING\.md` line 6: the quote is not in that line; first differing word: "always"/);
+  });
+});

@@ -166,7 +166,7 @@ export async function wrongClaims(cwd, claimed) {
     const expected = decisionsLead(await readDecisions(cwd));
     if (!lead.startsWith(expected)) out.push(`Decisions: the line saying where the list is is out of date. Run: ${nasoCommand()} decisions sync`);
   }
-  out.push(...(await staleDecisionCounts(cwd, claimed)), ...(await citationsPastTheEnd(cwd, claimed)));
+  out.push(...(await staleDecisionCounts(cwd, claimed)), ...(await citationsPastTheEnd(cwd, claimed)), ...(await misquotedCitations(cwd, claimed)));
   return out;
 }
 
@@ -208,6 +208,61 @@ async function citationsPastTheEnd(cwd, claimed) {
     }
     const length = lengths.get(file);
     if (length !== null && highest > length) out.push(`\`${file}\` line ${highest}: the file has ${length} lines`);
+  }
+  return [...new Set(out)];
+}
+
+/** Text as a quote compares it: no Markdown emphasis, code or link syntax, one space, straight apostrophes. */
+const quoteText = (text) =>
+  String(text)
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/`|\*\*|__/g, '')
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+/**
+ * Curly-quoted text next to a line citation that the cited lines do not contain.
+ *
+ * A citation inside the file passes the length check and can still point at the wrong
+ * sentence, and a quote can be misquoted; both read as evidence. Each “…” is paired with the
+ * nearest `file` line(s) N[–M] on the same line of the block and looked for in those lines,
+ * list and quote markers removed and whitespace normalised. An ellipsis in a quote stands for
+ * text left out, so the parts around it are looked for in order.
+ */
+async function misquotedCitations(cwd, claimed) {
+  const out = [];
+  const files = new Map();
+  const citation = /`([^`\s]+)`[^`\n“”]{0,15}?\blines? (\d+)(?:\s*[–-]\s*(\d+))?/g;
+  for (const line of stripFencedBlocks(claimed).split('\n')) {
+    const cites = [...line.matchAll(citation)];
+    if (cites.length === 0) continue;
+    for (const quote of line.matchAll(/“([^”]+)”/g)) {
+      const near = cites.reduce((best, cite) => (Math.abs(cite.index - quote.index) < Math.abs(best.index - quote.index) ? cite : best));
+      const [, file, first, last = first] = near;
+      if (!files.has(file)) files.set(file, await readFile(path.join(cwd, file), 'utf8').catch(() => null));
+      const text = files.get(file);
+      if (text === null) continue;
+      const [a, b] = [Number(first), Number(last)].sort((x, y) => x - y);
+      const lines = text.split('\n');
+      if (b > lines.length) continue;
+      const cited = quoteText(lines.slice(a - 1, b).map((raw) => raw.replace(/^\s*(?:[-*+>]|\d+[.)]|#{1,6})\s+/, '')).join(' '));
+      const parts = quote[1].split(/…|\.\.\./).map(quoteText).filter(Boolean);
+      let from = 0;
+      const found = parts.every((part) => {
+        const at = cited.indexOf(part.replace(/[.,;:]$/, ''), from);
+        from = at + part.length;
+        return at !== -1;
+      });
+      if (found) continue;
+      const words = quoteText(quote[1].replace(/…|\.\.\./g, ' ')).split(' ');
+      let k = 0;
+      while (k < words.length && cited.includes(words.slice(0, k + 1).join(' '))) k++;
+      const where = a === b ? `line ${a}: the quote is not in that line` : `lines ${a}–${b}: the quote is not in those lines`;
+      const word = quote[1].replace(/…|\.\.\./g, ' ').trim().split(/\s+/)[k] ?? words[k] ?? '';
+      out.push(`\`${file}\` ${where}; first differing word: "${word.replace(/^[“"'(]+|[”"'),.;:!?]+$/g, '')}"`);
+    }
   }
   return [...new Set(out)];
 }
