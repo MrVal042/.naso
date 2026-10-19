@@ -157,6 +157,11 @@ export async function vendorTooling(repoRoot, { version } = {}) {
   return [...sources.map((s) => path.basename(s)), 'VERSION'];
 }
 
+/** The version setup ran with: `setupVersion`, or `version` in a config written before 1.5.3. */
+export function setupVersionOf(config) {
+  return config?.setupVersion ?? config?.version ?? null;
+}
+
 /** Version of the vendored copy, or null when there is no copy to read. */
 export async function vendoredVersion(repoRoot) {
   const raw = await readFile(path.join(vendoredToolingDir(repoRoot), 'VERSION'), 'utf8').catch(
@@ -180,9 +185,11 @@ export async function writeConfig(repoRoot, settings) {
 
 /** The exact text `writeConfig` writes, so a plan can show it before anything is written. */
 export function renderConfig({ version, now, track, hook, exclude = [] }) {
+  // `setupVersion`, not `version`: refresh never rewrites this file, so after an upgrade a
+  // field called "version" read as the toolset's and was reported as a mismatch.
   return `${JSON.stringify(
     {
-      version,
+      setupVersion: version,
       generatedAt: now,
       tooling: `${NASO_DIR}/tooling`,
       hook,

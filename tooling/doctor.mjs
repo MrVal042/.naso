@@ -24,7 +24,7 @@ import {
   NASO_END,
 } from './briefing.mjs';
 import { readHook, isNasoHook, findArtifacts, CLAUDE_FILE, claudeLoadsBriefing } from './install.mjs';
-import { NASO_DIR, readConfig, configuredExclusions, configPath, vendoredVersion } from './vendor.mjs';
+import { NASO_DIR, readConfig, configuredExclusions, configPath, vendoredVersion, setupVersionOf } from './vendor.mjs';
 
 const OK = 'OK';
 const WARN = 'WARN';
@@ -105,9 +105,8 @@ Support: ${SUPPORT_EMAIL}`);
     `${NASO_DIR}/config.json`,
     (await pathExists(configPath(cwd))) ? OK : WARN,
     (await pathExists(configPath(cwd)))
-      ? excluded.length > 0
-        ? `${excluded.length} area(s) excluded: ${excluded.join(', ')}`
-        : 'no areas excluded'
+      ? `setup ran with ${setupVersionOf(config) ?? 'an unrecorded version'} (refresh never rewrites it); ` +
+          (excluded.length > 0 ? `${excluded.length} area(s) excluded: ${excluded.join(', ')}` : 'no areas excluded')
       : 'not written — run setup to create it',
   );
 

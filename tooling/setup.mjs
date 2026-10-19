@@ -417,7 +417,7 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     target: `${NASO_DIR}/config.json`,
     verb: 'Write',
     detail:
-      'The settings this run used: the mode, the version, and the areas you exclude from the ' +
+      'The settings this run used: the mode, the version setup ran with (setupVersion), and the areas you exclude from the ' +
       'briefing. Re-running setup rewrites it; `refresh` never does.',
   });
 

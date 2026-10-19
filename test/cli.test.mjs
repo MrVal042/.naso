@@ -362,3 +362,20 @@ test('refresh says so when AGENTS.md was stamped by a newer NASO, and leaves the
     assert.match(await read(dir, AGENTS), /<!-- version: 9\.9\.9 -->/);
   });
 });
+
+test('config.json records the version setup ran with by that name, and doctor says so', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const config = JSON.parse(await read(dir, '.naso/config.json'));
+    assert.ok(config.setupVersion, 'setupVersion is written');
+    assert.equal('version' in config, false, 'no field that reads as the current version');
+    let doctor = await script('doctor');
+    assert.match(doctor.stdout, new RegExp(`\\.naso/config\\.json\\s+setup ran with ${config.setupVersion.replace(/\./g, '\\.')}`));
+    // A config written before 1.5.3 is read the same way.
+    const { setupVersion, ...rest } = config;
+    await writeFile(path.join(dir, '.naso/config.json'), JSON.stringify({ version: '1.5.0', ...rest }, null, 2));
+    doctor = await script('doctor');
+    assert.match(doctor.stdout, /\.naso\/config\.json\s+setup ran with 1\.5\.0/);
+  });
+});
