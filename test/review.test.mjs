@@ -506,3 +506,25 @@ test('the check reports a curly quote that the cited lines do not say', async ()
     assert.match(res.stdout, /`CONTRIBUTING\.md` line 6: the quote is not in that line; first differing word: "always"/);
   });
 });
+
+test('the prompt checks for another writer, runs the whole toolchain on NASO\'s files, and ends with a commit plan', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, 'CONTRIBUTING.md', '# Contributing\n\nBranches are named `feature/SCRUM-<n>-<summary>`.\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'contributing');
+    assert.equal((await bare(['--yes'])).code, 0);
+    const out = (await naso(dir, ['review'])).stdout.replace(/\n\s*/g, ' ');
+    // 11. Concurrent writers.
+    assert.match(out, /`git rev-parse HEAD` and `git write-tree`/);
+    assert.match(out, /If either changed and you did not change it, stop/);
+    // 13. Every check-only tool, on .naso\/ and the decisions folder, secret scanner included.
+    assert.match(out, /every check-only tool this repository and its CI use/);
+    assert.match(out, /lint, format check, typecheck, tests, and the secret scanner if one is installed, such as `gitleaks dir \. --redact`/);
+    assert.match(out, /on \.naso\/ and docs\/decisions\//);
+    // 12. The commit plan, last.
+    assert.match(out, /You are on branch main\. `CONTRIBUTING\.md` says branches follow `feature\/SCRUM-<n>-<summary>`/);
+    assert.match(out, /Commit plan[^]*the branch this repository's rules require[^]*the exact files to stage[^]*staged files that are not NASO's[^]*"Ready to commit: yes" or "Ready to commit: no", followed by the blockers/);
+    assert.ok(out.indexOf('What NASO gives this repository') < out.indexOf('Commit plan'), 'the commit plan comes last');
+  });
+});

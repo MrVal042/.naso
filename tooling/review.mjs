@@ -20,9 +20,10 @@
 
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { parseArgs, pathExists, nasoCommand, isMainModule, toolVersion, run, SUPPORT_EMAIL } from './lib.mjs';
+import { parseArgs, pathExists, nasoCommand, isMainModule, toolVersion, run, documentedBranchPattern, SUPPORT_EMAIL } from './lib.mjs';
 import { AGENTS_FILE, NASO_START, NASO_END, blockEdited, listRepoFiles } from './scan.mjs';
 import { checkBriefing } from './check.mjs';
+import { NASO_DIR } from './vendor.mjs';
 import { readDecisions, auditDecisions, indexFileOf, citedLines, sameDecisionText } from './decisions.mjs';
 
 /**
@@ -176,7 +177,10 @@ export async function reviewState(cwd) {
   const decisions = await readDecisions(cwd);
   const audit = await auditDecisions(cwd).catch(() => ({ findings: [] }));
   const rows = await decidedRows(cwd, files ?? [], decisions.records, { names: await repositoryNames(cwd) });
+  const branch = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
   return {
+    branch: branch.ok ? branch.stdout.trim() : null,
+    branchPattern: await documentedBranchPattern(cwd),
     hasAgents: text !== null,
     hasBlock,
     reviewed: hasBlock && blockEdited(text),
@@ -248,6 +252,16 @@ function stateLines(state, cmd, here) {
     );
   }
 
+  if (state.branch) {
+    const rule = state.branchPattern;
+    lines.push(
+      `- You are on branch ${state.branch}.` +
+        (rule
+          ? ` \`${rule.source}\` says branches follow \`${rule.text}\`${rule.regex.test(state.branch) ? ', and this one does' : ', and this one does not'}.`
+          : ' No branch rule is written down that NASO could read; look for one before planning the commit.'),
+    );
+  }
+
   const { records } = state.decisions;
   const by = (status) => records.filter((record) => record.status === status).length;
   if (records.length === 0) {
@@ -316,7 +330,8 @@ ${stateLines(state, cmd, here).join('\n')}
 This repository's own rules are in these files:
 ${sources.join('\n')}
 
-1. Run \`git status --short\` and keep the output. Never run git add, commit,
+1. Run \`git status --short\`, \`git rev-parse HEAD\` and \`git write-tree\`, and
+   keep all three outputs. Never run git add, commit,
    stash, reset or checkout: leave the index exactly as you found it.
 2. Read the files above, and any file they point to. Never open or print .env
    files, keys or other credentials; name them by path only.
@@ -335,8 +350,9 @@ ${sources.join('\n')}
      work that belongs to another repository or team.
    Prefer a link to the file that states a rule over copying the rule.
 4. Cite every line you add or change: file and line numbers
-   (\`CONTRIBUTING.md\` lines 6-9). Quote whole sentences, never a fragment cut
-   mid-link. If you cannot cite it, leave it out. Write a path in another
+   (\`CONTRIBUTING.md\` lines 6-9). Quote whole sentences in “…”, never a
+   fragment cut mid-link; the checker looks for the quote in the lines cited.
+   If you cannot cite it, leave it out. Write a path in another
    repository as \`repo:path\`; write code that is not a path (a method name, a
    branch pattern) without backticks, or the checker tests it as a file.
 5. Edit only between ${NASO_START} and ${NASO_END}. Everything outside the
@@ -353,15 +369,24 @@ ${sources.join('\n')}
      the next \`decide\` makes that stale. Point to ${index} instead.
    - Never accept, reject or supersede a decision. List them for the person.
 7. Audit the rest of what NASO installed here (the list at the top) against
-   this repository: run its check-only format and lint commands (never the ones
-   that rewrite files) on ${AGENTS_FILE}, CLAUDE.md and ${index}; check that the
-   hook does not duplicate or fight a hook the team already runs; and name
-   anything NASO wrote that this repository does not want. Do not change files
-   outside the block: report each one with the command or change that fixes it.
+   this repository. Run every check-only tool this repository and its CI use
+   (lint, format check, typecheck, tests, and the secret scanner if one is
+   installed, such as \`gitleaks dir . --redact\`) on ${NASO_DIR}/ and ${state.decisions.dir}/,
+   and on ${AGENTS_FILE} and CLAUDE.md; never the commands that rewrite files.
+   Check that the hook does not duplicate or fight a hook the team already
+   runs, and name anything NASO wrote that this repository does not want. Do
+   not change files outside the block: for each tool that complains, report
+   the config change that fixes it (an ignore entry, an override), never an
+   edit to ${NASO_DIR}/tooling/.
 8. Run \`${cmd} briefing${here}\` and fix everything it reports until it passes.
-9. Run \`git status --short\` again. If anything differs from step 1 beyond the
-   files you meant to change, say exactly what. Do not undo it yourself.
-10. Do not commit.
+9. Run \`git rev-parse HEAD\` and \`git write-tree\` again. You never stage, so
+   they should match step 1. If either changed and you did not change it, stop:
+   another session or person is writing to this repository. Say so, show
+   \`git diff --stat <tree from step 1> <tree now>\`, and report nothing else
+   until the person says to continue.
+10. Run \`git status --short\` again. If anything differs from step 1 beyond the
+    files you meant to change, say exactly what. Do not undo it yourself.
+11. Do not commit.
 
 Report, in this order:
 1. The diff of ${AGENTS_FILE}.
@@ -373,11 +398,17 @@ Report, in this order:
    findings, and any two files in this repository that disagree.
 5. For NASO upstream: bugs you hit in NASO, and each fact NASO should derive on
    its own, with the file it would read it from.
-6. Last, under the heading "What NASO gives this repository": counted and
+6. Under the heading "What NASO gives this repository": counted and
    specific to it, the claims the check verifies, the rules an agent now gets
    right the first time that it would have got wrong, the decisions recorded
    and how a new session finds them, and what the hook checks on every commit.
    Only what you verified in this run.
+7. Last, a "Commit plan": the branch this repository's rules require for
+   this change (and whether the current branch is it), the exact files to
+   stage as one \`git add -- …\` line, staged files that are not NASO's and
+   must stay out of this commit, and the commit message in the repository's
+   format. End with one line, "Ready to commit: yes" or "Ready to commit: no",
+   followed by the blockers.
 --------------------------------------------------------------`;
 }
 

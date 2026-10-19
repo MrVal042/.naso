@@ -132,3 +132,51 @@ test('a fresh clone gets the hook from one command, named the same in the block,
     assert.deepEqual({ agents: await read(dir, AGENTS), lib: await read(dir, '.naso/tooling/lib.mjs'), config: await read(dir, '.naso/config.json') }, before, 'at the same version nothing else changes');
   });
 });
+
+/**
+ * Prefix rules from gitleaks' default config, the ones that fire on a single token. A test
+ * cannot depend on gitleaks being installed, so these run everywhere; gitleaks itself runs
+ * below when it is on PATH or NASO_GITLEAKS names it.
+ */
+const KEY_SHAPES = [
+  ['aws-access-token', /\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}\b/],
+  ['github-pat', /\bgh[pousr]_[0-9a-zA-Z]{36}\b/],
+  ['github-fine-grained-pat', /\bgithub_pat_\w{82}\b/],
+  ['gitlab-pat', /\bglpat-[\w-]{20}\b/],
+  ['stripe-access-token', /\b(?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99}\b/],
+  ['slack-token', /\bxox[abposr]-[0-9A-Za-z-]{10,}\b/],
+  ['private-key', /-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S]{64,}?-----END/],
+  ['gcp-api-key', /\bAIza[\w-]{35}\b/],
+  ['npm-access-token', /\bnpm_[a-z0-9]{36}\b/i],
+  ['anthropic-api-key', /\bsk-ant-(?:api|admin)\d{2}-[\w-]{80,}/],
+  ['openai-api-key', /\bsk-(?:proj|svcacct|admin)?-?[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}/],
+];
+
+test('the vendored toolset and the decisions folder hold nothing a secret scanner reports', async () => {
+  const { readdir, readFile } = await import('node:fs/promises');
+  const path = await import('node:path');
+  const { STRIPE_FIXTURE, GITHUB_FIXTURE } = await import('./helpers.mjs');
+  const shaped = (text) => KEY_SHAPES.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  assert.deepEqual(shaped(`${STRIPE_FIXTURE} ${GITHUB_FIXTURE}`), ['github-pat', 'stripe-access-token'], 'the shapes catch a planted key');
+
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    assert.equal((await naso(dir, ['decide', '--title', 'Tokens live in SecureStore', '--decision', 'Auth tokens live in SecureStore.', '--source', 'kickoff'])).code, 0);
+    const found = [];
+    for (const folder of ['.naso/tooling', 'docs/decisions']) {
+      for (const name of await readdir(path.join(dir, folder))) {
+        for (const rule of shaped(await readFile(path.join(dir, folder, name), 'utf8'))) found.push(`${folder}/${name}: ${rule}`);
+      }
+    }
+    assert.deepEqual(found, []);
+
+    const { run } = await import('../tooling/lib.mjs');
+    const gitleaks = process.env.NASO_GITLEAKS || ((await run('gitleaks', ['version'], { cwd: dir })).ok ? 'gitleaks' : null);
+    if (!gitleaks) return;
+    for (const folder of ['.naso', 'docs/decisions']) {
+      const res = await exec(gitleaks, ['dir', folder, '--no-banner', '--redact', '--exit-code', '1'], dir);
+      assert.equal(res.code, 0, `gitleaks reports ${folder}:\n${res.stdout}${res.stderr}`);
+    }
+  });
+});
