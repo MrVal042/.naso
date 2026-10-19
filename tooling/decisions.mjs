@@ -286,13 +286,16 @@ export async function syncDecisionIndex(cwd) {
 // Writing records
 // ---------------------------------------------------------------------------
 
-const slugify = (title) =>
-  title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 50)
-    .replace(/-+$/, '') || 'decision';
+/**
+ * The file name's words: at most 50 characters, cut at the last hyphen before that, so a
+ * name never ends mid-word ("…-no-ve.md"). A single word longer than 50 is cut where it must.
+ */
+export const slugify = (title) => {
+  const full = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (full.length <= 50) return full || 'decision';
+  const cut = full.slice(0, 51).lastIndexOf('-');
+  return (cut > 0 ? full.slice(0, cut) : full.slice(0, 50)).replace(/-+$/, '') || 'decision';
+};
 
 /**
  * `<placeholder>` outside a code span, put in one. GitLab and GitHub read a bare `<type>` as
