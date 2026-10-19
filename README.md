@@ -102,10 +102,11 @@ The plan for acme-api  nothing is written until you accept
 
   AGENTS.md                new, 152 lines   (the briefing)
   CLAUDE.md                new, 1 line      (makes Claude Code load the briefing)
-  .naso/tooling/           new, 10876 lines (20 files; the hook runs this copy)
+  .naso/tooling/           new, 11865 lines (21 files; the hook runs this copy)
   .naso/config.json        new, 8 lines     (the choices you made here)
   .git/hooks/pre-commit    new, 47 lines    (the gate, on this machine)
   .prettierignore          append 1 line
+  eslint.config.mjs        insert 2 lines
   package.json             changed  (devDependencies, by npm, last)
   package-lock.json        changed  (by npm, with node_modules/)
 
@@ -125,9 +126,10 @@ The plan for acme-api  nothing is written until you accept
 
 ✓ AGENTS.md: wrote the NASO block, 152 lines
 ✓ CLAUDE.md: wrote `@AGENTS.md`, so Claude Code loads the briefing
-✓ .naso/tooling/: copied 20 files; the hook runs this copy, not the package
+✓ .naso/tooling/: copied 21 files; the hook runs this copy, not the package
 ✓ .naso/config.json: wrote the settings this run used
 ✓ .prettierignore: added .naso/, so prettier --check leaves the toolset alone
+✓ eslint.config.mjs: added .naso/ to its ignores, so ESLint leaves the toolset alone
 ✓ pre-commit hook: installed (.git/hooks/pre-commit)
 ✓ git: .naso/ and AGENTS.md are yours to commit (--track)
 ✓ devDependencies: added naso-dev with `npm install --save-dev naso-dev@1.5.1`
@@ -190,9 +192,9 @@ The same goes for the dev dependency step, the upgrade hint `refresh` prints, an
 Setup ends with two things, in this order:
 
 - **What you have now.** One line per thing the run actually did: how many path claims were checked, whether Claude Code loads the briefing, what the hook checks on this machine, where decisions are kept, whether naso-dev was recorded in `devDependencies`, and whether anything reached git history. Nothing that was skipped or failed is listed.
-- **A prompt for your coding agent**, printed last so it is the next thing to do, and built from this repository: it names the rule files it has (contributing guides, CODEOWNERS, review templates, CI, hooks, lint and format config, docs), what `briefing` and `decisions audit` report, and any version gap. The agent keeps, corrects or removes every line of the NASO block, adds what an agent would otherwise get wrong, cites a file and line for every change, and stays between the markers. It proposes the decisions your docs already made, never accepts one, checks NASO's other files against your own format and lint, runs `npx naso-dev briefing`, leaves the git index as it found it, and does not commit. Its report ends with what NASO gives this repository, counted.
+- **A prompt for your coding agent**, printed last so it is the next thing to do, and built from this repository: it names the rule files it has (contributing guides, CODEOWNERS, review templates, CI, hooks, lint and format config, docs), what `briefing` and `decisions audit` report, and any version gap. The agent keeps, corrects or removes every line of the NASO block, adds what an agent would otherwise get wrong, cites a file and line for every change, and stays between the markers. It proposes the decisions your docs already made (the rows your docs mark Decided that no record cites yet, and "decided" lines in config, CONTRIBUTING and CODEOWNERS), never accepts one, runs every check-only tool your repository and CI use (lint, format check, typecheck, tests, and a secret scanner such as gitleaks if installed) on `.naso/` and the decisions folder, runs `npx naso-dev briefing`, leaves the git index as it found it, and does not commit. It records `HEAD` and `git write-tree` at the start and stops if another session changes either. Its report ends with what NASO gives this repository, counted, and a commit plan: the branch your rules require, the exact files to stage, staged files that are not NASO's, and a final "Ready to commit: yes" or "no" with the blockers.
 
-`npx naso-dev review` prints the same prompt later. On a block that was already reviewed, it asks the agent to check what changed since then instead of starting over.
+`npx naso-dev review` prints the same prompt later. On a block that was already reviewed, it asks the agent to check what changed since then instead of starting over; while the block is not committed yet, it asks for a full review instead, since there is no commit to diff from. A Decided row owned by another repository ("Decided (customer-api)") is listed apart, not as a decision to propose here. Proposed records are never listed among the repository's own rules; accepted ones are, under their own heading.
 
 `--yes` and `--dry-run` print the full plan instead of the overview, since nobody is there to ask for details.
 
@@ -227,7 +229,22 @@ These work the same in any repository, and say nothing where the file is absent:
 - **Owners** lists CODEOWNERS paths with their reviewers, and names plain paths that match no tracked file yet.
 - **Source Map** lists every folder under the source root with its file count and the purpose the repository's own docs give it, cited. A folder no doc describes says so. Folders sharing a name at two depths (`src/auth/` and `src/features/auth/`) and folders a doc names that no longer exist are flagged.
 - **Branch names** follow the template the contributing guide writes down (`<type>/<KEY>-<n>-<slug>`), and the hook warns on any other branch. With no template, the hook only checks for a `prefix/name` shape.
-- **Generated files** name the script that writes them and the source it reads.
+- **Generated files** name the script that writes them and the source it reads. Files a framework generates and git ignores (`.expo/`, `expo-env.d.ts`, `.next/`, `next-env.d.ts`…) are named with whether type-checking needs them.
+- **Merge Request Checklist** quotes every checkbox in `.gitlab/merge_request_templates/*.md` or `.github/pull_request_template.md`, with file and line.
+- **Commit Standard** quotes the merge mode (squash, fast-forward), who may approve, and the exceptions to the commit rule ("Revert messages are accepted") from the contributing guide.
+
+Every line quoted in “…” next to a `` `file` line N `` citation is checked: `npx naso-dev briefing` looks for the quote in the lines cited and reports a mismatch with the first differing word.
+
+## Toolchain facts
+
+Read from each tool's own config, never by running it, and said where an agent will look:
+
+- **Format:** the Prettier options set in `.prettierrc`, `prettier.config.*` or package.json `"prettier"` (quotes, trailing commas, width…).
+- **Jest:** the preset, `moduleNameMapper` mocks and setup files from package.json `"jest"` or `jest.config.*`.
+- **Expo:** the `runtimeVersion` policy and what it asks when native code changes, and the experiments that are on (`typedRoutes`, `reactCompiler`), from `app.config.*` or `app.json`.
+- **Metro:** a transformer such as `react-native-svg-transformer`, which makes an `.svg` import a component.
+
+The block leaves out what changes nothing an agent does: no language mix, no restatement of `.gitignore`, and nothing from one machine's `.git/info/exclude`.
 
 ## Decisions: say it once
 
@@ -248,7 +265,8 @@ npx naso-dev decisions audit           # what no longer holds; changes nothing
 - **Where:** the folder the repository already uses for decision records (`docs/adr/`, `docs/decisions/`, an `.adr-dir`…), else `docs/decisions/`. Nygard and MADR records are read as they are.
 - **Agents propose, people accept.** `decide` writes `proposed`; only `accept` makes a decision binding, and the briefing tells agents never to run it themselves.
 - **Every record has a source**, by reference: "PO email, 2026-10-14", not the email.
-- **Say it once.** `decide` refuses a title that is already recorded unless the new record supersedes it, and `--considered` keeps the options turned down, so no later session offers one again.
+- **Say it once.** `decide` refuses a title that is already recorded unless the new record supersedes it, and warns when another record already cites the same line, whether by line, range (`lines 5-9`) or section (`docs/architecture.md section 2`). `--considered` keeps the options turned down, so no later session offers one again. Cite a doc as `--source "<file> line <n>"`.
+- **Short file names.** A long title is cut at the last hyphen before 50 characters, never mid-word.
 - **Every session uses them.** AGENTS.md tells an agent to check the list before asking the person a question, and to record a decision made in the session before the session ends.
 - **Nothing is deleted.** The audit reports contradictions, missing sources, scopes that are gone, unsettled proposals and passed review dates; a person supersedes or rejects.
 - **One list, one link.** The list sits between `<!-- naso:decisions:start -->` and `<!-- naso:decisions:end -->` in the decisions folder's `README.md`, accepted first, then proposed, then rejected or superseded; anything the team writes around the markers is kept. These commands and the pre-commit hook refresh it, and the hook stages it with the records. AGENTS.md links to it and tells every agent to read it before proposing an approach, so Claude Code, Codex, Cursor or Copilot start from the same decisions in a new session, on a new account or on another machine.
@@ -262,12 +280,15 @@ npx naso-dev decisions audit           # what no longer holds; changes nothing
 | `.naso/tooling/*.mjs`       | A copy of the toolset, so the hook works with no network and no global install. Each file starts with `/* eslint-disable */`, so your lint rules do not apply to NASO's code. |
 | `.dockerignore`             | One `.naso/` line under its own comment, only when the file already exists, so a Docker build does not copy the toolset into the image. Docker does not read `.git/info/exclude`. |
 | `.prettierignore`           | One `.naso/` line, only in a repository that uses Prettier, so `prettier --check .` leaves the toolset alone. Prettier does not read `.git/info/exclude`. |
+| `eslint.config.*` or `.eslintignore` | `{ ignores: ['.naso/'] }` as the first entry of a flat config's exported array, in its own quote style, or one `.naso/` line in `.eslintignore` for a legacy config, so `eslint .` does not report the vendored files' `eslint-disable` headers as unused. A config NASO cannot place the line in is left alone, and the plan says what to add. |
 | `.naso/tooling/VERSION`     | The version that copy was vendored from — the briefing stamp is compared against it.             |
-| `.naso/config.json`         | Per-repository setup choices, including any areas you excluded.                                  |
+| `.naso/config.json`         | Per-repository setup choices: `setupVersion` (the version setup ran with; `refresh` never rewrites it), the mode, and any areas you excluded. |
 | `.git/hooks/pre-commit`     | Runs the secret, scope, format and lint checks on staged files and keeps the briefing current.   |
 | `.git/info/exclude`         | Keeps `.naso/`, `AGENTS.md` and a `CLAUDE.md` NASO created untracked locally (default mode), except a file git already tracks. Use `--track` to version them. |
 
 The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplevel`, so it runs identically from a clone, from the npx cache, or from a teammate's machine that never installed the package. If the vendored script is ever missing, the hook prints one loud line and lets the commit through rather than failing silently.
+
+Git never copies `.git/hooks`, so a fresh clone has no hook. Where `.naso/` is committed, `npx naso-dev refresh` installs it, and at the version already vendored changes nothing else. The briefing and `doctor` name the same command.
 
 ## Commands
 
@@ -275,7 +296,7 @@ The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplev
 | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | `npx naso-dev [target] [options]`                                   | The setup flow: read, plan, ask, write. No TTY and no `--yes` prints the plan, writes nothing, exits 2.           |
 | `npx naso-dev briefing [target] [check\|create\|refresh]`           | Verify `AGENTS.md` against disk (paths, areas, and the claims it can test), write the NASO block, or move the version stamps only. A reviewed block is never replaced without `--discard-edits`. |
-| `npx naso-dev refresh [target]`                                     | Re-copy the toolset, re-stamp the briefing, reinstall the hook. Refuses to move a newer toolset back without `--force`, and says when `package.json` records a different naso-dev. Never rewrites other briefing prose or `.naso/config.json`. |
+| `npx naso-dev refresh [target]`                                     | Re-copy the toolset, re-stamp the briefing, reinstall the hook; on a fresh clone, the command that installs the hook. Refuses to move a newer toolset back without `--force`, and says when `package.json` records a different naso-dev, with the exact command in the right direction. Never rewrites other briefing prose or `.naso/config.json`. |
 | `npx naso-dev review [target]`                                     | Print the prompt for your coding agent, built from this repository as it is now: its rule files, the check, decisions waiting for a person, and whether the block was reviewed before. |
 | `npx naso-dev guide <area-or-prefix> [target]`                      | The guide for one area: its paths, its checks, its boundary rules, and a ready-to-paste `NASO_SCOPE`.            |
 | `npx naso-dev guide --list [target]`                                | The areas that exist, with their file counts. Unknown areas are an error, not an empty screen.                   |
@@ -283,7 +304,7 @@ The hook resolves `.naso/tooling/validate.mjs` from `git rev-parse --show-toplev
 | `npx naso-dev validate [target] [--staged] [--scope a,b] [--strict]` | The pre-commit gate, and the full CI run without `--staged`.                                                     |
 | `npx naso-dev decide --title … --source … --decision …`           | Record a decision the team made, as proposed, with where it was made. Also `--why`, `--considered` (repeatable), `--by`, `--applies`, `--supersedes <id>`, and `--accept` for the person who made it. |
 | `npx naso-dev decisions [accept\|reject\|supersede\|audit\|sync]` | List, settle or audit the recorded decisions. The audit changes nothing. |
-| `npx naso-dev doctor [target]`                                      | Environment and install diagnostics: Node, git, hook, vendored copy, briefing consistency, the Claude Code link, leftovers. |
+| `npx naso-dev doctor [target]`                                      | Environment and install diagnostics: Node, git, hook, vendored copy and the naso-dev package.json records, the version setup ran with, what the repository's ESLint prints for `.naso/`, briefing consistency, the Claude Code link, leftovers. |
 
 All commands accept `--help`. `init` and `setup` are retired but still run; both are covered by the test suite.
 
@@ -293,6 +314,7 @@ All commands accept `--help`. `init` and `setup` are retired but still run; both
 - `--no-hook` — do not install the pre-commit hook.
 - `--hook-action <install|chain|skip|abort>` — what to do when `.git/hooks/pre-commit` already exists and NASO did not write it, or when `core.hooksPath` points at a directory git tracks (husky's `.husky/`). `chain` moves the existing hook, unchanged, to `pre-commit.pre-naso` and NASO's hook runs it first. The default is `skip`: NASO never overwrites a hook it did not write, and never writes into a tracked hooks directory unless you choose to. In a terminal this is asked as a question instead.
 - `--exclude <prefix>` — keep an area out of the briefing. Repeatable. Saved to `.naso/config.json`.
+- `--no-ignore-files` — leave `.prettierignore`, `.dockerignore` and the ESLint config as they are. `review` then names the line each one needs.
 - `--save-dev` — record naso-dev in `devDependencies` with this repository's package manager, as the last step. Asked as a question in a terminal; from a script, `--yes` alone never runs the package manager.
 - `--yes`, `-y` — accept without prompting (CI and scripts).
 - `--dry-run` — print the plan and stop. Writes nothing.
