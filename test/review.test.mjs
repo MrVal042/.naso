@@ -259,7 +259,8 @@ test('review says when ESLint will lint the vendored toolset', async () => {
     await put(dir, 'eslint.config.mjs', 'export default [{ ignores: ["dist/"] }];\n');
     await git('add', '-A');
     await git('commit', '-qm', 'eslint');
-    assert.equal((await bare(['--yes'])).code, 0);
+    // Setup adds the ignore itself; opted out, the prompt names it.
+    assert.equal((await bare(['--yes', '--no-ignore-files'])).code, 0);
     assert.match((await naso(dir, ['review'])).stdout, /eslint\.config\.mjs does not ignore \.naso\//);
   });
 });

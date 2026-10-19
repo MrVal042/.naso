@@ -34,6 +34,40 @@ function printRow(label, status, detail = '') {
   console.log(`${status.padEnd(5)}  ${label.padEnd(24)} ${detail}`);
 }
 
+const ESLINT_CONFIGS = [
+  'eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs', 'eslint.config.ts', 'eslint.config.mts', 'eslint.config.cts',
+  '.eslintrc', '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.json', '.eslintrc.yml', '.eslintrc.yaml',
+];
+
+/**
+ * The repository's own ESLint, run on .naso/, and whatever it prints.
+ *
+ * Setup adds .naso/ to the config's ignores, but a config it could not edit, an opt-out, or
+ * a later rewrite of the config brings the vendored files back into `eslint .`, where ESLint 9
+ * reports their disable headers as unused. Running the linter is the only way to know. It is
+ * run with node from node_modules/eslint, so it works the same on every platform, and only
+ * when the repository has an ESLint config and an installed ESLint.
+ */
+async function eslintRow(cwd) {
+  const configs = await Promise.all(ESLINT_CONFIGS.map((name) => pathExists(path.join(cwd, name))));
+  if (!configs.some(Boolean) || !(await pathExists(path.join(cwd, NASO_DIR)))) return;
+  const bin = path.join(cwd, 'node_modules', 'eslint', 'bin', 'eslint.js');
+  if (!(await pathExists(bin))) {
+    printRow(`ESLint on ${NASO_DIR}/`, OK, 'not run: ESLint is not installed in node_modules');
+    return;
+  }
+  const res = await run(process.execPath, [bin, '--no-error-on-unmatched-pattern', `${NASO_DIR}/`], { cwd });
+  const printed = `${res.stdout}\n${res.stderr}`.trim();
+  if (!printed && res.ok) {
+    printRow(`ESLint on ${NASO_DIR}/`, OK, 'prints nothing');
+    return;
+  }
+  const lines = printed.split('\n');
+  printRow(`ESLint on ${NASO_DIR}/`, WARN, `prints ${lines.length} line${lines.length === 1 ? '' : 's'}: ${lines[0].trim()}`);
+  for (const line of lines.slice(1, 8)) if (line.trim()) console.log(`${''.padEnd(32)}${line.trim()}`);
+  console.log(`${''.padEnd(32)}Add '${NASO_DIR}/' to the ESLint config's ignores (setup does it unless --no-ignore-files).`);
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const { flags, positional } = parseArgs(argv);
   if (flags.has('help') || flags.has('h')) {
@@ -124,6 +158,8 @@ Support: ${SUPPORT_EMAIL}`);
   } else {
     printRow('pre-commit hook', WARN, 'foreign hook (left as-is)');
   }
+
+  await eslintRow(cwd);
 
   try {
     const facts = await scanRepo(cwd);

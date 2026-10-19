@@ -162,6 +162,64 @@ async function planPrettierIgnore(cwd, facts) {
   return usesPrettier ? planIgnoreFile(cwd, '.prettierignore', { create: true }) : null;
 }
 
+/** Flat ESLint configs, in the order ESLint itself looks for them. */
+const FLAT_ESLINT = ['eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs', 'eslint.config.ts', 'eslint.config.mts', 'eslint.config.cts'];
+const LEGACY_ESLINT = ['.eslintrc', '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.json', '.eslintrc.yml', '.eslintrc.yaml'];
+
+/**
+ * A flat ESLint config with `.naso/` as the first entry of the array it exports, or null when
+ * there is no such array to place it in with confidence.
+ *
+ * ESLint 9 reads neither .gitignore nor .git/info/exclude, and reports each vendored file's
+ * `eslint-disable` header as an unused directive: three warnings in the field from a
+ * repository whose own code was clean. A global `ignores` object is the one switch it has.
+ * Placed first, so nothing after it can lint the toolset back in, in the config's own quote
+ * style and indent, so its Prettier check stays clean. A config built by a function NASO does
+ * not know is left alone, and `review` names the one-line fix instead.
+ */
+export function eslintIgnoreEdit(text) {
+  if (/\.naso\b/.test(text)) return null;
+  const exported = '(?:export\\s+default|module\\.exports\\s*=)\\s*';
+  const known = '(?:[\\w$]+\\.)?(?:config|defineConfig|defineFlatConfig)\\(';
+  let at = -1;
+  for (const pattern of [new RegExp(`${exported}\\[`), new RegExp(`${exported}${known}\\s*\\[`), new RegExp(`${exported}${known}`)]) {
+    const match = text.match(pattern);
+    if (match) {
+      at = match.index + match[0].length;
+      break;
+    }
+  }
+  if (at === -1) {
+    const name = text.match(new RegExp(`${exported}([A-Za-z_$][\\w$]*)\\s*;?\\s*$`, 'm'))?.[1];
+    const match = name ? text.match(new RegExp(`(?:const|let|var)\\s+${name.replace(/\$/g, '\\$')}\\s*(?::[^=]+)?=\\s*\\[`)) : null;
+    if (match) at = match.index + match[0].length;
+  }
+  if (at === -1) return null;
+  const quote = (text.match(/"/g) ?? []).length > (text.match(/'/g) ?? []).length ? '"' : "'";
+  const entry = `{ ignores: [${quote}${NASO_DIR}/${quote}] },`;
+  if (!text.startsWith('\n', at)) return `${text.slice(0, at)}${entry} ${text.slice(at)}`;
+  const next = text.slice(at + 1).match(/^([ \t]*)(\S?)/);
+  const indent = /^[\])]/.test(next[2]) || !next[2] ? `${next[1]}  ` : next[1];
+  return `${text.slice(0, at)}\n${indent}// Vendored by naso-dev; not part of this project's code\n${indent}${entry}${text.slice(at)}`;
+}
+
+/**
+ * What setup does about ESLint and .naso/: edit a flat config, append to .eslintignore for a
+ * legacy one, or `manual` when the flat config has no array NASO can place the line in.
+ */
+async function planEslintIgnore(cwd, facts) {
+  for (const name of FLAT_ESLINT) {
+    const file = path.join(cwd, name);
+    const text = await readFile(file, 'utf8').catch(() => null);
+    if (text === null) continue;
+    if (/\.naso\b/.test(text)) return null;
+    const next = eslintIgnoreEdit(text);
+    return next === null ? { name, file, manual: true } : { name, file, exists: true, text, next, lines: lineCount(next) - lineCount(text), insert: true };
+  }
+  const legacy = facts.pkg?.eslintConfig || (await Promise.all(LEGACY_ESLINT.map((name) => pathExists(path.join(cwd, name))))).some(Boolean);
+  return legacy ? planIgnoreFile(cwd, '.eslintignore', { create: true }) : null;
+}
+
 /** The lockfile a package manager writes, for the plan's list of files. */
 const LOCKFILE_OF = { npm: 'package-lock.json', pnpm: 'pnpm-lock.yaml', yarn: 'yarn.lock', bun: 'bun.lock' };
 
@@ -317,7 +375,7 @@ const TRACKED_AGENTS_NOTE =
  * The scan is the expensive part and it is what both a rejection and an accept
  * are decided on, so it is done up front and reused for the whole flow.
  */
-export async function inspect(cwd, { track, noHook, exclude, force = false, hookAction = null, saveDev = false, discardEdits = false }) {
+export async function inspect(cwd, { track, noHook, exclude, force = false, hookAction = null, saveDev = false, discardEdits = false, noIgnoreFiles = false }) {
   const config = await readConfig(cwd);
 
   // Saved exclusions survive the run, and a --exclude flag adds to them. The union is
@@ -516,7 +574,9 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
   // Prettier reads .gitignore and .prettierignore, never .git/info/exclude, so a local
   // .naso/ is still formatted-checked by `prettier --check .` and fails it. One line in
   // .prettierignore is the only switch Prettier has.
-  const prettierIgnore = await planPrettierIgnore(cwd, facts);
+  // --no-ignore-files leaves every ignore file and the ESLint config as they are; `review`
+  // then names the line each one needs.
+  const prettierIgnore = noIgnoreFiles ? null : await planPrettierIgnore(cwd, facts);
   if (prettierIgnore) {
     plans.push({
       target: '.prettierignore',
@@ -531,7 +591,7 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
   // `COPY . .` sends the build context to Docker, and .git/info/exclude does not reach it:
   // without this line the toolset is baked into the team's image. Only an existing
   // .dockerignore is appended to; a repository with none is not given one.
-  const dockerIgnore = await planIgnoreFile(cwd, '.dockerignore', { create: false });
+  const dockerIgnore = noIgnoreFiles ? null : await planIgnoreFile(cwd, '.dockerignore', { create: false });
   if (dockerIgnore) {
     plans.push({
       target: '.dockerignore',
@@ -539,6 +599,26 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
       detail: `${NASO_DIR}/, so a Docker build does not copy the toolset into the image. Docker does not read .git/info/exclude.`,
     });
     writes.push({ path: '.dockerignore', change: 'append', lines: dockerIgnore.lines });
+  }
+
+  const eslintIgnore = noIgnoreFiles ? null : await planEslintIgnore(cwd, facts);
+  if (eslintIgnore?.manual) {
+    plans.push({
+      target: eslintIgnore.name,
+      verb: 'Leave',
+      detail:
+        `It exports no array NASO can add to safely, so it is left as it is. Add { ignores: ['${NASO_DIR}/'] } as its first entry; ` +
+        'ESLint does not read .git/info/exclude, and lint would report the vendored files.',
+    });
+  } else if (eslintIgnore) {
+    plans.push({
+      target: eslintIgnore.name,
+      verb: eslintIgnore.insert ? 'Edit' : eslintIgnore.exists ? 'Append' : 'Write',
+      detail: eslintIgnore.insert
+        ? `Two lines at the top of its exported array: a comment and { ignores: ['${NASO_DIR}/'] }, so \`eslint .\` leaves the copied toolset alone. ESLint does not read .git/info/exclude, and ESLint 9 reports each vendored file's eslint-disable header as unused.`
+        : `One line, ${NASO_DIR}/, so \`eslint .\` leaves the copied toolset alone. ESLint does not read .git/info/exclude.`,
+    });
+    writes.push({ path: eslintIgnore.name, change: eslintIgnore.insert ? 'insert' : eslintIgnore.exists ? 'append' : 'new', lines: eslintIgnore.lines });
   }
 
   const devDependency = devDependencyPlan(facts.pkg, facts.packageManager?.name ?? 'npm', version, { exact: await pinsExactVersions(cwd, facts.pkg) });
@@ -559,7 +639,7 @@ export async function inspect(cwd, { track, noHook, exclude, force = false, hook
     writes.push({ path: LOCKFILE_OF[devDependency.pm] ?? 'package-lock.json', change: 'by-pm', lines: 0, note: `by ${devDependency.pm}, with node_modules/` });
   }
 
-  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, blockEdited: edited, force, localExcludes, claude, devDependency, recordsDev, track, ignoreFiles: [prettierIgnore, dockerIgnore].filter(Boolean) };
+  return { facts, artifacts, hook, hookDecision, version, plans, writes, excluded, hasAgents, hasBlock, blockEdited: edited, force, localExcludes, claude, devDependency, recordsDev, track, ignoreFiles: [prettierIgnore, dockerIgnore, eslintIgnore].filter((plan) => plan && !plan.manual) };
 }
 
 /**
@@ -639,7 +719,7 @@ export async function displayOverview(state, cwd, style = plainStyle) {
 /** "new, 83 lines", "append 5 lines", or "changed" for a file the package manager writes. */
 function sizeText(write) {
   if (write.change === 'by-pm') return 'changed';
-  if (write.change === 'append') return `append ${plural(write.lines, 'line')}`;
+  if (write.change === 'append' || write.change === 'insert') return `${write.change} ${plural(write.lines, 'line')}`;
   return `${write.change}, ${plural(write.lines, 'line')}`;
 }
 
@@ -790,15 +870,13 @@ export async function install(cwd, { track, noHook, force, discardEdits = false,
   });
   console.log(ok(`${NASO_DIR}/config.json: wrote the settings this run used`));
 
-  for (const { name, file, text } of state.ignoreFiles ?? []) {
-    await writeFile(file, `${text}${ignoreAppend(text)}`, 'utf8');
-    console.log(
-      ok(
-        name === '.prettierignore'
-          ? `.prettierignore: added ${NASO_DIR}/, so prettier --check leaves the toolset alone`
-          : `${name}: added ${NASO_DIR}/, so a Docker build leaves the toolset out of the image`,
-      ),
-    );
+  for (const { name, file, text, next } of state.ignoreFiles ?? []) {
+    await writeFile(file, next ?? `${text}${ignoreAppend(text)}`, 'utf8');
+    const why = {
+      '.prettierignore': 'so prettier --check leaves the toolset alone',
+      '.dockerignore': 'so a Docker build leaves the toolset out of the image',
+    }[name] ?? 'so ESLint leaves the toolset alone';
+    console.log(ok(`${name}: added ${NASO_DIR}/${next ? ' to its ignores' : ''}, ${why}`));
   }
 
   if (decision.action === 'install' || decision.action === 'reinstall' || decision.action === 'chain') {
@@ -971,6 +1049,7 @@ Usage:
   --no-hook            do not install the pre-commit hook
   --hook-action <a>    install | chain | skip | abort, for a hook NASO did not write
   --save-dev           record naso-dev in devDependencies with the package manager
+  --no-ignore-files    leave .prettierignore, .dockerignore and the ESLint config as they are
   --exclude <prefix>   keep an area out of the briefing; repeatable, saved to config.json
   --force              replace an existing naso:start / naso:end block, and nothing else
   --yes                accept the plan and write it
@@ -994,6 +1073,7 @@ Support: ${SUPPORT_EMAIL}`);
     hookAction: values.get('hook-action') ?? null,
     saveDev: flags.has('save-dev'),
     discardEdits: flags.has('discard-edits'),
+    noIgnoreFiles: flags.has('no-ignore-files'),
   };
 
   if (!(await pathExists(cwd))) {

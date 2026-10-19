@@ -401,6 +401,8 @@ Options:
                      or a core.hooksPath directory git tracks (default: skip)
   --save-dev         record naso-dev in devDependencies with this repository's
                      package manager (asked when there is a terminal)
+  --no-ignore-files  leave .prettierignore, .dockerignore and the ESLint config
+                     as they are (review then names the line each one needs)
   --yes              accept the plan without asking; for CI, scripts and agents
   --dry-run          print the plan and stop
   --why              the long-form rationale for doing this at all
@@ -429,6 +431,7 @@ Other commands:
     hookAction: values.get('hook-action') ?? null,
     saveDev: flags.has('save-dev'),
     discardEdits: flags.has('discard-edits'),
+    noIgnoreFiles: flags.has('no-ignore-files'),
   };
 
   if (options.hookAction !== null && !HOOK_ACTIONS.includes(options.hookAction)) {

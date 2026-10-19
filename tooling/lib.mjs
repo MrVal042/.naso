@@ -463,6 +463,7 @@ const BOOLEAN_FLAGS = new Set([
   'save-dev',
   'accept',
   'discard-edits',
+  'no-ignore-files',
 ]);
 
 /** Single-letter spellings, mapped to the long flag they stand for. */
