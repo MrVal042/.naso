@@ -1144,3 +1144,21 @@ export async function recordedNasoVersion(cwd) {
   const installed = lock?.packages?.['node_modules/naso-dev']?.version ?? null;
   return { pkg, spec, installed };
 }
+
+/**
+ * What to run when package.json and the vendored toolset record different naso-dev versions.
+ *
+ * The direction decides the command. A toolset behind the pin is brought up with the pinned
+ * version's own refresh; a toolset ahead of it means a teammate upgraded, so the pin moves,
+ * because a refresh from the pinned install refuses to move the toolset back. "Run refresh
+ * with the version the team uses" left the reader to guess which way to go.
+ */
+export function pinAdvice({ recorded, vendored, pm }) {
+  if (!recorded || !vendored) return null;
+  const pinned = recorded.installed ?? recorded.spec.replace(/^[\^~=v]+/, '');
+  if (pinned === vendored) return null;
+  const said = `package.json records naso-dev ${recorded.spec}${recorded.installed ? ` (installed ${recorded.installed})` : ''} and .naso/tooling/ is ${vendored}`;
+  return compareVersions(vendored, pinned) < 0
+    ? `${said}, behind it. \`${nasoCommand({ version: pinned })} refresh\` brings the toolset up to ${pinned}.`
+    : `${said}, ahead of it. \`${exactDevInstallText(pm, vendored)}\` records the toolset's version (refresh refuses to move the toolset back without --force).`;
+}

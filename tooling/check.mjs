@@ -20,6 +20,7 @@ import {
   pinsExactVersions,
   detectPackageManager,
   exactDevInstallText,
+  pinAdvice,
 } from './lib.mjs';
 import { DECISIONS_LEAD, decisionsLead, readDecisions } from './decisions.mjs';
 import {
@@ -222,28 +223,35 @@ export async function versionNotes(cwd, claimed) {
   const vendored = (await readFile(path.join(cwd, '.naso', 'tooling', 'VERSION'), 'utf8').catch(() => '')).trim() || null;
   const running = await toolVersion();
   const notes = [];
-  if (vendored && vendored !== running) {
-    notes.push(`.naso/tooling/ is ${vendored} and this command is ${running}. Run \`${nasoCommand()} refresh\` with the version the team uses.`);
+  // package.json and the lockfile are what teammates install; the vendored copy is what the
+  // hook runs. Two versions there and `refresh` from node_modules would move the toolset back.
+  const recorded = await recordedNasoVersion(cwd);
+  const pm = recorded ? (await detectPackageManager(cwd, recorded.pkg)).name : null;
+  const pinGap = pinAdvice({ recorded, vendored, pm });
+  // With a pin that disagrees with the toolset, the pin note says which way to go; a second
+  // note about the running command would point the other way.
+  if (vendored && vendored !== running && !pinGap) {
+    const pinned = recorded ? (recorded.installed ?? recorded.spec.replace(/^[\^~=v]+/, '')) : null;
+    notes.push(
+      `.naso/tooling/ is ${vendored} and this command is ${running}. ` +
+        (pinned === vendored
+          ? `package.json pins ${vendored}: run \`${nasoCommand({ version: vendored })}\` here${compareVersions(running, vendored) > 0 ? `, or move the team to ${running} with \`${nasoCommand({ version: running })} refresh\` and \`${exactDevInstallText(pm, running)}\`` : ''}.`
+          : compareVersions(running, vendored) > 0
+            ? `\`${nasoCommand({ version: running })} refresh\` brings the toolset up to ${running}.`
+            : `Run \`${nasoCommand({ version: vendored })}\` here; a refresh from ${running} would move the toolset back.`),
+    );
   }
   if (stamped && vendored && stamped !== vendored) {
     notes.push(
       compareVersions(stamped, vendored) < 0
         ? `The block is stamped ${stamped} and .naso/tooling/ is ${vendored}. \`${nasoCommand()} briefing refresh\` moves the stamp and nothing else.`
-        : `The block is stamped ${stamped}, newer than .naso/tooling/ (${vendored}). \`${nasoCommand()} refresh\` from ${stamped} or later updates the toolset.`,
+        : `The block is stamped ${stamped}, newer than .naso/tooling/ (${vendored}). \`${nasoCommand({ version: stamped })} refresh\` updates the toolset.`,
     );
   }
-  // package.json and the lockfile are what teammates install; the vendored copy is what the
-  // hook runs. Two versions there and `refresh` from node_modules would move the toolset back.
-  const recorded = await recordedNasoVersion(cwd);
-  if (recorded && vendored) {
-    const pm = (await detectPackageManager(cwd, recorded.pkg)).name;
-    const fix = exactDevInstallText(pm, vendored);
-    const installed = recorded.installed ?? recorded.spec.replace(/^[\^~=v]+/, '');
-    if (installed !== vendored) {
-      notes.push(`package.json records naso-dev ${recorded.spec}${recorded.installed ? ` (installed ${recorded.installed})` : ''} and .naso/tooling/ is ${vendored}. \`${fix}\` brings them together.`);
-    } else if (/^[\^~]/.test(recorded.spec) && (await pinsExactVersions(cwd, recorded.pkg))) {
-      notes.push(`package.json records naso-dev as ${recorded.spec}, and this repository pins exact versions. \`${fix}\` pins it.`);
-    }
+  if (pinGap) {
+    notes.push(pinGap);
+  } else if (recorded && vendored && /^[\^~]/.test(recorded.spec) && (await pinsExactVersions(cwd, recorded.pkg))) {
+    notes.push(`package.json records naso-dev as ${recorded.spec}, and this repository pins exact versions. \`${exactDevInstallText(pm, vendored)}\` pins it.`);
   }
   return notes;
 }

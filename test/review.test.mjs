@@ -457,3 +457,30 @@ test('review asks for a full review, not a diff, while the block is not committe
     assert.doesNotMatch(out, /git diff <that commit>\.\.HEAD/);
   });
 });
+
+test('the version note says exactly which command closes the gap, in the direction of the pin', async () => {
+  await withRepo(async ({ dir, git, bare, script }) => {
+    await seedProject(dir, git);
+    assert.equal((await bare(['--yes'])).code, 0);
+    const pkg = JSON.parse(await read(dir, 'package.json'));
+    const pin = async (version) => {
+      await put(dir, 'package.json', JSON.stringify({ ...pkg, devDependencies: { 'naso-dev': version } }));
+      await put(dir, 'package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/naso-dev': { version } } }));
+    };
+    // Ahead of the pin: the field case, toolset 1.5.1 and package.json and lockfile 1.5.0.
+    await writeFile(path.join(dir, '.naso/tooling/VERSION'), '0.8.1\n');
+    await pin('0.8.0');
+    let out = (await script('briefing')).stdout;
+    assert.match(out, /package\.json records naso-dev 0\.8\.0 \(installed 0\.8\.0\) and \.naso\/tooling\/ is 0\.8\.1, ahead of it\. `npm install --save-dev --save-exact naso-dev@0\.8\.1` records the toolset's version/);
+    assert.match(out, /refresh refuses to move the toolset back without --force/);
+    assert.doesNotMatch(out, /the version the team uses/);
+    // Behind the pin.
+    await writeFile(path.join(dir, '.naso/tooling/VERSION'), '0.7.0\n');
+    out = (await script('briefing')).stdout;
+    assert.match(out, /\.naso\/tooling\/ is 0\.7\.0, behind it\. `npx naso-dev@0\.8\.0 refresh` brings the toolset up to 0\.8\.0/);
+    // No pin: the running version.
+    await put(dir, 'package.json', JSON.stringify(pkg));
+    out = (await script('briefing')).stdout;
+    assert.match(out, /\.naso\/tooling\/ is 0\.7\.0 and this command is (\d+\.\d+\.\d+)\. `npx naso-dev@\1 refresh` brings the toolset up to \1\./);
+  });
+});

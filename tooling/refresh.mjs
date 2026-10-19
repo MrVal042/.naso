@@ -42,6 +42,7 @@ import {
   detectPackageManager,
   readJSONFile,
   recordedNasoVersion,
+  pinAdvice,
 } from './lib.mjs';
 import { refreshBriefingStamp, AGENTS_FILE } from './briefing.mjs';
 import { installPreCommitHook, readHook, isNasoHook } from './install.mjs';
@@ -177,11 +178,8 @@ Support: ${SUPPORT_EMAIL}`);
   const toolset = (await vendoredVersion(cwd)) ?? version;
   console.log(`Toolset version in this repository: ${toolset}`);
   const recorded = await recordedNasoVersion(cwd);
-  const recordedVersion = recorded ? (recorded.installed ?? recorded.spec.replace(/^[\^~=v]+/, '')) : null;
-  if (recordedVersion && recordedVersion !== toolset) {
-    console.log(`package.json records naso-dev ${recorded.spec}${recorded.installed ? ` (installed ${recorded.installed})` : ''}; teammates who install get that, not ${toolset}.`);
-    console.log(`  To match: ${exactDevInstallText((await detectPackageManager(cwd, recorded.pkg)).name, toolset)}`);
-  }
+  const gap = recorded ? pinAdvice({ recorded, vendored: toolset, pm: (await detectPackageManager(cwd, recorded.pkg)).name }) : null;
+  if (gap) console.log(`${gap} Teammates who install get what package.json records.`);
   console.log('');
   console.log('Next:');
   console.log(`  ${nasoCommand()} doctor ${cwd}       confirm the install end to end`);
