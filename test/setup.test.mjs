@@ -235,7 +235,7 @@ test('setup --yes writes the briefing, the toolset, the config and the hook', as
     assert.ok(await exists(dir, path.join('.naso', 'config.json')));
 
     const config = JSON.parse(await read(dir, path.join('.naso', 'config.json')));
-    assert.equal(config.version, await toolVersion());
+    assert.equal(config.setupVersion, await toolVersion());
     assert.deepEqual(config.exclude, []);
 
     const hook = path.join(dir, '.git', 'hooks', 'pre-commit');
