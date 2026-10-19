@@ -71,8 +71,14 @@ const RULE_SOURCES = [
     match: (f) =>
       /^(?:renovate\.json5?|\.renovaterc(?:\.json)?|\.github\/renovate\.json5?|\.github\/dependabot\.ya?ml|\.npmrc|\.nvmrc|\.node-version|\.tool-versions|(?:metro|babel|jest|vitest|vite|next|webpack|rollup|tsup|playwright|cypress)\.config\.\w+|eas\.json)$/.test(f),
   },
-  { kind: 'Docs on architecture, structure and decisions', match: (f) => /^(?:docs?|adr|architecture)\/.+\.(?:md|mdx|adoc|rst)$/i.test(f) },
+  // Not the decisions folder: its records are proposals until a person accepts them, and
+  // naming them as the repository's rules made the agent's own proposals the authority it
+  // checked itself against. Accepted records are listed under their own heading instead.
+  { kind: 'Docs on architecture, structure and decisions', match: (f) => /^(?:docs?|adr|architecture)\/.+\.(?:md|mdx|adoc|rst)$/i.test(f) && !DECISION_FOLDER.test(f) },
 ];
+
+/** A path inside a decision-record folder, wherever it is. */
+const DECISION_FOLDER = /(?:^|\/)decisions?\/|(?:^|\/)adrs?\//i;
 
 /** At most this many paths per kind; the rest is a count, so the prompt stays pasteable. */
 const PER_KIND = 25;
@@ -106,7 +112,7 @@ async function eslintWithoutNaso(cwd, files) {
  * what is still unrecorded.
  */
 export async function decidedRows(cwd, files, records) {
-  const docs = files.filter((file) => /\.mdx?$/i.test(file) && !/(?:^|\/)decisions?\/|(?:^|\/)adrs?\//i.test(file));
+  const docs = files.filter((file) => /\.mdx?$/i.test(file) && !DECISION_FOLDER.test(file));
   const cells = (line) => line.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.replace(/\*\*|`/g, '').trim());
   const cited = (file, line) =>
     records.some((record) => record.source?.includes(file) && new RegExp(`\\b${line}\\b`).test(record.source.slice(record.source.indexOf(file))));
@@ -236,8 +242,10 @@ export function renderReviewPrompt(cwd, state, { here = '' } = {}) {
   const cmd = nasoCommand();
   const index = indexFileOf(state.decisions.dir);
   const where = here ? ` (${cwd})` : '';
-  const sources = state.sources.length
-    ? state.sources.flatMap(({ kind, files }) => [
+  const accepted = state.decisions.records.filter((record) => record.status === 'accepted').map((record) => record.file);
+  const groups = [...state.sources, ...(accepted.length > 0 ? [{ kind: 'Decisions a person accepted', files: accepted }] : [])];
+  const sources = groups.length
+    ? groups.flatMap(({ kind, files }) => [
         `- ${kind}: ${files.slice(0, PER_KIND).join(', ')}${files.length > PER_KIND ? `, and ${files.length - PER_KIND} more` : ''}`,
       ])
     : ['- None of the usual rule files are tracked here. Read the README and the code, and say so in your report.'];

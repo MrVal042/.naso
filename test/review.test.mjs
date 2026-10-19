@@ -376,3 +376,21 @@ test('decide cuts a long file name at a hyphen, never mid-word', async () => {
     assert.ok(title.toLowerCase().replace(/[^a-z0-9]+/g, '-').startsWith(`${slug}-`), `${slug} ends on a whole word`);
   });
 });
+
+test('proposed decision records are not listed among the repository\'s own rules; accepted ones get their own heading', async () => {
+  const groups = ruleSources(['docs/architecture.md', 'docs/decisions/0001-use-rest.md', 'docs/decisions/README.md', 'docs/adr/0002-x.md']);
+  assert.deepEqual(groups.flatMap((group) => group.files), ['docs/architecture.md']);
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, 'docs/architecture.md', '# Architecture\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'docs');
+    assert.equal((await bare(['--yes'])).code, 0);
+    assert.equal((await naso(dir, ['decide', '--title', 'Use REST', '--decision', 'REST.', '--source', 'kickoff'])).code, 0);
+    assert.equal((await naso(dir, ['decide', '--title', 'Use pnpm', '--decision', 'pnpm.', '--source', 'kickoff', '--accept'])).code, 0);
+    const out = (await naso(dir, ['review'])).stdout;
+    const rules = out.slice(out.indexOf("This repository's own rules"), out.indexOf('\n1. '));
+    assert.doesNotMatch(rules, /0001-use-rest/, 'a proposal is not a rule');
+    assert.match(rules, /Decisions a person accepted: docs\/decisions\/0002-use-pnpm\.md/);
+  });
+});
