@@ -181,6 +181,9 @@ export async function reviewState(cwd) {
     hasBlock,
     reviewed: hasBlock && blockEdited(text),
     tracked: (await run('git', ['ls-files', '--error-unmatch', '--', AGENTS_FILE], { cwd })).ok,
+    // HEAD's copy, not the index: a block added and staged but not committed has no commit
+    // to diff from, and `git log -- AGENTS.md` then names a commit from before NASO.
+    committedBlock: (await run('git', ['show', `HEAD:${AGENTS_FILE}`], { cwd })).stdout.includes(NASO_START),
     generatedAt: text?.match(/^<!--\s*generated-at:\s*(\S+)\s*-->$/m)?.[1] ?? null,
     check: hasBlock ? await checkBriefing(cwd) : null,
     sources: ruleSources(files ?? []),
@@ -213,7 +216,13 @@ function installedLines(state, index) {
 /** Where things stand, so the agent starts from the current state rather than from zero. */
 function stateLines(state, cmd, here) {
   const lines = [];
-  if (state.reviewed) {
+  if (state.reviewed && state.tracked && !state.committedBlock) {
+    lines.push(
+      `- The block was edited after NASO wrote it, but the block is not committed yet: HEAD's ${AGENTS_FILE} has no ${NASO_START} marker, ` +
+        'so there is no commit to diff from, and a diff from the last commit that touched it would cover the whole history. ' +
+        'Review the whole block, line by line.',
+    );
+  } else if (state.reviewed) {
     // An untracked AGENTS.md (the default, local mode) has no commit to diff from, so the
     // generated-at stamp is the nearest thing to "when the block was last settled".
     const since = state.tracked

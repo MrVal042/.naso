@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- **`review` asks for a full review while the block is uncommitted.** It told a second review to diff from the last commit that touched AGENTS.md; with the block added but not committed, that commit predates NASO and the diff was the repository's whole history (184 files in the field). When HEAD's AGENTS.md has no `naso:start` marker, it now says the block is uncommitted and asks for the whole block to be reviewed.
 - **`review` no longer proposes decisions that are already recorded.** A Decided row counted as recorded only when a record's source named its exact line, so records citing "docs/architecture.md section 2" matched nothing and 9 of the 10 rows listed in the field were already recorded. A row now counts as cited when a record's source names its file and its line, a line range or a section heading that holds it, or the record states the same decision.
 - **A Decided row that names another owner is listed apart.** "Decided (customer-api)" belongs to another repository; `review` lists it as decided elsewhere, not as a decision to propose here.
 - **`decide` warns when the line it cites is already cited.** Another record citing the same line, by number, range or section, is named, with how to supersede it. A source that names a file without a line gets a note asking for "<file> line <n>".

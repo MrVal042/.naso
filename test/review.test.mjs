@@ -441,3 +441,19 @@ test('decide warns when the line it cites is already cited by another record', a
     assert.doesNotMatch(other.stderr, /already cited/);
   });
 });
+
+test('review asks for a full review, not a diff, while the block is not committed yet', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(dir, AGENTS, '# Team notes\n\nBe kind.\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'agents');
+    assert.equal((await bare(['--yes'])).code, 0);
+    const text = await read(dir, AGENTS);
+    await writeFile(path.join(dir, AGENTS), text.replace('## When This Block Is Wrong', '## When This Block Is Wrong\n\nReviewed.'));
+    const out = (await naso(dir, ['review'])).stdout;
+    assert.match(out, /the block is not committed yet: HEAD's AGENTS\.md has no <!-- naso:start --> marker/);
+    assert.match(out, /Review the whole block/);
+    assert.doesNotMatch(out, /git diff <that commit>\.\.HEAD/);
+  });
+});
