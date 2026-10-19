@@ -53,10 +53,10 @@ A first run in a NestJS API with a `package.json`, shortened. Your branch, count
 ```text
 $ npx naso-dev@latest --save-dev
 Need to install the following packages:
-naso-dev@1.5.1
+naso-dev@1.5.3
 Ok to proceed? (y) y
 
-NASO 1.5.1  /path/to/acme-api
+NASO 1.5.3  /path/to/acme-api
 
 ## This repository
 
@@ -110,7 +110,7 @@ The plan for acme-api  nothing is written until you accept
   package.json             changed  (devDependencies, by npm, last)
   package-lock.json        changed  (by npm, with node_modules/)
 
-  Last, `npm install --save-dev naso-dev@1.5.1`, the only step that uses the network.
+  Last, `npm install --save-dev naso-dev@1.5.3`, the only step that uses the network.
 
 ◆  Write these files and install the hook?
    ● Accept (write exactly the files listed above)
@@ -132,7 +132,7 @@ The plan for acme-api  nothing is written until you accept
 ✓ eslint.config.mjs: added .naso/ to its ignores, so ESLint leaves the toolset alone
 ✓ pre-commit hook: installed (.git/hooks/pre-commit)
 ✓ git: .naso/ and AGENTS.md are yours to commit (--track)
-✓ devDependencies: added naso-dev with `npm install --save-dev naso-dev@1.5.1`
+✓ devDependencies: added naso-dev with `npm install --save-dev naso-dev@1.5.3`
 
 ## Verify
 
