@@ -126,10 +126,111 @@ export function parseDecision(file, text) {
     date: field(lines, 'Date') ?? front.date ?? null,
     by: field(lines, 'Decided by|Deciders|Decider') ?? front.deciders ?? null,
     source: field(lines, 'Source|Decided in|Origin') ?? front.source ?? sectionFirstLine(lines, 'Sources?|References') ?? null,
+    decision: sectionFirstLine(lines, 'Decision'),
     applies: list(field(lines, 'Applies to|Scope') ?? front.applies),
     supersedes: list(field(lines, 'Supersedes')).map((item) => item.match(/(\d+)/)?.[1]).filter(Boolean).map(pad),
     reviewBy: field(lines, 'Review by|Revisit by|Review date') ?? front['review-by'] ?? null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// What a source cites
+// ---------------------------------------------------------------------------
+
+/** Markdown headings outside fences, as `{ line, level, text }` with 1-based lines. */
+export function headingsOf(text) {
+  const out = [];
+  let fenced = false;
+  String(text)
+    .split('\n')
+    .forEach((raw, index) => {
+      if (/^\s*```/.test(raw)) fenced = !fenced;
+      const match = !fenced && raw.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (match) out.push({ line: index + 1, level: match[1].length, text: match[2].replace(/\*\*|`/g, '').trim() });
+    });
+  return out;
+}
+
+/** Lines a heading's section spans: from the heading to the line before the next one at its level or above. */
+function sectionLines(headings, at, total) {
+  const heading = headings[at];
+  const next = headings.slice(at + 1).find((other) => other.level <= heading.level);
+  const out = [];
+  for (let n = heading.line; n <= (next ? next.line - 1 : total); n++) out.push(n);
+  return out;
+}
+
+const slugOf = (text) => text.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-');
+
+/**
+ * The lines of `file` that a record's source cites, as a Set of 1-based line numbers.
+ *
+ * Read after each mention of the file, up to the next file or `;`: "line 5", "lines 5-9",
+ * "lines 3, 7 and 9", "L12-L20", "section 2" (the heading numbered 2 and everything under
+ * it), "section Security" or "§2", and a `#heading-slug` anchor. Matching only a bare line
+ * number made "docs/architecture.md section 2" cite line 2, and nothing it meant.
+ */
+export function citedLines(source, file, text) {
+  const out = new Set();
+  if (!source || !file) return out;
+  const lines = String(text ?? '').split('\n');
+  const total = lines.length - (String(text ?? '').endsWith('\n') ? 1 : 0);
+  const headings = headingsOf(text ?? '');
+  let from = source.indexOf(file);
+  while (from !== -1) {
+    const rest = source.slice(from + file.length);
+    // A longer name that starts with this one (`docs/a.md` in `docs/a.mdx`) is another file.
+    if (/^[\w-]/.test(rest)) {
+      from = source.indexOf(file, from + file.length);
+      continue;
+    }
+    const end = rest.search(/;|\s(?:[\w.-]+\/)+[\w.-]+\.\w+|\s[\w-]+\.(?:md|mdx|json|ya?ml|[cm]?[jt]sx?)\b/);
+    const segment = end === -1 ? rest : rest.slice(0, end);
+    for (const match of segment.matchAll(/\blines?\s+(\d+(?:\s*[–-]\s*\d+)?(?:\s*(?:,|and|&)\s*\d+(?:\s*[–-]\s*\d+)?)*)/gi)) {
+      for (const part of match[1].split(/\s*(?:,|and|&)\s*/)) {
+        const [a, b = a] = part.split(/\s*[–-]\s*/).map(Number);
+        for (let n = Math.min(a, b); n <= Math.max(a, b); n++) out.add(n);
+      }
+    }
+    for (const match of segment.matchAll(/(?<![A-Za-z])#?L(\d+)(?:-L?(\d+))?\b/g)) {
+      const [a, b = a] = [Number(match[1]), Number(match[2] ?? match[1])];
+      for (let n = a; n <= b; n++) out.add(n);
+    }
+    const wanted = [
+      ...[...segment.matchAll(/(?:\bsections?\s+|§\s*)(\d+(?:\.\d+)*)/gi)].map((match) => ({ number: match[1] })),
+      ...[...segment.matchAll(/\bsections?\s+["“']?([A-Za-z][^"”';,()]*?)["”']?\s*(?:[;,()]|$)/gi)].map((match) => ({ name: match[1].trim().toLowerCase() })),
+      ...[...segment.matchAll(/^#([\w-]+)/g)].map((match) => ({ slug: match[1].toLowerCase() })),
+    ];
+    headings.forEach((heading, at) => {
+      const number = heading.text.match(/^(?:section\s+)?(\d+(?:\.\d+)*)\b/i)?.[1] ?? null;
+      const hit = wanted.some(
+        (want) =>
+          (want.number && number === want.number) ||
+          (want.name && want.name.length >= 3 && heading.text.toLowerCase().includes(want.name)) ||
+          (want.slug && slugOf(heading.text) === want.slug),
+      );
+      if (hit) for (const n of sectionLines(headings, at, total)) out.add(n);
+    });
+    from = source.indexOf(file, from + file.length);
+  }
+  return out;
+}
+
+const words = (text) => String(text ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/**
+ * Whether a record states the same thing as a line of a doc: one text contains the other,
+ * and the shorter has at least three words, so "Testing" does not match every test rule.
+ */
+export function sameDecisionText(record, text) {
+  const row = words(text);
+  if (!row) return false;
+  return [record.title, record.decision].some((value) => {
+    const other = words(value);
+    if (!other) return false;
+    const [short, long] = other.length < row.length ? [other, row] : [row, other];
+    return short === long || (short.split(' ').length >= 3 && long.includes(short));
+  });
 }
 
 /** Every record in the decisions folder, parsed, sorted by id. */
@@ -479,6 +580,35 @@ async function reportSync(cwd) {
   if (outcome !== 'locked' && (await refreshDecisionsLead(cwd))) console.log(`Updated the line in AGENTS.md that says where the list is.`);
 }
 
+/**
+ * Warnings for a new record's source: a line another record already cites, and a file named
+ * with no line. Checking titles alone let the same Decided row be proposed twice under two
+ * names; the line is what the two records share.
+ */
+export async function citationOverlaps(cwd, source, records) {
+  const out = [];
+  const named = [...new Set(String(source).match(/(?:[\w.-]+\/)*[\w.-]+\.[A-Za-z]\w*|\b(?:CODEOWNERS|Makefile|Dockerfile)\b/g) ?? [])];
+  for (const file of named) {
+    const text = await readFile(path.join(cwd, file), 'utf8').catch(() => null);
+    if (text === null) continue;
+    const wanted = citedLines(source, file, text);
+    if (wanted.size === 0) {
+      out.push(`--source names ${file} without a line. Cite it as "${file} line <n>", so the next review knows this line is recorded.`);
+      continue;
+    }
+    for (const record of records) {
+      if (!record.source?.includes(file)) continue;
+      const shared = [...citedLines(record.source, file, text)].filter((n) => wanted.has(n)).sort((a, b) => a - b);
+      if (shared.length === 0) continue;
+      out.push(
+        `${file} line ${shared[0]} is already cited by ${record.file} ("${record.title}"). ` +
+          `If it is the same decision, change that record instead, or pass --supersedes ${record.id}.`,
+      );
+    }
+  }
+  return out;
+}
+
 /** `naso-dev decide`: record a decision, proposed unless a person passes --accept. */
 export async function decideMain(argv = process.argv.slice(2)) {
   const { flags, values, lists, positional } = parseArgs(argv, { valued: ['why'] });
@@ -525,6 +655,9 @@ an agent never passes it.`);
     process.exitCode = 2;
     return;
   }
+  const replaced = listOf(values.get('supersedes')).map(pad);
+  const others = (await readDecisions(cwd)).records.filter((record) => !replaced.includes(record.id));
+  for (const line of await citationOverlaps(cwd, source, others)) console.warn(`naso-dev decide: ${line}`);
   const status = flags.has('accept') ? 'accepted' : 'proposed';
   const created = await createDecision(cwd, {
     title,

@@ -394,3 +394,50 @@ test('proposed decision records are not listed among the repository\'s own rules
     assert.match(rules, /Decisions a person accepted: docs\/decisions\/0002-use-pnpm\.md/);
   });
 });
+
+test('a Decided row is cited by a record that names its section, its line range or its text; another owner\'s row is decided elsewhere', async () => {
+  await withRepo(async ({ dir, git, bare }) => {
+    await seedProject(dir, git);
+    await put(
+      dir,
+      'docs/architecture.md',
+      [
+        '# Architecture', '', '## 1. Data', '', '| Choice | Status |', '| --- | --- |', '| Server state in React Query | Decided |', '',
+        '## 2. Security', '', '| Rule | Status |', '| --- | --- |', '| Tokens live in SecureStore | Decided |', '| No analytics SDK | Decided |', '',
+        '## 3. Integration', '', '| Contract | Status |', '| --- | --- |', '| Customer API owns the schema | Decided (customer-api) |', '| One API client per service | Decided (demo) |', '| Retry with backoff | Decided |', '',
+      ].join('\n'),
+    );
+    await put(dir, 'docs/security.md', '# Security\n\n| Rule | Status |\n| --- | --- |\n| Pin every dependency | Decided |\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'docs');
+    assert.equal((await bare(['--yes'])).code, 0);
+    const decide = (title, source) => naso(dir, ['decide', '--title', title, '--decision', `${title}.`, '--source', source]);
+    assert.equal((await decide('Security rules', 'docs/architecture.md section 2')).code, 0);
+    assert.equal((await decide('Pin every dependency', 'docs/security.md')).code, 0);
+    assert.equal((await decide('Server state', 'docs/architecture.md lines 5-7')).code, 0);
+
+    const out = (await naso(dir, ['review'])).stdout;
+    const own = out.slice(out.indexOf('no record cites yet'), out.indexOf('decided by another repository'));
+    assert.match(own, /no record cites yet \(2\)/, own);
+    assert.match(own, /docs\/architecture\.md line 21: One API client per service/);
+    assert.match(own, /docs\/architecture\.md line 22: Retry with backoff/);
+    assert.doesNotMatch(out, /line \d+: (?:Tokens live|No analytics|Pin every|Server state)/);
+    assert.match(out, /decided by another repository[^\n]*\n\s+- docs\/architecture\.md line 20: Customer API owns the schema \(customer-api\)/);
+    assert.match(out, /--source "<file> line <n>"/);
+  });
+});
+
+test('decide warns when the line it cites is already cited by another record', async () => {
+  await withRepo(async ({ dir, git }) => {
+    await seedProject(dir, git);
+    await put(dir, 'docs/architecture.md', '# Architecture\n\n## 2. Security\n\nTokens live in SecureStore.\n\n## 3. Other\n\nText.\n');
+    await git('add', '-A');
+    await git('commit', '-qm', 'docs');
+    assert.equal((await naso(dir, ['decide', '--title', 'Security rules', '--decision', 'D.', '--source', 'docs/architecture.md section 2'])).code, 0);
+    const again = await naso(dir, ['decide', '--title', 'Token storage', '--decision', 'D.', '--source', 'docs/architecture.md line 5']);
+    assert.equal(again.code, 0, 'a warning, not a refusal');
+    assert.match(again.stderr, /docs\/architecture\.md line 5 is already cited by docs\/decisions\/0001-security-rules\.md \("Security rules"\)/);
+    const other = await naso(dir, ['decide', '--title', 'Other', '--decision', 'D.', '--source', 'docs/architecture.md line 9']);
+    assert.doesNotMatch(other.stderr, /already cited/);
+  });
+});

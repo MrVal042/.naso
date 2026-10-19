@@ -23,7 +23,7 @@ import path from 'node:path';
 import { parseArgs, pathExists, nasoCommand, isMainModule, toolVersion, run, SUPPORT_EMAIL } from './lib.mjs';
 import { AGENTS_FILE, NASO_START, NASO_END, blockEdited, listRepoFiles } from './scan.mjs';
 import { checkBriefing } from './check.mjs';
-import { readDecisions, auditDecisions, indexFileOf } from './decisions.mjs';
+import { readDecisions, auditDecisions, indexFileOf, citedLines, sameDecisionText } from './decisions.mjs';
 
 /**
  * The files where a repository writes its own rules, by kind, in reading order.
@@ -107,18 +107,25 @@ async function eslintWithoutNaso(cwd, files) {
 
 /**
  * Rows the repository's own docs mark decided, in a table with a Status column: candidates
- * for `decide` that a reviewer otherwise finds by reading every doc. A row whose file and
- * line a record already cites as its source is left out, so a second review lists only
- * what is still unrecorded.
+ * for `decide` that a reviewer otherwise finds by reading every doc.
+ *
+ * A row is left out when a record already cites it: the record's source names the file and
+ * the row's line, a line range or a section holding it ("docs/architecture.md section 2"),
+ * or the record says the same thing. Matching the line number alone listed 9 of 10 rows a
+ * second time, and `decide` checks only titles, so they were proposed again.
+ *
+ * A Status that names an owner, "Decided (customer-api)", is another repository's decision
+ * unless the owner is this one. Those rows come back with `owner` set, to be listed apart.
  */
-export async function decidedRows(cwd, files, records) {
+export async function decidedRows(cwd, files, records, { names = [] } = {}) {
   const docs = files.filter((file) => /\.mdx?$/i.test(file) && !DECISION_FOLDER.test(file));
   const cells = (line) => line.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.replace(/\*\*|`/g, '').trim());
-  const cited = (file, line) =>
-    records.some((record) => record.source?.includes(file) && new RegExp(`\\b${line}\\b`).test(record.source.slice(record.source.indexOf(file))));
+  const ours = new Set(names.filter(Boolean).map((name) => name.toLowerCase()));
   const rows = [];
   for (const file of docs) {
-    const lines = ((await readFile(path.join(cwd, file), 'utf8').catch(() => '')) ?? '').split('\n');
+    const text = (await readFile(path.join(cwd, file), 'utf8').catch(() => '')) ?? '';
+    const lines = text.split('\n');
+    const cited = records.filter((record) => record.source?.includes(file)).map((record) => ({ record, lines: citedLines(record.source, file, text) }));
     let status = -1;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -132,12 +139,32 @@ export async function decidedRows(cwd, files, records) {
         continue;
       }
       if (/^[\s:|-]+$/.test(line)) continue;
-      if (/^decided\b/i.test(row[status] ?? '') && !cited(file, i + 1)) {
-        rows.push({ file, line: i + 1, text: row.find((cell, index) => index !== status && cell) ?? '' });
-      }
+      const state = (row[status] ?? '').replace(/^[^A-Za-z]+/, '');
+      if (!/^decided\b/i.test(state)) continue;
+      const rowText = row.find((cell, index) => index !== status && cell) ?? '';
+      if (cited.some((entry) => entry.lines.has(i + 1) || sameDecisionText(entry.record, rowText))) continue;
+      const owner = state.match(/^decided\s*\(([^)]+)\)/i)?.[1]?.trim() ?? null;
+      // A date or a note in the brackets is not an owner: "Decided (2026-10-01)".
+      const elsewhere = owner && /^[A-Za-z][\w.@/-]*$/.test(owner) && !ours.has(owner.toLowerCase().replace(/^@[^/]+\//, '')) ? owner : null;
+      rows.push({ file, line: i + 1, text: rowText, owner: elsewhere });
     }
   }
   return rows;
+}
+
+/** The names this repository goes by: package name, folder, and the origin remote's repository. */
+async function repositoryNames(cwd) {
+  const names = [path.basename(cwd)];
+  try {
+    const pkg = JSON.parse(await readFile(path.join(cwd, 'package.json'), 'utf8'));
+    if (typeof pkg?.name === 'string') names.push(pkg.name, pkg.name.replace(/^@[^/]+\//, ''));
+  } catch {
+    // No manifest: the folder and the remote are the names.
+  }
+  const remote = await run('git', ['remote', 'get-url', 'origin'], { cwd });
+  const repo = remote.ok ? remote.stdout.trim().match(/([^/:]+?)(?:\.git)?\/?$/)?.[1] : null;
+  if (repo) names.push(repo);
+  return names;
 }
 
 /** Everything the prompt adapts to, read once. */
@@ -148,6 +175,7 @@ export async function reviewState(cwd) {
   const files = await listRepoFiles(cwd).catch(() => []);
   const decisions = await readDecisions(cwd);
   const audit = await auditDecisions(cwd).catch(() => ({ findings: [] }));
+  const rows = await decidedRows(cwd, files ?? [], decisions.records, { names: await repositoryNames(cwd) });
   return {
     hasAgents: text !== null,
     hasBlock,
@@ -163,7 +191,8 @@ export async function reviewState(cwd) {
     hook: /naso/i.test((await readFile(path.join(cwd, '.git', 'hooks', 'pre-commit'), 'utf8').catch(() => '')) ?? ''),
     version: await toolVersion(),
     eslintUnignored: await eslintWithoutNaso(cwd, files ?? []),
-    decided: await decidedRows(cwd, files ?? [], decisions.records),
+    decided: rows.filter((row) => !row.owner),
+    decidedElsewhere: rows.filter((row) => row.owner),
   };
 }
 
@@ -224,6 +253,12 @@ function stateLines(state, cmd, here) {
     lines.push(`- Rows this repository's docs mark Decided that no record cites yet (${state.decided.length}). Propose each that is a decision, citing the file and line:`);
     for (const row of state.decided.slice(0, 40)) lines.push(`  - ${row.file} line ${row.line}: ${row.text}`);
     if (state.decided.length > 40) lines.push(`  - and ${state.decided.length - 40} more`);
+  }
+  const elsewhere = state.decidedElsewhere ?? [];
+  if (elsewhere.length > 0) {
+    lines.push(`- Rows decided by another repository (${elsewhere.length}): their Status names another owner. Do not propose them here; name them in the block only as work that belongs there:`);
+    for (const row of elsewhere.slice(0, 20)) lines.push(`  - ${row.file} line ${row.line}: ${row.text} (${row.owner})`);
+    if (elsewhere.length > 20) lines.push(`  - and ${elsewhere.length - 20} more`);
   }
   if (state.findings.length > 0) {
     lines.push(`- \`${cmd} decisions audit\` reports ${count(state.findings.length, 'finding')}:`);
@@ -303,7 +338,8 @@ ${sources.join('\n')}
      \`${cmd} decide${here} --title "…" --decision "…" --source "<file> line <n>" --why "…"\`
      with \`--applies <paths>\` and one \`--considered "<option> — <why not>"\` per
      alternative the docs say was turned down. Quote every value.
-   - Never propose one that is already recorded; \`decide\` refuses a title it has.
+   - Never propose one that is already recorded; \`decide\` refuses a title it
+     has, and warns when another record already cites the same line.
    - Never write how many decisions there are, or their ids, into the block:
      the next \`decide\` makes that stale. Point to ${index} instead.
    - Never accept, reject or supersede a decision. List them for the person.
