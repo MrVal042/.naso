@@ -28,6 +28,20 @@ import {
   plural,
 } from './scan.mjs';
 import { decisionsLead } from './decisions.mjs';
+import { extractPathTokens } from './check.mjs';
+import { prettierLine, jestLine, frameworkRules, frameworkFilesLine } from './toolchain.mjs';
+
+/**
+ * A token in backticks when the checker will accept it: not a path at all (`jest-expo`,
+ * `\.svg$`), or a path the repository has. A path it does not have is written bare, so a
+ * module name that looks like a path is not reported as MISSING.
+ */
+const codeIfSafe = (facts) => (token) => {
+  const value = String(token);
+  if (extractPathTokens(`\`${value}\``).length === 0) return `\`${value}\``;
+  const dir = value.endsWith('/') ? value : `${value}/`;
+  return facts.files.includes(value) || facts.files.some((file) => file.startsWith(dir)) ? `\`${value}\`` : value;
+};
 
 // ---------------------------------------------------------------------------
 // Rendering
@@ -499,9 +513,13 @@ function renderConventions(facts) {
   }
 
   if (conventions.eslintConfig) lines.push(`Lint: ESLint configured by \`${conventions.eslintConfig}\`.`);
-  if (conventions.prettierConfig) {
+  const toolchain = facts.toolchain ?? {};
+  if (toolchain.prettier) {
+    lines.push(prettierLine(toolchain.prettier, codeIfSafe(facts)));
+  } else if (conventions.prettierConfig) {
     lines.push(`Format: Prettier configured by \`${conventions.prettierConfig}\`.`);
   }
+  if (toolchain.jest) lines.push(jestLine(toolchain.jest, codeIfSafe(facts)));
 
   const aliases = conventions.aliases?.declared ?? [];
   if (aliases.length > 0) {
@@ -672,6 +690,8 @@ async function renderBoundaries(facts) {
     );
   }
 
+  if (facts.toolchain?.frameworkFiles?.length > 0) lines.push(frameworkFilesLine(facts.toolchain.frameworkFiles, codeIfSafe(facts)));
+
   // In the repository's own words, from the comment above the pattern. Paths written by a
   // script are already named above; this adds the ones only the comment explains.
   const noted = (facts.ignoreNotes ?? []).filter((entry) => !generated.some((g) => g.path === entry.path));
@@ -746,6 +766,11 @@ function renderCommitStandard(facts) {
   }
   if (facts.contributing?.commits) {
     lines.push(`- \`${facts.contributing.path}\` writes the commit rules down; where it and this count differ, it wins.`);
+  }
+  // The merge mode, who may approve, and the exceptions to the commit rule: the lines an
+  // agent preparing a merge request gets wrong first, quoted where the guide says them.
+  for (const rule of facts.toolchain?.mergeRules ?? []) {
+    lines.push(`- ${rule.kind === 'merge mode' ? 'Merging' : rule.kind === 'approval' ? 'Approval' : 'Exception'}: \`${rule.file}\` line ${rule.line}: “${rule.text}”`);
   }
 
   const shape = dominantShape(history);
@@ -1134,8 +1159,9 @@ export async function renderBriefing(facts, { version, now }) {
   }
 
   // Only rules this repository confirmed; a stack with none gets no heading.
-  if (facts.stack?.rules?.length > 0) {
-    parts.push(`## Stack Rules\n\n${facts.stack.rules.map((rule) => `- ${rule}`).join('\n')}`);
+  const stackRules = [...(facts.stack?.rules ?? []), ...frameworkRules(facts.toolchain ?? {}, codeIfSafe(facts))];
+  if (stackRules.length > 0) {
+    parts.push(`## Stack Rules\n\n${stackRules.map((rule) => `- ${rule}`).join('\n')}`);
   }
 
   const conventions = renderConventions(facts);
@@ -1180,6 +1206,22 @@ the path and rule, never the value. Do the same: if a secret is already committe
 report its path and stop.`);
 
   parts.push(`## Commit Standard\n\n${renderCommitStandard(facts).join('\n')}`);
+
+  // The checklist a merge request is reviewed against is a set of rules the team already
+  // wrote; quoted with file and line, so the checker can test every item.
+  const checklists = facts.toolchain?.checklists ?? [];
+  if (checklists.length > 0) {
+    parts.push(
+      `## Merge Request Checklist\n\nEvery merge request here is reviewed against these items. Meet them before asking for review:\n\n` +
+        checklists
+          .map(
+            (list) =>
+              list.items.map((item) => `- \`${list.file}\` line ${item.line}: “${item.text}”`).join('\n') +
+              (list.more > 0 ? `\n- and ${list.more} more in \`${list.file}\`` : ''),
+          )
+          .join('\n'),
+    );
+  }
 
   const done = renderWhenDone(facts);
   if (done) parts.push(`## When Done\n\n${done}`);

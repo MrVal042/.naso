@@ -409,3 +409,91 @@ export async function answerRealQuestions(context, keys) {
   }
   return { answer: await answer, frames: frames.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '') };
 }
+
+/**
+ * A stand-in for the repository's ESLint, at the path a real install puts it. It prints what
+ * ESLint 9 prints for a vendored file's unused disable directive, unless the flat config or
+ * .eslintignore names .naso/. NASO's tests install no dependency, so this is the linter.
+ */
+export const FAKE_ESLINT = `
+const fs = require('node:fs');
+const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return ''; } };
+const config = ['eslint.config.js', 'eslint.config.mjs'].map(read).join('') + read('.eslintignore');
+if (process.argv.slice(2).some((arg) => arg.startsWith('.naso')) && !config.includes('.naso')) {
+  console.log(process.cwd() + '/.naso/tooling/lib.mjs');
+  console.log('  1:1  warning  Unused eslint-disable directive (no problems were reported)');
+  console.log('');
+  console.log('✖ 1 problem (0 errors, 1 warning)');
+}
+`;
+
+/**
+ * The repository the 1.5.3 field report came from, in miniature: an Expo app with an ESLint 9
+ * flat config, Prettier, Jest, GitLab CI and a merge request template, a CONTRIBUTING guide
+ * with branch, merge and revert rules, docs with Decided tables (one row owned by another
+ * repository), a dated "decided" comment in app.config.ts, three decision records an earlier
+ * review wrote with "section N" sources, and naso-dev pinned at 1.5.0 in package.json and the
+ * lockfile. AGENTS.md is committed with the team's own text and no NASO block.
+ */
+export async function seedFieldRepo(dir, git) {
+  await put(
+    dir,
+    'package.json',
+    `${JSON.stringify(
+      {
+        name: 'field-app',
+        main: 'expo-router/entry',
+        scripts: { lint: 'eslint .', typecheck: 'tsc --noEmit', test: 'jest', 'format:check': 'prettier --check .' },
+        dependencies: { expo: '~54.0.0', 'expo-router': '~6.0.0', 'react-native-svg-transformer': '1.5.1' },
+        devDependencies: { eslint: '9.36.0', 'eslint-config-expo': '10.0.0', jest: '29.7.0', 'jest-expo': '54.0.0', 'naso-dev': '1.5.0', prettier: '3.6.2', typescript: '5.9.2' },
+        jest: { preset: 'jest-expo', moduleNameMapper: { '\\.svg$': '<rootDir>/__mocks__/svgMock.js' } },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await put(dir, 'package-lock.json', `${JSON.stringify({ name: 'field-app', lockfileVersion: 3, packages: { '': { name: 'field-app' }, 'node_modules/naso-dev': { version: '1.5.0' } } }, null, 2)}\n`);
+  await put(dir, '.npmrc', 'save-exact=true\n');
+  await put(dir, 'tsconfig.json', `${JSON.stringify({ extends: 'expo/tsconfig.base', compilerOptions: { strict: true, paths: { '@/*': ['./src/*'] } }, include: ['**/*.ts', '**/*.tsx', '.expo/types/**/*.ts', 'expo-env.d.ts'] }, null, 2)}\n`);
+  await put(dir, 'eslint.config.js', "// https://docs.expo.dev/guides/using-eslint/\nconst { defineConfig } = require('eslint/config');\nconst expoConfig = require('eslint-config-expo/flat');\n\nmodule.exports = defineConfig([\n  expoConfig,\n  {\n    ignores: ['dist/*'],\n  },\n]);\n");
+  await put(dir, '.prettierrc', '{\n  "singleQuote": true,\n  "trailingComma": "all",\n  "printWidth": 100\n}\n');
+  await put(dir, '.prettierignore', 'coverage/\n');
+  await put(dir, 'metro.config.js', "const { getDefaultConfig } = require('expo/metro-config');\n\nconst config = getDefaultConfig(__dirname);\nconfig.transformer.babelTransformerPath = require.resolve('react-native-svg-transformer/expo');\n\nmodule.exports = config;\n");
+  await put(
+    dir,
+    'app.config.ts',
+    "import { ExpoConfig } from 'expo/config';\n\n// decided 2026-03-02: the app is portrait only\nconst config: ExpoConfig = {\n  name: 'Field App',\n  slug: 'field-app',\n  version: '1.4.0',\n  orientation: 'portrait',\n  runtimeVersion: { policy: 'appVersion' },\n  experiments: { typedRoutes: true, reactCompiler: true },\n};\n\nexport default config;\n",
+  );
+  await put(dir, '.gitlab-ci.yml', 'stages: [check]\n\nlint:\n  stage: check\n  script:\n    - npm ci\n    - npm run lint\n\ntest:\n  stage: check\n  script:\n    - npm ci\n    - npm test\n');
+  await put(dir, '.gitlab/merge_request_templates/Default.md', '## Checklist\n\n- [ ] Tests added or updated\n- [ ] `npm run typecheck` passes\n- [ ] No secret in an `EXPO_PUBLIC_` variable\n');
+  await put(
+    dir,
+    'CONTRIBUTING.md',
+    '# Contributing\n\nBranches are named `feature/SCRUM-<n>-<summary>`.\n\n## Commits\n\nUse `<type>: SCRUM-<n>: <summary>`.\nRevert messages are accepted as git writes them.\n\n## Merging\n\nMerge requests are squashed when they merge.\nCode owners may self-approve documentation changes.\n',
+  );
+  await put(dir, 'CODEOWNERS', '* @mobile-team\n');
+  await put(
+    dir,
+    'docs/architecture.md',
+    [
+      '# Architecture', '', '## 1. Data', '', '| Choice | Status |', '| --- | --- |', '| Server state lives in React Query | Decided |', '',
+      '## 2. Security', '', '| Rule | Status |', '| --- | --- |', '| Auth tokens live in SecureStore | Decided |', '| No analytics SDK in the app | Decided |', '',
+      '## 3. Integration', '', '| Contract | Status |', '| --- | --- |', '| Customer API owns the OpenAPI schema | Decided (customer-api) |', '| One API client per backend service | Decided |', '',
+    ].join('\n'),
+  );
+  await put(dir, 'docs/security.md', '# Security\n\n## 1. Secrets\n\n| Rule | Status |\n| --- | --- |\n| No secret in an EXPO_PUBLIC_ variable | Decided |\n');
+  const record = (id, title, status, source) =>
+    put(dir, `docs/decisions/${id}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`, `# ${id}. ${title}\n\n- Status: ${status}\n- Date: 2026-10-10\n- Source: ${source}\n\n## Decision\n\n${title}.\n`);
+  await record('0001', 'Security rules', 'accepted', 'docs/architecture.md section 2');
+  await record('0002', 'No public secrets', 'proposed', 'docs/security.md section 1');
+  await record('0003', 'Server state', 'proposed', 'docs/architecture.md section 1');
+  await put(dir, 'AGENTS.md', '# Field App\n\nRead CONTRIBUTING.md before you start.\n');
+  await put(dir, 'src/app/_layout.tsx', 'export default function Layout() {\n  return null;\n}\n');
+  await put(dir, 'src/api/client.ts', 'export const client = 1;\n');
+  await put(dir, 'src/api/client.test.ts', "test('client', () => {});\n");
+  await put(dir, '__mocks__/svgMock.js', 'module.exports = "SvgMock";\n');
+  await put(dir, '.gitignore', 'node_modules/\n.expo/\nexpo-env.d.ts\n/ios\n/android\n.env*\n');
+  await put(dir, 'node_modules/eslint/bin/eslint.js', FAKE_ESLINT);
+  await git('add', '-A');
+  await git('commit', '-qm', 'chore: SCRUM-1: bootstrap');
+}

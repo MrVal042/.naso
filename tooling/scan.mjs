@@ -11,6 +11,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { detectStack } from './stack.mjs';
 import { readCodeowners, readPrecedence, readSourceMap } from './repo-rules.mjs';
+import { readToolchain } from './toolchain.mjs';
 import { documentedBranchPattern } from './lib.mjs';
 import { readDecisions, DECISIONS_LEAD } from './decisions.mjs';
 import {
@@ -1994,6 +1995,7 @@ export async function scanRepo(cwd, { exclude = null, pendingLocalExcludes = [] 
     ignoreNotes: await readIgnoreNotes(cwd, files),
     gate: await detectGate(cwd, pkg, packageManager.name),
     featureMap: detectFeatureMap(files, pkg),
+    toolchain: await readToolchain(cwd, files, pkg),
     manifestEntryPoints: manifestEntryPoints(pkg),
     // Lines this run is about to add to .git/info/exclude, so a preview rendered before
     // the write says what the written file will say.

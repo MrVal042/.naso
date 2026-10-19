@@ -21,6 +21,15 @@
 
 ### Added
 
+- **Setup derives the toolchain facts agents had to add by hand.** Each is read from the file that states it, without running it, and cited:
+  - **Prettier options** (`.prettierrc`, `prettier.config.*` or package.json `"prettier"`): quotes, trailing commas, width and the other layout options, on the Format line.
+  - **Jest preset, module mocks and setup files** (package.json `"jest"` or `jest.config.*`), on their own line under Code Conventions.
+  - **Expo runtime version policy and experiments** (`app.config.*` or `app.json`): what the policy asks when native code changes ("bump `version`"), and what `typedRoutes` and `reactCompiler` change, under Stack Rules.
+  - **Metro transformers** (`metro.config.*`): an SVG transformer means an `.svg` import is a component, not an image source.
+  - **Merge request checklist items** (`.gitlab/merge_request_templates/*.md`, `.github/pull_request_template.md`), quoted with file and line in a new Merge Request Checklist section.
+  - **Merge mode, approval rules and commit-rule exceptions** from CONTRIBUTING ("Revert messages are accepted", squash, fast-forward, code owners who may self-approve), quoted under Commit Standard.
+  - **Generated, git-ignored framework files** (`.expo/`, `expo-env.d.ts`, `.next/`, `next-env.d.ts` and others) and whether type-checking needs them, read from `.gitignore` and tsconfig `"include"` and `"files"`, under Boundaries.
+  - **Decisions written outside a table**: a dated "decided" comment in a config file such as `app.config.ts`, and "decided" lines in CONTRIBUTING, CODEOWNERS and docs, join the Decided rows `review` asks the agent to propose. In the field setup recorded 6 decisions and the agents found 36 more.
 - **The review prompt checks for another writer.** In a workspace with several agent sessions, another session staged everything mid-review, unrelated files included. The agent now records `git rev-parse HEAD` and `git write-tree` at the start and checks both again before the report; since it never stages, a change it did not make means another writer, and it stops and says so with the diff between the two trees.
 - **The review prompt ends with a commit plan.** In repositories with one ticket per branch, the NASO adoption landed on whatever branch was checked out. The prompt names the current branch and the branch rule `CONTRIBUTING.md` states, and the report ends with the branch the rules require, the exact files to stage, staged files that are not NASO's, the commit message, and a final "Ready to commit: yes" or "no" line with the blockers.
 - **The review prompt runs the whole toolchain on NASO's files.** The agent runs every check-only tool the repository and its CI use (lint, format check, typecheck, tests, and the secret scanner if installed, such as `gitleaks dir . --redact`) on `.naso/` and the decisions folder, and reports the config change for each that complains. A test keeps the vendored toolset and the decisions folder clean under gitleaks' key-shaped rules, and under gitleaks itself when it is installed (8.30.1 finds nothing in this release).

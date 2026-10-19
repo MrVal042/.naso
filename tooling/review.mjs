@@ -24,6 +24,7 @@ import { parseArgs, pathExists, nasoCommand, isMainModule, toolVersion, run, doc
 import { AGENTS_FILE, NASO_START, NASO_END, blockEdited, listRepoFiles } from './scan.mjs';
 import { checkBriefing } from './check.mjs';
 import { NASO_DIR } from './vendor.mjs';
+import { readDecidedNotes } from './toolchain.mjs';
 import { readDecisions, auditDecisions, indexFileOf, citedLines, sameDecisionText } from './decisions.mjs';
 
 /**
@@ -150,6 +151,16 @@ export async function decidedRows(cwd, files, records, { names = [] } = {}) {
       rows.push({ file, line: i + 1, text: rowText, owner: elsewhere });
     }
   }
+  // Decisions written down outside a table: a dated comment in app.config.ts, a line in
+  // CONTRIBUTING or CODEOWNERS. In the field these outnumbered the table rows six to one.
+  const texts = new Map();
+  for (const note of await readDecidedNotes(cwd, files)) {
+    if (rows.some((row) => row.file === note.file && row.line === note.line)) continue;
+    if (!texts.has(note.file)) texts.set(note.file, (await readFile(path.join(cwd, note.file), 'utf8').catch(() => '')) ?? '');
+    const text = texts.get(note.file);
+    const cited = records.some((record) => record.source?.includes(note.file) && (citedLines(record.source, note.file, text).has(note.line) || sameDecisionText(record, note.text)));
+    if (!cited) rows.push({ file: note.file, line: note.line, text: note.text, owner: null });
+  }
   return rows;
 }
 
@@ -273,7 +284,7 @@ function stateLines(state, cmd, here) {
     );
   }
   if (state.decided.length > 0) {
-    lines.push(`- Rows this repository's docs mark Decided that no record cites yet (${state.decided.length}). Propose each that is a decision, citing the file and line:`);
+    lines.push(`- Rows this repository's docs mark Decided that no record cites yet (${state.decided.length}), from Status columns and from lines that say "decided" in config, CONTRIBUTING, CODEOWNERS and docs. Propose each that is a decision, citing the file and line:`);
     for (const row of state.decided.slice(0, 40)) lines.push(`  - ${row.file} line ${row.line}: ${row.text}`);
     if (state.decided.length > 40) lines.push(`  - and ${state.decided.length - 40} more`);
   }
