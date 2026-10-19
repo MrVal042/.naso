@@ -15,6 +15,9 @@ import {
   isMainModule,
   SUPPORT_EMAIL,
   nasoCommand,
+  recordedNasoVersion,
+  pinAdvice,
+  detectPackageManager,
 } from './lib.mjs';
 import {
   scanRepo,
@@ -123,15 +126,20 @@ Support: ${SUPPORT_EMAIL}`);
   // The vendored copy is what the hook actually runs, so its absence is the single
   // most important thing this command can report.
   const vendoredVersionText = await vendoredVersion(cwd);
+  // What teammates install against what the hook runs, with the command in the right
+  // direction: the same note `briefing` prints. With that gap, it is the one command to run.
+  const recorded = await recordedNasoVersion(cwd);
+  const pinGap = recorded ? pinAdvice({ recorded, vendored: vendoredVersionText, pm: (await detectPackageManager(cwd, recorded.pkg)).name }) : null;
   if (!vendoredVersionText) {
     printRow('vendored toolset', WARN, `not found at ${NASO_DIR}/tooling/ — the hook will skip its checks`);
   } else if (compareVersions(vendoredVersionText, version) > 0) {
     printRow('vendored toolset', WARN, `${vendoredVersionText} — newer than this tool (${version}); update naso-dev`);
-  } else if (vendoredVersionText !== version) {
-    printRow('vendored toolset', WARN, `${vendoredVersionText} — behind ${version}; run \`${nasoCommand()} refresh\``);
+  } else if (vendoredVersionText !== version && !pinGap) {
+    printRow('vendored toolset', WARN, `${vendoredVersionText} — behind ${version}; run \`${nasoCommand({ version })} refresh\``);
   } else {
     printRow('vendored toolset', OK, `${NASO_DIR}/tooling/ at ${vendoredVersionText}`);
   }
+  if (pinGap) printRow('naso-dev in package.json', WARN, pinGap);
 
   const config = await readConfig(cwd);
   const excluded = configuredExclusions(config);
